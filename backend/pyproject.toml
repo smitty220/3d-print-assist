@@ -1,0 +1,31 @@
+[project]
+name = "cad-assist"
+version = "0.1.0"
+description = "CAD Assist backend: intent model, geometry and API"
+authors = [
+    { name = "Ryan Smith", email = "ryanasmith@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.11.0",
+    "build123d>=0.13.0",
+    "fastapi>=0.142.2",
+    "gmsh>=4.15.2",
+    "pyamg>=5.3.0",
+    "python-multipart>=0.0.32",
+    "scikit-image>=0.26.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore:Setting the shape on a NumPy array:DeprecationWarning:skimage"]
