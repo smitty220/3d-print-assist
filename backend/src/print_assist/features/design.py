@@ -19,6 +19,9 @@ from .model import Check, Design, EdgePick, FeatureOutput
 ATTR_TOL = 1e-3  # mm
 
 
+Status = str  # "ok" | "warn" (built, a check fails) | "fail" | "skipped"
+
+
 @dataclass
 class FeatureResult:
     id: str
@@ -27,6 +30,8 @@ class FeatureResult:
     driven: dict = field(default_factory=dict)
     error: str | None = None
     suppressed: bool = False
+    status: Status = "ok"
+    message: str | None = None  # why it was skipped, or what its failing check says
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -34,13 +39,21 @@ class FeatureResult:
 
 @dataclass
 class BuildResult:
-    local: Shape | None  # the part; local and world are the same (world frame, Z up, bed at Z = 0)
+    local: Shape | None  # every body together; local and world are the same (world frame, Z up, bed at Z = 0)
     world: Shape | None
     features: list[FeatureResult]
     checks: list[Check]
-    face_names: list[str | None]
+    face_names: list[str | None]  # of `world`'s faces
     volume: float  # mm³
     mass: float  # kg
+    parts: dict[str, Shape] = field(default_factory=dict)  # body id -> shape
+    body_names: dict[str, list[str | None]] = field(default_factory=dict)  # body id -> its faces' names
+    complete: bool = True  # no feature failed
+    hashes: dict[str, str] = field(default_factory=dict)  # feature / sketch id -> input hash it was built from
+    param_values: dict = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)  # formula errors (see params.graph.Resolved.errors)
+    sketch_status: dict[str, str] = field(default_factory=dict)  # sketch id -> "ok" | "fail"
+    sketch_errors: dict[str, str] = field(default_factory=dict)
 
 
 def _sample_point(face) -> Vector:
@@ -163,6 +176,19 @@ def describe_edge(shape: Shape, names: list[str | None], index: int) -> EdgePick
                     faces=[names[i] or "" for i in ids], points=[_v(e.position_at(t / 8)) for t in range(9)])
 
 
+def describe_face(shape: Shape, names: list[str | None], index: int):
+    """The pick record for face `index` of `shape`: its name, a point on it, its outward normal there and its area."""
+    from ..sketch.model import FacePick
+
+    faces = shape.faces()
+    if not 0 <= index < len(faces):
+        raise FeatureError(f"no face {index}")
+    f = faces[index]
+    pt = _sample_point(f)
+    return FacePick(name=names[index] if index < len(names) else None, at=_v(pt), normal=_v(f.normal_at(pt)),
+                    area=round(f.area, 4))
+
+
 def find_picked_edges(shape: Shape, names: list[str | None], picks: list[EdgePick]) -> list:
     """The part's edges for the picks: an edge in the same place (midpoint within 0.05 mm, same length), or failing that
     the nearest edge between the same two named faces that runs the same way (a dimension changed upstream). The kernel
@@ -197,51 +223,25 @@ def find_picked_edges(shape: Shape, names: list[str | None], picks: list[EdgePic
 
 def build_design(design: Design, rules: PrintRules | None = None,
                  on_feature: Callable[[FeatureResult, Shape | None], None] | None = None) -> BuildResult:
-    """Build every feature in order (world frame). `on_feature` is called after each one with its result and the part
-    so far, for showing a build as it happens."""
-    rules = rules or PrintRules()
-    ctx = BuildContext(rules=rules, sketches={s.id: s for s in design.sketches})
-    results: list[FeatureResult] = []
-    checks: list[Check] = []
-    part: Shape | None = None
-    for fi in design.features:
-        feat = FEATURES.get(fi.kind)
-        params = resolve_params(fi.kind, fi.params) if feat else {}
-        res = FeatureResult(id=fi.id, kind=fi.kind, params=params, suppressed=fi.suppressed)
-        results.append(res)
-        if feat is None:
-            res.error = f"unknown feature kind {fi.kind!r}"
-            continue
-        if fi.suppressed:
-            continue
-        ctx.params[fi.id] = params
-        ctx.edge_picks = fi.edges
-        try:
-            out = feat.build(ctx, params, fi.refs)
-            if out.op == "add":
-                part = out.shape if part is None else part + out.shape
-            elif out.op == "subtract":
-                if part is None:
-                    raise FeatureError("nothing to cut from yet")
-                part = part - out.shape
-            else:
-                part = out.shape
-                # The faces no earlier tool explains are the ones this edge operation created.
-                prior = attribute(part, ctx.outputs, fallback=False)
-                out.named["blend"] = [f for f, n in zip(part.faces(), prior) if n is None]
-            ctx.part = part
-            ctx.outputs[fi.id] = out
-            res.driven = out.driven
-            checks += feat.checks(ctx, fi.id, params, out)
-        except FeatureError as exc:
-            res.error = str(exc)
-        except Exception as exc:  # geometry kernel failures
-            res.error = f"geometry error: {exc}"
-        if on_feature is not None:
-            on_feature(res, part)
+    """Build every feature in order (world frame), carrying on past a failed feature. `on_feature` is called after each
+    one with its result and its body's shape so far. The incremental, stop-at-failure build is build.engine.Engine."""
+    from ..build.engine import Engine
 
-    if part is None:
-        return BuildResult(None, None, results, checks, [], 0.0, 0.0)
-    names = attribute(part, ctx.outputs)
-    volume = part.volume
-    return BuildResult(part, part, results, checks, names, volume, volume * 1e-9 * rules.density)
+    return Engine(cache_size=0).build(design, rules or PrintRules(), stop_on_fail=False, on_feature=on_feature)
+
+
+def apply_output(ctx: BuildContext, out: FeatureOutput) -> None:
+    """Fuse, cut or replace a feature's output into its body."""
+    part = ctx.part
+    if out.op == "add":
+        part = out.shape if part is None else part + out.shape
+    elif out.op == "subtract":
+        if part is None:
+            raise FeatureError("nothing to cut from yet")
+        part = part - out.shape
+    else:
+        part = out.shape
+        # The faces no earlier tool explains are the ones this edge operation created.
+        prior = attribute(part, ctx.outputs, fallback=False)
+        out.named["blend"] = [f for f, n in zip(part.faces(), prior) if n is None]
+    ctx.part = part

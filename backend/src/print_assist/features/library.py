@@ -366,19 +366,33 @@ FEATURES: dict[str, Feature] = {
 }
 
 
-def resolve_params(kind: str, given: dict) -> dict:
-    """Defaults merged with given values, clamped to the declared bounds."""
+def resolve_params(kind: str, given: dict, strict: set[str] | frozenset[str] = frozenset()) -> dict:
+    """Defaults merged with given values, clamped to the declared bounds. A value in `strict` (one a formula set) is
+    not clamped: out of bounds it raises, so the user sees the formula is wrong instead of a quietly different part."""
     out = {}
     for s in FEATURES[kind].params:
         v = given.get(s.name, s.default)
-        if s.quantity in ("length", "ratio", "angle"):
-            v = float(v)
-            if s.min is not None:
-                v = max(s.min, v)
-            if s.max is not None:
-                v = min(s.max, v)
+        if s.quantity in ("length", "ratio", "angle", "count"):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                v = float(s.default)
+            lo, hi = s.min, s.max
+            if s.name in strict and ((lo is not None and v < lo - 1e-9) or (hi is not None and v > hi + 1e-9)):
+                bound = f"at least {lo:g}" if lo is not None and v < lo else f"at most {hi:g}"
+                raise FeatureError(f"{s.label} = {v:g} from its formula; it must be {bound}")
+            if lo is not None:
+                v = max(lo, v)
+            if hi is not None:
+                v = min(hi, v)
+            if s.quantity == "count":
+                v = int(round(v))
         elif s.quantity == "choice" and v not in s.choices:
             v = s.default
+        elif s.quantity == "bool":
+            v = v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes", "on")
+        elif s.quantity == "text":
+            v = str(v)
         elif s.quantity == "profile":
             try:
                 v = [[float(x), float(y)] for x, y in v]
@@ -391,4 +405,3 @@ def resolve_params(kind: str, given: dict) -> dict:
                 v = list(s.default)
         out[s.name] = v
     return out
-

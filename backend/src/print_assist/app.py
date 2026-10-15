@@ -1,30 +1,36 @@
 """3D Print Assist API.
 
 Run with:  uv run uvicorn print_assist.app:app --reload
+
+Every change to a design is a list of ops (`build/ops.py`) applied by the open design's Workspace; the endpoints
+below are thin wrappers. The `X-Actor` header names who is changing it ("user" for the app, "claude-code" for the
+MCP server, "claude" for the in-app chat); changes by anyone but the user are built and checked before they are kept.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+from typing import Any, Literal
 
-from build123d import Vector
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .ai import generate as ai
+from .build.ops import USER, OpError
+from .build.workspace import ChangeRefused, Workspace
 from .features.context import FeatureError
-from .features.design import describe_edge
+from .features.design import describe_edge, describe_face
 from .features.library import FEATURES
-from .features.model import EdgePick, FeatureInstance
-from .geometry.tessellate import mesh_shape
+from .params.expr import ExprError, evaluate
+from .params.graph import resolve
 from .printers import profiles
-from .project import Project, Projects
-from .sketch.model import Sketch
-from .sketch.solve import SketchSolveError
-from .sketch.solve import solve as solve_sketch
+from .project import Projects
 
-app = FastAPI(title="3D Print Assist", version="0.1.0")
+app = FastAPI(title="3D Print Assist", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -33,7 +39,7 @@ app.add_middleware(
 )
 
 _projects: Projects | None = None
-_project: Project | None = None
+_ws: Workspace | None = None
 generator = ai.Generator()
 
 
@@ -44,20 +50,41 @@ def projects() -> Projects:
     return _projects
 
 
-def project() -> Project:
+def ws() -> Workspace:
     """The open design: the most recently changed one, or a new one when there are none."""
-    global _project
-    if _project is None:
+    global _ws
+    if _ws is None:
         listed = projects().list()
-        _project = projects().open(listed[0]["slug"]) if listed else projects().create("Untitled")
-    return _project
+        p = projects().open(listed[0]["slug"]) if listed else projects().create("Untitled")
+        _ws = Workspace(p)
+    return _ws
+
+
+def project():
+    return ws().project
 
 
 def reset(root=None) -> None:
     """Forget the open design (tests point the registry at a temporary folder)."""
-    global _projects, _project
+    global _projects, _ws
     _projects = Projects(root) if root is not None else None
-    _project = None
+    _ws = None
+
+
+def _not_generating() -> None:
+    if generator.running():
+        raise HTTPException(409, "The AI is changing the design; wait for it or cancel it")
+
+
+def _change(ops: list[dict], actor: str, message: str = "", base_rev: int | None = None) -> dict:
+    _not_generating()
+    try:
+        made = ws().change(ops, actor=actor or USER, message=message, base_rev=base_rev)
+    except OpError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ChangeRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"made": made, "tree": ws().tree()}
 
 
 @app.get("/api/health")
@@ -79,24 +106,24 @@ class NewProject(BaseModel):
 
 @app.post("/api/projects")
 def create_project(body: NewProject) -> dict:
-    global _project
+    global _ws
     _not_generating()
     try:
-        _project = projects().create(body.name)
+        _ws = Workspace(projects().create(body.name))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return _project.summary()
+    return _ws.project.summary()
 
 
 @app.post("/api/projects/{slug}/open")
 def open_project(slug: str) -> dict:
-    global _project
+    global _ws
     _not_generating()
     try:
-        _project = projects().open(slug)
+        _ws = Workspace(projects().open(slug))
     except KeyError:
         raise HTTPException(404, f"No design {slug!r}") from None
-    return _project.summary()
+    return _ws.project.summary()
 
 
 @app.get("/api/project")
@@ -104,7 +131,7 @@ def get_project() -> dict:
     return project().summary()
 
 
-@app.get("/api/project/history")
+@app.get("/api/history")
 def get_history() -> list[dict]:
     return project().history()
 
@@ -114,184 +141,262 @@ def get_printers() -> list[dict]:
     return [p.model_dump() for p in profiles().values()]
 
 
+class SettingsPatch(BaseModel):
+    update_mode: Literal["manual", "auto"] | None = None
+    printer: str | None = None
+    ai_mode: Literal["mcp", "api"] | None = None
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsPatch) -> dict:
+    w = ws()
+    s = w.project.data.settings
+    if body.printer is not None:
+        if body.printer not in profiles():
+            raise HTTPException(422, f"No printer profile {body.printer!r}")
+        s.printer = body.printer
+    if body.ai_mode is not None:
+        s.ai_mode = body.ai_mode
+    w.project.save()
+    if body.update_mode is not None:
+        w.set_mode(body.update_mode)
+    return s.model_dump()
+
+
 @app.get("/api/features/catalog")
 def feature_catalog() -> list[dict]:
     return [f.describe() for f in FEATURES.values()]
 
 
-# ---------------------------------------------------------------- design
+# ---------------------------------------------------------------- the model and its build
 
 
-def _not_generating() -> None:
-    if generator.running():
-        raise HTTPException(409, "The AI is changing the design; wait for it or cancel it")
+@app.get("/api/tree")
+def get_tree() -> dict:
+    return ws().tree()
 
 
-def design_payload() -> dict:
-    p = project()
-    d = p.data.design
-    sketches = [sk.model_dump() for sk in d.sketches]
-    empty = {"features": [], "checks": [], "mass": 0.0, "volume": 0.0, "mesh": None, "face_names": [], "error": None,
-             "sketches": sketches}
-    if not d.features:
-        return empty
-    try:
-        r = p.build()
-    except FeatureError as exc:
-        return empty | {"error": str(exc)}
-    features = [fr.to_dict() | {"locked": fi.locked, "refs": fi.refs,
-                                "edges": [e.model_dump() | {"world": e.points} for e in fi.edges]}
-                for fr, fi in zip(r.features, d.features)]
-    return {
-        "features": features,
-        "checks": [c.to_dict() for c in r.checks],
-        "mass": r.mass,
-        "volume": r.volume,
-        "mesh": mesh_shape(r.world, "part").to_dict() if r.world is not None else None,
-        "face_names": r.face_names,
-        "error": None,
-        "sketches": sketches,
-    }
+@app.get("/api/part")
+def get_part() -> dict:
+    return ws().part()
 
 
-@app.get("/api/project/design")
-def get_design() -> dict:
-    return design_payload()
-
-
-@app.get("/api/project/validation")
-def get_validation() -> dict:
-    return project().validate().to_dict()
-
-
-class SketchUpdate(BaseModel):
-    name: str | None = None
-    entities: list[dict]
-    constraints: list[dict]
-
-
-@app.put("/api/project/design/sketches/{sid}")
-def put_sketch(sid: str, body: SketchUpdate) -> dict:
-    """Replace a sketch's geometry and constraints, solve it and rebuild."""
+@app.post("/api/update")
+def post_update() -> dict:
     _not_generating()
-    p = project()
-    d = p.data.design
-    old = d.sketch(sid)
-    if old is None:
+    ws().update()
+    return ws().tree()
+
+
+@app.get("/api/checks")
+def get_checks() -> dict:
+    from .validate import validate
+
+    w = ws()
+    return validate(w.last_good, w.project.data.rules, w.project.printer).to_dict() | {"stale": bool(w.pending())}
+
+
+@app.get("/api/activity")
+def get_activity(since: float = 0.0) -> list[dict]:
+    return [a.to_dict() for a in ws().activity if a.at > since]
+
+
+@app.get("/api/events")
+async def events(request: Request, once: bool = False) -> StreamingResponse:
+    """Server-sent events: one message whenever the design, its build or the activity log changes."""
+
+    async def stream():
+        last = None
+        while True:
+            w = ws()
+            state = {"slug": w.project.slug, "rev": w.rev, "built_rev": w.built_rev, "activity": len(w.activity)}
+            if state != last:
+                yield f"data: {json.dumps(state)}\n\n"
+                last = state
+                if once:
+                    return
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------- changes
+
+
+class OpsRequest(BaseModel):
+    ops: list[dict[str, Any]]
+    message: str = ""
+    base_rev: int | None = None
+
+
+@app.post("/api/ops")
+def post_ops(body: OpsRequest, x_actor: str = Header(USER)) -> dict:
+    return _change(body.ops, x_actor, body.message, body.base_rev)
+
+
+class ParameterIn(BaseModel):
+    name: str
+    expr: str
+    quantity: Literal["length", "angle", "ratio", "count", "bool", "text"] | None = None
+    comment: str | None = None
+
+
+@app.post("/api/parameters")
+def set_parameter(body: ParameterIn, x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "set_parameter", **body.model_dump(exclude_none=True)}], x_actor, f"Set {body.name} = {body.expr}")
+
+
+@app.delete("/api/parameters/{name}")
+def delete_parameter(name: str, x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "delete_parameter", "name": name}], x_actor, f"Delete parameter {name}")
+
+
+@app.post("/api/features")
+def add_feature(body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "add_feature", **body}], x_actor, f"Add {body.get('kind')}")
+
+
+@app.patch("/api/features/{fid}")
+def edit_feature(fid: str, body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "edit_feature", **body, "id": fid}], x_actor, f"Edit {fid}")
+
+
+@app.delete("/api/features/{fid}")
+def delete_feature(fid: str, x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "delete_feature", "id": fid}], x_actor, f"Delete {fid}")
+
+
+@app.post("/api/sketches")
+def add_sketch(body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "add_sketch", **body}], x_actor, "Add sketch")
+
+
+@app.put("/api/sketches/{sid}")
+def edit_sketch(sid: str, body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
+    out = _change([{"op": "edit_sketch", **body, "id": sid}], x_actor, f"Edit {sid}")
+    sk = project().data.design.sketch(sid)
+    return out | {"sketch": sk.model_dump() if sk else None}
+
+
+@app.get("/api/sketches/{sid}")
+def get_sketch(sid: str) -> dict:
+    sk = project().data.design.sketch(sid)
+    if sk is None:
         raise HTTPException(404, f"No sketch {sid!r}")
+    return sk.model_dump()
+
+
+@app.delete("/api/sketches/{sid}")
+def delete_sketch(sid: str, x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "delete_sketch", "id": sid}], x_actor, f"Delete {sid}")
+
+
+class RollbackIn(BaseModel):
+    index: int | None
+
+
+@app.put("/api/rollback")
+def set_rollback(body: RollbackIn, x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "set_rollback", "index": body.index}], x_actor, "Move the end-of-part bar")
+
+
+@app.post("/api/bodies")
+def add_body(body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "add_body", **body}], x_actor, "Add body")
+
+
+@app.patch("/api/bodies/{bid}")
+def edit_body(bid: str, body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "edit_body", **body, "id": bid}], x_actor, f"Edit {bid}")
+
+
+# ---------------------------------------------------------------- picking on the part
+
+
+def _shown(body: str):
+    good = ws().last_good
+    shape = good.parts.get(body) if good else None
+    if shape is None:
+        raise HTTPException(422, f"Nothing built in body {body} to pick on")
+    return shape, good.body_names.get(body, [])
+
+
+@app.get("/api/pick/face")
+def pick_face(body: str, face: int) -> dict:
+    shape, names = _shown(body)
     try:
-        sk = Sketch(id=sid, name=body.name if body.name is not None else old.name, entities=body.entities,
-                    constraints=body.constraints)
-        sk = solve_sketch(sk)
-    except (ValueError, SketchSolveError, FeatureError) as exc:
-        raise HTTPException(422, str(exc)) from exc
-    d.sketches = [sk if s.id == sid else s for s in d.sketches]
-    p.save()
-    return design_payload() | {"sketch": sk.model_dump()}
-
-
-class NewFeature(BaseModel):
-    kind: str
-    refs: dict[str, str] = {}
-    params: dict[str, float | str | bool | list[list[float]]] = {}
-
-
-@app.post("/api/project/design/features")
-def add_feature(body: NewFeature) -> dict:
-    _not_generating()
-    if body.kind not in FEATURES:
-        raise HTTPException(422, f"Unknown feature kind {body.kind!r}")
-    p = project()
-    d = p.data.design
-    d.features.append(FeatureInstance(id=d.next_id(), kind=body.kind, refs=body.refs, params=body.params))
-    p.save()
-    return design_payload() | {"created": d.features[-1].id}
-
-
-class FeaturePatch(BaseModel):
-    params: dict[str, float | str | bool | list[list[float]]] | None = None
-    refs: dict[str, str] | None = None
-    edges: list[EdgePick] | None = None
-    locked: bool | None = None
-    suppressed: bool | None = None
-
-
-@app.patch("/api/project/design/features/{fid}")
-def patch_feature(fid: str, body: FeaturePatch) -> dict:
-    _not_generating()
-    p = project()
-    fi = p.data.design.get(fid)
-    if fi is None:
-        raise HTTPException(404, f"No feature {fid!r}")
-    if body.params is not None:
-        known = {s.name for s in FEATURES[fi.kind].params}
-        bad = sorted(set(body.params) - known)
-        if bad:
-            raise HTTPException(422, f"{fi.kind} has no parameter(s) {', '.join(bad)}")
-        fi.params = fi.params | body.params
-    if body.refs is not None:
-        fi.refs = fi.refs | body.refs
-    if body.edges is not None:
-        fi.edges = body.edges
-    if body.locked is not None:
-        fi.locked = body.locked
-    if body.suppressed is not None:
-        fi.suppressed = body.suppressed
-    p.save()
-    return design_payload()
-
-
-class EdgePickIn(BaseModel):
-    edge: int  # index into the displayed part's edges (its mesh's edge ids)
-
-
-EDGE_KINDS = ("fillet", "chamfer")
-
-
-@app.post("/api/project/design/features/{fid}/edges")
-def pick_feature_edge(fid: str, body: EdgePickIn) -> dict:
-    """Add an edge picked on the part to a fillet or chamfer, or take it off again if it is already picked. The edge is
-    kept by its geometry, so it is found on the part as it is before this feature, and after upstream edits."""
-    _not_generating()
-    p = project()
-    fi = p.data.design.get(fid)
-    if fi is None:
-        raise HTTPException(404, f"No feature {fid!r}")
-    if fi.kind not in EDGE_KINDS:
-        raise HTTPException(422, f"{fid} is a {fi.kind}; only fillets and chamfers take edges")
-    r = p.build()
-    if r.local is None:
-        raise HTTPException(422, "There is no part to pick on yet")
-    try:
-        pick = describe_edge(r.local, r.face_names, body.edge)
+        return describe_face(shape, names, face).model_dump()
     except FeatureError as exc:
         raise HTTPException(422, str(exc)) from exc
-    at = Vector(*pick.at)
-    same = [i for i, e in enumerate(fi.edges) if (Vector(*e.at) - at).length < 0.05]
-    if same:
-        fi.edges = [e for i, e in enumerate(fi.edges) if i not in same]
-    else:
-        fi.edges = [*fi.edges, pick]
-        res = next(x for x in p.build().features if x.id == fid)
-        if res.error and "is not on the part" in res.error:
-            fi.edges = fi.edges[:-1]
-            raise HTTPException(422, f"That edge is made after {fid} in the tree; move the blend later or pick an earlier edge")
-    p.save()
-    return design_payload() | {"picked": not same}
 
 
-@app.delete("/api/project/design/features/{fid}")
-def delete_feature(fid: str) -> dict:
-    _not_generating()
-    p = project()
-    if p.data.design.get(fid) is None:
+@app.get("/api/pick/edge")
+def pick_edge(body: str, edge: int) -> dict:
+    shape, names = _shown(body)
+    try:
+        return describe_edge(shape, names, edge).model_dump()
+    except FeatureError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+class PickIn(BaseModel):
+    body: str = "B1"
+    index: int
+
+
+@app.post("/api/features/{fid}/edges")
+def toggle_edge(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
+    """Add an edge picked on the part to a fillet or chamfer, or take it off again if it is already picked."""
+    from build123d import Vector
+
+    fi = project().data.design.get(fid)
+    if fi is None:
         raise HTTPException(404, f"No feature {fid!r}")
-    p.data.design.features = [f for f in p.data.design.features if f.id != fid]
-    p.save()
-    return design_payload()
+    e = pick_edge(pick.body, pick.index)
+    at = Vector(*e["at"])
+    same = [i for i, x in enumerate(fi.edges) if (Vector(*x.at) - at).length < 0.05]
+    edges = [x.model_dump() for i, x in enumerate(fi.edges) if i not in same]
+    if not same:
+        edges.append(e)
+    return _change([{"op": "edit_feature", "id": fid, "edges": edges}], x_actor, f"{'Unpick' if same else 'Pick'} an edge for {fid}")
 
 
-# ---------------------------------------------------------------- AI generation
+@app.post("/api/features/{fid}/faces")
+def toggle_face(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
+    """Add a face picked on the part to a feature (shell openings, text target), or take it off again."""
+    from build123d import Vector
+
+    fi = project().data.design.get(fid)
+    if fi is None:
+        raise HTTPException(404, f"No feature {fid!r}")
+    f = pick_face(pick.body, pick.index)
+    at = Vector(*f["at"])
+    same = [i for i, x in enumerate(fi.faces) if (Vector(*x.at) - at).length < 0.05 or (x.name and x.name == f["name"] and x.normal == f["normal"])]
+    faces = [x.model_dump() for i, x in enumerate(fi.faces) if i not in same]
+    if not same:
+        faces.append(f)
+    return _change([{"op": "edit_feature", "id": fid, "faces": faces}], x_actor, f"{'Unpick' if same else 'Pick'} a face for {fid}")
+
+
+# ---------------------------------------------------------------- formulas
+
+
+class ExprIn(BaseModel):
+    expr: str
+
+
+@app.post("/api/expr/eval")
+def eval_expr(body: ExprIn) -> dict:
+    values = {k: v for k, v in resolve(project().data.design).values.items() if not isinstance(v, str)}
+    try:
+        return {"value": evaluate(body.expr, values)}
+    except ExprError as exc:
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------- AI generation (one-shot; the chat replaces it)
 
 
 class GenerateRequest(BaseModel):
@@ -311,14 +416,13 @@ def ai_status() -> dict:
 
 @app.post("/api/ai/generate")
 def ai_generate(body: GenerateRequest) -> dict:
-    p = project()
     if generator.running():
         raise HTTPException(409, "A generation is already running")
     try:
         client = ai.make_client()
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
-    generator.start(p, client, body.instruction, max(1, min(body.max_rounds, 12)))
+    generator.start(project(), client, body.instruction, max(1, min(body.max_rounds, 12)))
     return {"job": _job()}
 
 

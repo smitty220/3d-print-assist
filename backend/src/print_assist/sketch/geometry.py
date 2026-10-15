@@ -100,7 +100,7 @@ def regions(s: Sketch) -> list[Face]:
     open_ends = [w for w in wires if not w.is_closed]
     if open_ends:
         p = open_ends[0] @ 0
-        raise SketchGeometryError(f"{s.id}: a profile is not closed (open end near {p.X / 25.4:.3f}, {p.Y / 25.4:.3f} in)")
+        raise SketchGeometryError(f"{s.id}: a profile is not closed (open end near {p.X:.1f}, {p.Y:.1f} mm)")
     loops = sorted((Face(w) for w in wires), key=lambda f: -f.area)
     probe = [w @ 0 for w in (f.outer_wire() for f in loops)]
     depth = []
