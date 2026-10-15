@@ -1,7 +1,7 @@
-"""Data model for a designed part: an ordered list of parametric feature instances.
+"""Data model for a designed part: named parameters, sketches and an ordered list of parametric feature instances,
+each building into one of the design's bodies.
 
-The part is built in the design frame (the primary mount's frame: Z = 0 is the mount face, +Z away from
-the mating part) and moved to world coordinates for display and checks. Lengths in mm.
+Everything is in world millimetres, Z up, the print bed at Z = 0.
 """
 
 from __future__ import annotations
@@ -12,16 +12,17 @@ from typing import Literal
 from build123d import Face, Shape
 from pydantic import BaseModel, Field
 
-from ..sketch.model import Sketch
+from ..params.model import Parameter
+from ..sketch.model import FacePick, Sketch
 
 ParamValue = float | str | bool | list[list[float]] | list[list[list[float]]]
-# "profile": a closed outline, a list of [x, y] points (mm) in the design frame's XY plane; "profiles": several.
-Quantity = Literal["length", "ratio", "angle", "choice", "bool", "profile", "profiles"]
+# "profile": a closed outline, a list of [x, y] points (mm) in the XY plane; "profiles": several.
+Quantity = Literal["length", "ratio", "angle", "count", "choice", "bool", "text", "profile", "profiles"]
 Status = Literal["ok", "warn", "fail"]
 
 
 class EdgePick(BaseModel):
-    """An edge the engineer picked for a fillet or chamfer, kept by its geometry in the design frame so it is found again
+    """An edge the user picked for a fillet or chamfer, kept by its geometry so it is found again
     on a rebuilt part: where its middle is, which way it runs there, its length and the two faces it joined."""
 
     at: list[float]  # mm, the edge's midpoint
@@ -34,15 +35,31 @@ class EdgePick(BaseModel):
 class FeatureInstance(BaseModel):
     id: str
     kind: str
-    params: dict[str, ParamValue] = Field(default_factory=dict)
+    params: dict[str, ParamValue] = Field(default_factory=dict)  # literal values (and the last value of each formula)
+    exprs: dict[str, str] = Field(default_factory=dict)  # param -> formula ("height * 0.8"); wins over params
     refs: dict[str, str] = Field(default_factory=dict)  # role -> feature id or sketch id
     edges: list[EdgePick] = Field(default_factory=list)  # picked edges (fillet, chamfer)
+    faces: list[FacePick] = Field(default_factory=list)  # picked faces (shell openings, text target)
+    body: str = "B1"
     locked: bool = False
     suppressed: bool = False
 
 
+class Body(BaseModel):
+    id: str
+    name: str = "Body"
+    color: str | None = None  # "#rrggbb"; used for filament assignment (M2)
+
+
+def _default_bodies() -> list[Body]:
+    return [Body(id="B1", name="Body")]
+
+
 class Design(BaseModel):
+    parameters: list[Parameter] = Field(default_factory=list)
+    bodies: list[Body] = Field(default_factory=_default_bodies)
     features: list[FeatureInstance] = Field(default_factory=list)
+    rollback: int | None = None  # features[rollback:] are past the end-of-part bar and not built
     sketches: list[Sketch] = Field(default_factory=list)  # consumed by pad / sketch_pocket features
 
     def sketch(self, sid: str) -> Sketch | None:
@@ -50,6 +67,26 @@ class Design(BaseModel):
 
     def get(self, fid: str) -> FeatureInstance | None:
         return next((f for f in self.features if f.id == fid), None)
+
+    def parameter(self, name: str) -> Parameter | None:
+        return next((p for p in self.parameters if p.name == name), None)
+
+    def body(self, bid: str) -> Body | None:
+        return next((b for b in self.bodies if b.id == bid), None)
+
+    def next_sketch_id(self) -> str:
+        used = {int(s.id[1:]) for s in self.sketches if s.id[1:].isdigit()}
+        n = 1
+        while n in used:
+            n += 1
+        return f"S{n}"
+
+    def next_body_id(self) -> str:
+        used = {int(b.id[1:]) for b in self.bodies if b.id[1:].isdigit()}
+        n = 1
+        while n in used:
+            n += 1
+        return f"B{n}"
 
     def next_id(self) -> str:
         used = {int(f.id[1:]) for f in self.features if f.id[1:].isdigit()}

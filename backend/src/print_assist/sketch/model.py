@@ -1,5 +1,5 @@
 """2D sketches: points, lines, arcs, circles and splines with constraints and dimensions (mirrors
-frontend/src/sketch/model.ts). Coordinates are mm in the design frame's XY plane; a sketch is stored solved."""
+frontend/src/sketch/model.ts). Coordinates are mm in the sketch's own plane (see Placement); a sketch is stored solved."""
 
 from __future__ import annotations
 
@@ -68,7 +68,31 @@ class Constraint(BaseModel):
     kind: ConstraintKind
     refs: list[str]
     value: float | None = None  # mm, or radians for an angle
+    expr: str | None = None  # a formula of parameters setting the value (angles in degrees); the value follows it
     driving: bool = True  # False: a reference dimension, measured rather than imposed
+
+
+class FacePick(BaseModel):
+    """A face picked on the part, kept so it is found again after a rebuild: its name ("F2.end") when it has one, else
+    by where it is (a point on it), which way it faces there and its area."""
+
+    name: str | None = None
+    at: list[float]  # mm, a point on the face
+    normal: list[float]  # unit, outward at `at`
+    area: float = 0.0  # mm²
+
+
+class Placement(BaseModel):
+    """Where a sketch lies: on a base plane (XY / XZ / YZ through the origin), or on a planar face of the part, moved
+    along its normal by `offset` and turned by `rotation` degrees about it."""
+
+    kind: Literal["plane", "face"] = "plane"
+    plane: Literal["XY", "XZ", "YZ"] = "XY"
+    face: FacePick | None = None
+    offset: float = 0.0  # mm along the plane's normal
+    offset_expr: str | None = None
+    rotation: float = 0.0  # degrees
+    flip: bool = False
 
 
 class SolveReport(BaseModel):
@@ -83,6 +107,8 @@ class Sketch(BaseModel):
     name: str = ""
     entities: list[Entity] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
+    placement: Placement = Field(default_factory=Placement)
+    after: str | None = None  # for a sketch on a face: the feature whose result it is drawn on
     report: SolveReport | None = None  # from the last solve
 
     def get(self, eid: str):
