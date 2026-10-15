@@ -8,11 +8,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from build123d import Shape, Vector
-from OCP.BRep import BRep_Tool
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
-from OCP.gp import gp_Dir, gp_Lin, gp_Pnt
-from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
-from OCP.ShapeAnalysis import ShapeAnalysis_Surface
 
 from .features.design import BuildResult
 from .printers import PrinterProfile
@@ -121,7 +117,7 @@ def check_part(build: BuildResult, rules: PrintRules, printer: PrinterProfile | 
           f"{size[0]:.1f} × {size[1]:.1f} × {size[2]:.1f} mm on a {printer.bed[0]:g} × {printer.bed[1]:g} × {printer.bed[2]:g} bed",
           value=max(size), quantity="length")
 
-    out += check_wall(rules, part)
+    out += check_wall(rules, printed(build))
 
     metres = build.volume / (3.14159265 * 0.875**2) / 1000  # 1.75 mm filament
     F("mass", "Mass", "ok", f"{build.mass * 1000:.1f} g of {rules.material}, about {metres:.1f} m of 1.75 mm filament "
@@ -129,42 +125,148 @@ def check_part(build: BuildResult, rules: PrintRules, printer: PrinterProfile | 
     return out
 
 
+def printed(build: BuildResult) -> Shape:
+    """The part as it prints: bodies that touch (an inlay in its pocket, a colour band on its vase) fused together, so
+    a pocket's floor is not mistaken for a thin wall. Bodies apart from the rest stay as they are."""
+    from build123d import Compound
+
+    parts = list((build.parts or {}).values()) or [build.world]
+    if len(parts) == 1:
+        return parts[0]
+    boxes = [p.bounding_box() for p in parts]
+
+    def touch(a, b) -> bool:
+        return all(getattr(a.min, k) <= getattr(b.max, k) + 1e-6 and getattr(b.min, k) <= getattr(a.max, k) + 1e-6
+                   for k in "XYZ")
+
+    group = list(range(len(parts)))  # union-find over overlapping boxes
+
+    def root(i: int) -> int:
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+
+    for i in range(len(parts)):
+        for j in range(i + 1, len(parts)):
+            if touch(boxes[i], boxes[j]):
+                group[root(i)] = root(j)
+    out = []
+    for r in {root(i) for i in range(len(parts))}:
+        members = [parts[i] for i in range(len(parts)) if root(i) == r]
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        try:
+            out.append(members[0].fuse(*members[1:]).clean())
+        except Exception:  # noqa: BLE001 - a fuse that fails: check the bodies as they are
+            out.extend(members)
+    return out[0] if len(out) == 1 else Compound(children=out)
+
+
+WALL_REACH = 2.4  # mm: rays look this far through the material (twice the preferred wall); thicker is "thick enough"
+WALL_SAMPLES = 8000  # per part, spread over its faces
+
+
 def check_wall(rules: PrintRules, part: Shape) -> list[Finding]:
     """Sampled ray thickness: from points across every face, the distance through the material along the inward normal
-    (corner readings excluded: the tip of an acute corner reads thin but is not a thin wall)."""
-    inter = IntCurvesFace_ShapeIntersector()
-    inter.Load(part.wrapped, 1e-4)
-    best: tuple[float, Vector, Vector] | None = None
-    for face in part.faces():
-        surf = BRep_Tool.Surface_s(face.wrapped)
-        proj = ShapeAnalysis_Surface(surf)
-        try:
-            verts, tris = face.tessellate(0.3, 0.5)
-        except AttributeError:  # a sliver face the mesher can't triangulate; it has no thickness to sample
+    (corner readings excluded: the tip of an acute corner reads thin but is not a thin wall).
+
+    Works on the part's triangle mesh, with the triangles bucketed in a grid, so a part with thousands of faces (text,
+    knurling) is checked in about a second. Rays look WALL_REACH mm deep; anything thicker is reported as such."""
+    import numpy as np
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+
+    from .geometry.tessellate import _triangulation
+
+    reach = max(WALL_REACH, 2 * rules.min_wall_preferred)
+    BRepMesh_IncrementalMesh(part.wrapped, 0.02, False, 0.2, True)
+    tris, samples, normals, bounds = [], [], [], []  # bounds: (sample index range, the face's boundary segments)
+    faces = part.faces()
+    per_face = max(4, WALL_SAMPLES // max(len(faces), 1))
+    for face in faces:
+        got = _triangulation(face)
+        if got is None or not got[1]:
             continue
-        for a, b, c in tris:
-            m = (verts[a] + verts[b] + verts[c]) * (1 / 3)
-            uv = proj.ValueOfUV(gp_Pnt(m.X, m.Y, m.Z), 1e-7)
-            gp = surf.Value(uv.X(), uv.Y())
-            pt = Vector(gp.X(), gp.Y(), gp.Z())
-            n = face.normal_at(pt)
-            inter.Perform(gp_Lin(gp, gp_Dir(-n.X, -n.Y, -n.Z)), 1e-3, 1e9)
-            hits = [inter.WParameter(i) for i in range(1, inter.NbPnt() + 1) if inter.WParameter(i) > 1e-2]
-            if hits:
-                t = min(hits)
-                # Near a corner the ray meets the neighbouring face at once (an acute corner is not a thin wall): a
-                # reading counts only if the point is farther from its face's edges than twice the thickness found.
-                if t < rules.min_wall_preferred and min(e.distance_to(pt) for e in face.edges()) < 2 * t:
-                    continue
-                if best is None or t < best[0]:
-                    best = (t, pt, pt - n * t)
-    if best is None:
+        pts = np.array(got[0], dtype=np.float64).reshape(-1, 3)
+        idx = np.array(got[1], dtype=np.int64).reshape(-1, 3)
+        t = pts[idx]
+        tris.append(t)
+        n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+        area = np.linalg.norm(n, axis=1)
+        keep = np.nonzero(area > 1e-9)[0]
+        if len(keep) > per_face:  # the largest triangles spread the samples over the face
+            keep = keep[np.argsort(-area[keep])[:per_face]]
+        e = np.sort(np.concatenate([idx[:, [0, 1]], idx[:, [1, 2]], idx[:, [2, 0]]]), axis=1)
+        uniq, counts = np.unique(e, axis=0, return_counts=True)
+        edge = pts[uniq[counts == 1]]  # the face's outline: triangle edges used once
+        start = sum(len(x) for x in samples)
+        samples.append(t[keep].mean(axis=1))
+        normals.append(n[keep] / area[keep, None])
+        bounds.append((start, start + len(keep), edge))
+    if not tris:
         return []
+    T = np.concatenate(tris)
+    S = np.concatenate(samples)
+    N = np.concatenate(normals)
+
+    # Bucket triangles in a grid of cells as big as the reach, so each ray only meets triangles near it.
+    cell = reach
+    lo = T.reshape(-1, 3).min(0)
+    tmin = np.floor((T.min(1) - lo) / cell).astype(int)
+    tmax = np.floor((T.max(1) - lo) / cell).astype(int)
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    for i, (a, b) in enumerate(zip(tmin, tmax)):
+        for x in range(a[0], b[0] + 1):
+            for y in range(a[1], b[1] + 1):
+                for z in range(a[2], b[2] + 1):
+                    grid.setdefault((x, y, z), []).append(i)
+
+    best = (np.inf, None, None)
+    for start, stop, edge in bounds:
+        for k in range(start, stop):
+            p, d = S[k], -N[k]
+            q = p + d * reach
+            c0 = np.floor((np.minimum(p, q) - lo) / cell).astype(int)
+            c1 = np.floor((np.maximum(p, q) - lo) / cell).astype(int)
+            cand = {i for x in range(c0[0], c1[0] + 1) for y in range(c0[1], c1[1] + 1) for z in range(c0[2], c1[2] + 1)
+                    for i in grid.get((x, y, z), ())}
+            if not cand:
+                continue
+            tt = T[list(cand)]
+            e1, e2 = tt[:, 1] - tt[:, 0], tt[:, 2] - tt[:, 0]  # Moller-Trumbore, all candidates at once
+            h = np.cross(d, e2)
+            a = (e1 * h).sum(1)
+            ok = np.abs(a) > 1e-12
+            f = np.where(ok, 1 / np.where(ok, a, 1), 0)
+            sv = p - tt[:, 0]
+            u = f * (sv * h).sum(1)
+            qv = np.cross(sv, e1)
+            v = f * (qv @ d)
+            dist = f * (e2 * qv).sum(1)
+            hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (dist > 1e-2) & (dist < reach)
+            if not hit.any():
+                continue
+            th = float(dist[hit].min())
+            if th >= best[0]:
+                continue
+            # Near a corner the ray meets the neighbouring face at once (an acute corner is not a thin wall): a reading
+            # counts only if the point is farther from its face's outline than twice the thickness found.
+            if len(edge):
+                a0, b0 = edge[:, 0], edge[:, 1]
+                ab = b0 - a0
+                w = np.clip(((p - a0) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-18), 0, 1)
+                if np.linalg.norm(a0 + ab * w[:, None] - p, axis=1).min() < 2 * th:
+                    continue
+            best = (th, p, p + d * th)
     t, p0, p1 = best
+    if p0 is None:
+        return [Finding("part", "wall", "Minimum wall", "ok", f"no wall thinner than {reach:g} mm (sampled)",
+                        value=None, quantity="length")]
     status = "ok" if t >= rules.min_wall_preferred - 1e-6 else "warn" if t >= rules.min_wall - 1e-6 else "fail"
     return [Finding("part", "wall", "Minimum wall", status,
                     f"{t:.2f} mm thinnest (sampled); {rules.min_wall_preferred:g} mm preferred, {rules.min_wall:g} mm min",
-                    value=t, quantity="length", points=[_t(p0), _t(p1)])]
+                    value=t, quantity="length", points=[_t(Vector(*p0)), _t(Vector(*p1))])]
 
 
 def validate(build: BuildResult | None, rules: PrintRules, printer: PrinterProfile | None = None,

@@ -100,18 +100,21 @@ def attribute(shape: Shape, outputs: dict[str, FeatureOutput], fallback: bool = 
     """
     order = list(outputs.items())
     last_replace = next((fid for fid, out in reversed(order) if out.op == "replace"), None)
-    # Every tool face with its bounding box, latest feature first, worked out once: a mesh import has thousands.
-    candidates = [(f"{fid}.{role}", tf, _box(tf)) for fid, out in reversed(order) for role, tools in out.named.items()
-                  for tf in tools]
-    same: dict[int, str] = {}  # a face the boolean left untouched is the tool's own face: name it without measuring
-    for n, tf, _ in reversed(candidates):
+    # Every tool face, latest feature first. A face the boolean left untouched is the tool's own face: it is named by
+    # hash, without measuring; only the rest need bounding boxes and a surface test (worked out once, when first needed).
+    candidates = [(f"{fid}.{role}", tf) for fid, out in reversed(order) for role, tools in out.named.items() for tf in tools]
+    same: dict[int, str] = {}
+    for n, tf in reversed(candidates):
         same[hash(tf)] = n  # reversed, so the latest feature's name is the one kept
+    boxes: list[tuple[float, ...]] | None = None
     names: list[str | None] = []
     for face in shape.faces():
         name = same.get(hash(face))
         if name is None:
+            if boxes is None:
+                boxes = [_box(tf) for _, tf in candidates]
             pt = _sample_point(face)
-            name = next((n for n, tf, box in candidates if _same_surface(face, tf, pt, box)), None)
+            name = next((n for (n, tf), box in zip(candidates, boxes) if _same_surface(face, tf, pt, box)), None)
         names.append(name or (f"{last_replace}.blend" if last_replace and fallback else None))
     return names
 

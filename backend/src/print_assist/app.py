@@ -330,10 +330,7 @@ def post_update() -> dict:
 
 @app.get("/api/checks")
 def get_checks() -> dict:
-    from .validate import validate
-
-    w = ws()
-    return validate(w.last_good, w.project.data.rules, w.project.printer, design=w.design).to_dict() | {"stale": bool(w.pending())}
+    return ws().checks()
 
 
 @app.get("/api/activity")

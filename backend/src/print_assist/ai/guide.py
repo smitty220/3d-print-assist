@@ -12,7 +12,9 @@ that build in order; each feature works on one body.
 
 Working method:
 1. Read the model (get_model) and, if useful, look at it (render_preview, views iso / front / top / right / ...).
-2. Make a change as one batch of ops with a short message saying what and why (apply_changes). Prefer parameters \
+2. Make a change as one batch of ops with a short message saying what and why (apply_changes). Batch a whole \
+step (a part, a set of holes, all the text on a face) into one apply_changes call rather than one call per op: every \
+call is built and checked before it is kept, so many small calls are slow. Prefer parameters \
 and formulas for any size the user may want to vary, so a later tweak is one parameter.
 3. Look at the result (render_preview) and read the checks (run_checks); fix what fails. Keep going until it is right, \
 then tell the user briefly what you made and anything they should decide.

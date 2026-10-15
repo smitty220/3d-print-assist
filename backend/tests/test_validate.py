@@ -49,3 +49,16 @@ def test_wall_check_ignores_acute_corners_but_finds_thin_walls():
     assert f.status == "ok", f.detail
     (g,) = check_wall(PrintRules(), Box(20, 20, 0.5))  # below the 0.8 mm minimum everywhere
     assert g.status == "fail" and abs(g.value - 0.5) < 1e-3
+
+
+def test_inlays_are_checked_as_printed_not_as_pockets():
+    from print_assist.build.ops import apply
+
+    d = Design()
+    apply(d, {"op": "add_feature", "kind": "plate", "params": {"length": 60, "width": 30, "thickness": 1.6, "corner_radius": 0}})
+    top = {"name": "F1.top", "at": [0, 0, 1.6], "normal": [0, 0, 1], "area": 1800}
+    apply(d, {"op": "add_feature", "kind": "text", "faces": [top],
+              "params": {"content": "HI", "size": 14, "mode": "inlay", "depth": 0.8, "into": "new"}})
+    res = _findings(d)
+    # The plate alone is 0.8 mm under its letter pockets, but the letters fill them: printed, it is 1.6 mm throughout.
+    assert res["Minimum wall"].status == "ok", res["Minimum wall"].detail

@@ -70,6 +70,8 @@ class Workspace:
         self.built_params: dict = {}
         self.activity: list[Activity] = []
         self._mesh: tuple[int, dict[str, dict]] | None = None
+        self._checks: tuple[tuple, dict] | None = None  # the print checks, for one build, palette and printer
+        self._checks_lock = threading.Lock()
         self.working: Design = project.data.design.model_copy(deep=True)
         self.saved_json = self.working.model_dump_json()
         self.undo_stack: list[Step] = []
@@ -259,6 +261,22 @@ class Workspace:
                 if ai:
                     self.update()
                     return f"AI: {label}"
+
+    def checks(self) -> dict:
+        """The print checks of the last good build, worked out once per build (and palette and printer): requests that
+        arrive while they run wait and share the result, and always get the newest build's."""
+        from ..validate import validate
+
+        with self._checks_lock:
+            with self.lock:
+                good, design = self.last_good, self.design
+                key = (id(good), design.model_dump_json(include={"filaments", "bodies"}), self.project.data.settings.printer,
+                       repr(self.project.data.rules))
+                stale = bool(self.pending())
+            if self._checks is None or self._checks[0] != key:
+                rep = validate(good, self.project.data.rules, self.project.printer, design=design).to_dict()
+                self._checks = (key, rep)
+            return self._checks[1] | {"stale": stale}
 
     def render(self, view: str = "iso", size: int = 640) -> bytes:
         from ..geometry.render import render

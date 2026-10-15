@@ -122,6 +122,7 @@ class Engine:
         self.cache_size = cache_size
         self._cache: OrderedDict[str, _Snapshot] = OrderedDict()
         self._sketches: OrderedDict[str, Sketch] = OrderedDict()
+        self._names: OrderedDict[int, tuple] = OrderedDict()  # a body shape's face names, by the shape (unchanged = same)
         self.builds = 0  # Feature.build calls made, for tests and progress
         self.solves = 0  # sketch solves made
 
@@ -210,7 +211,7 @@ class Engine:
             return BuildResult(None, None, results, checks, [], 0.0, 0.0, complete=failed is None, hashes=hashes,
                                param_values=p.resolved.values, errors=p.resolved.errors, sketch_status=sketch_status,
                                sketch_errors=sketch_errors)
-        body_names = {b: attribute(s, ctx.outputs) for b, s in parts.items()}
+        body_names = {b: self._face_names(s, ctx.outputs) for b, s in parts.items()}
         order = [b.id for b in design.bodies if b.id in parts] + [b for b in parts if not design.body(b)]
         world = parts[order[0]] if len(order) == 1 else Compound(children=[parts[b] for b in order])
         names = [n for b in order for n in body_names[b]]
@@ -219,6 +220,20 @@ class Engine:
                            body_names=body_names, complete=failed is None, hashes=hashes,
                            param_values=p.resolved.values, errors=p.resolved.errors, sketch_status=sketch_status,
                            sketch_errors=sketch_errors)
+
+    def _face_names(self, shape: Shape, outputs: dict) -> list:
+        """The body's face names; a body the build left as it was (the same shape, from the cache) keeps its names
+        without naming its faces again."""
+        key = hash(shape)
+        hit = self._names.get(key)
+        if hit is not None and hit[0] is shape:
+            self._names.move_to_end(key)
+            return hit[1]
+        names = attribute(shape, outputs)
+        self._names[key] = (shape, names)
+        while len(self._names) > 64:
+            self._names.popitem(last=False)
+        return names
 
     def _build_one(self, ctx: BuildContext, fi, fp: FeaturePlan, res: FeatureResult, own: list[Check]) -> None:
         if fp.error:
