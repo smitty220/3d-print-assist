@@ -168,5 +168,12 @@ def check_wall(rules: PrintRules, part: Shape) -> list[Finding]:
 
 
 def validate(build: BuildResult | None, rules: PrintRules, printer: PrinterProfile | None = None,
-             references: dict[str, Shape] | None = None) -> Report:
-    return Report([], check_part(build, rules, printer, references) if build is not None else [])
+             references: dict[str, Shape] | None = None, design=None) -> Report:
+    if build is None:
+        return Report([], [])
+    part = check_part(build, rules, printer, references)
+    if design is not None:
+        from .variants import check_filaments
+
+        part += check_filaments(design, list(build.parts), printer)
+    return Report([], part)

@@ -8,12 +8,13 @@ user.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import ValidationError
 
 from ..features.library import FEATURES
-from ..features.model import Body, Design, EdgePick, FeatureInstance
+from ..features.model import Body, Colorway, Design, EdgePick, FeatureInstance, Filament, Variant
 from ..params.expr import ExprError, is_literal, names
 from ..params.graph import resolve
 from ..params.model import Parameter
@@ -76,6 +77,30 @@ def _split_values(kind: str, values: dict[str, Any]) -> tuple[dict, dict]:
         else:
             lit[k] = v
     return lit, exprs
+
+
+BODY_PARAMS = ("into", "tool")  # text parameters that name a body
+HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _body_params(d: Design, kind: str, fid: str, lit: dict, adding: bool, name: str | None) -> None:
+    """Check the parameters that name a body; "new" (Split's default) makes a new body for the feature."""
+    for spec in FEATURES[kind].params:
+        if spec.name not in BODY_PARAMS:
+            continue
+        v = lit.get(spec.name, spec.default if adding else None)
+        if v == "new":
+            bid = d.next_body_id()
+            d.bodies.append(Body(id=bid, name=name or f"{FEATURES[kind].label} {fid}"))
+            lit[spec.name] = bid
+        elif v and d.body(v) is None:
+            raise OpError(f"{spec.name}: no body {v!r}; bodies are {', '.join(b.id for b in d.bodies)} (or \"new\")")
+
+
+def _color(v: Any) -> str:
+    if not isinstance(v, str) or not HEX.match(v):
+        raise OpError(f"colour {v!r} must be #rrggbb")
+    return v.lower()
 
 
 def _solve_sketch(d: Design, sk: Sketch) -> Sketch:
@@ -165,6 +190,7 @@ def _add_feature(d: Design, op: dict, actor: str):
     index = op.get("index", len(d.features) if d.rollback is None else d.rollback)
     refs = op.get("refs", {})
     _check_refs(d, refs, index)
+    _body_params(d, kind, fid, lit, True, op.get("new_body_name"))
     f = FeatureInstance(id=fid, kind=kind, params=lit, exprs=exprs, refs=refs, body=body,
                         faces=[FacePick.model_validate(x) for x in op.get("faces", [])],
                         locked=bool(op.get("locked", False)) and actor == USER)
@@ -179,6 +205,7 @@ def _edit_feature(d: Design, op: dict, actor: str):
     _guard(f, actor)
     if "params" in op or "exprs" in op:
         lit, exprs = _split_values(f.kind, {**op.get("params", {}), **op.get("exprs", {})})
+        _body_params(d, f.kind, f.id, lit, False, op.get("new_body_name"))
         for k in lit:
             f.exprs.pop(k, None)
         f.params = f.params | lit
@@ -286,20 +313,145 @@ def _delete_sketch(d: Design, op: dict, actor: str):
 # ---------------------------------------------------------------- bodies
 
 
+def _body(d: Design, bid: str) -> Body:
+    b = d.body(bid)
+    if b is None:
+        raise OpError(f"no body {bid!r}")
+    return b
+
+
 def _add_body(d: Design, op: dict, actor: str):
     bid = d.next_body_id()
-    d.bodies.append(Body(id=bid, name=op.get("name") or f"Body {bid[1:]}", color=op.get("color")))
+    d.bodies.append(Body(id=bid, name=op.get("name") or f"Body {bid[1:]}"))
+    _edit_body(d, {**op, "id": bid}, actor)
     return bid
 
 
 def _edit_body(d: Design, op: dict, actor: str):
-    b = d.body(op["id"])
-    if b is None:
-        raise OpError(f"no body {op['id']!r}")
+    b = _body(d, op["id"])
     if "name" in op:
-        b.name = op["name"]
+        b.name = str(op["name"]).strip() or b.name
     if "color" in op:
-        b.color = op["color"]
+        b.color = None if op["color"] is None else _color(op["color"])
+    if "filament" in op:
+        slot = op["filament"]
+        if slot is not None and d.filament(int(slot)) is None:
+            raise OpError(f"no filament in slot {slot}; the palette has {', '.join(str(f.slot) for f in d.filaments) or 'none'}")
+        b.filament = None if slot is None else int(slot)
+    return None
+
+
+def _delete_body(d: Design, op: dict, actor: str):
+    b = _body(d, op["id"])
+    if len(d.bodies) == 1:
+        raise OpError("a design keeps at least one body")
+    users = [f.id for f in d.features if f.body == b.id or any(f.params.get(k) == b.id for k in BODY_PARAMS)]
+    if users:
+        raise OpError(f"{b.id} is used by {', '.join(users)}; change or delete those first")
+    d.bodies.remove(b)
+    return None
+
+
+# ---------------------------------------------------------------- filaments, variants, colorways
+
+
+def _set_filament(d: Design, op: dict, actor: str):
+    """Add or change the palette's filament in a slot."""
+    slot = int(op["slot"])
+    if slot < 1:
+        raise OpError("slots are numbered from 1")
+    color = _color(op["color"]) if "color" in op else None
+    f = d.filament(slot)
+    if f is None:
+        f = Filament(slot=slot)
+        d.filaments.append(f)
+        d.filaments.sort(key=lambda x: x.slot)
+    for k in ("name", "material"):
+        if k in op:
+            setattr(f, k, str(op[k]))
+    if color:
+        f.color = color
+    if "nozzle" in op:
+        f.nozzle = int(op["nozzle"])
+    return str(slot)
+
+
+def _delete_filament(d: Design, op: dict, actor: str):
+    slot = int(op["slot"])
+    if d.filament(slot) is None:
+        raise OpError(f"no filament in slot {slot}")
+    d.filaments = [f for f in d.filaments if f.slot != slot]
+    for b in d.bodies:
+        if b.filament == slot:
+            b.filament = None
+    return None
+
+
+def _next(prefix: str, used: list[str]) -> str:
+    n = 1
+    while f"{prefix}{n}" in used:
+        n += 1
+    return f"{prefix}{n}"
+
+
+def _set_variant(d: Design, op: dict, actor: str):
+    """Add or change a variants-table row: a name and the parameter values that differ from the design's."""
+    overrides = None
+    if "overrides" in op:
+        overrides = {}
+        for name, expr in op["overrides"].items():
+            expr = str(expr).strip()
+            if expr == "":
+                continue
+            p = d.parameter(name)
+            if p is None:
+                raise OpError(f"no parameter {name!r} to vary")
+            if p.quantity != "text" and not is_literal(expr):
+                try:
+                    names(expr)
+                except ExprError as exc:
+                    raise OpError(f"{op.get('name', name)}, {name}: {exc}") from exc
+            overrides[name] = expr
+    vid = op.get("id") or _next("V", [v.id for v in d.variants])
+    v = d.variant(vid)
+    if v is None:
+        v = Variant(id=vid, name=op.get("name") or vid)
+        d.variants.append(v)
+    if "name" in op:
+        v.name = str(op["name"]).strip() or v.name
+    if overrides is not None:
+        v.overrides = overrides
+    return vid
+
+
+def _set_colorway(d: Design, op: dict, actor: str):
+    """Add or change a colorway: filament colours (and names) per palette slot."""
+    colors = {int(k): _color(v) for k, v in op["colors"].items() if v} if "colors" in op else None
+    cid = op.get("id") or _next("C", [c.id for c in d.colorways])
+    c = d.colorway(cid)
+    if c is None:
+        c = Colorway(id=cid, name=op.get("name") or cid)
+        d.colorways.append(c)
+    if "name" in op:
+        c.name = str(op["name"]).strip() or c.name
+    if colors is not None:
+        c.colors = colors
+    if "names" in op:
+        c.names = {int(k): str(v) for k, v in op["names"].items() if v}
+    return cid
+
+
+def _delete_variant(d: Design, op: dict, actor: str):
+    if d.variant(op["id"]) is None:
+        raise OpError(f"no variant {op['id']!r}")
+    d.variants = [v for v in d.variants if v.id != op["id"]]
+    return None
+
+
+def _delete_colorway(d: Design, op: dict, actor: str):
+    if d.colorway(op["id"]) is None:
+        raise OpError(f"no colorway {op['id']!r}")
+    d.colorways = [c for c in d.colorways if c.id != op["id"]]
     return None
 
 
@@ -308,6 +460,9 @@ _OPS = {
     "add_feature": _add_feature, "edit_feature": _edit_feature, "delete_feature": _delete_feature,
     "move_feature": _move_feature, "set_rollback": _set_rollback,
     "add_sketch": _add_sketch, "edit_sketch": _edit_sketch, "delete_sketch": _delete_sketch,
-    "add_body": _add_body, "edit_body": _edit_body,
+    "add_body": _add_body, "edit_body": _edit_body, "delete_body": _delete_body,
+    "set_filament": _set_filament, "delete_filament": _delete_filament,
+    "set_variant": _set_variant, "delete_variant": _delete_variant,
+    "set_colorway": _set_colorway, "delete_colorway": _delete_colorway,
 }
 OP_NAMES = list(_OPS)

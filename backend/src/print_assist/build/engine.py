@@ -164,7 +164,7 @@ class Engine:
             except (SketchSolveError, ValueError) as exc:
                 sketch_status[sid], sketch_errors[sid] = "fail", str(exc)
 
-        ctx = BuildContext(rules=rules, sketches=sketches, fonts_dir=fonts_dir)
+        ctx = BuildContext(rules=rules, sketches=sketches, fonts_dir=fonts_dir, body_ids=tuple(b.id for b in design.bodies))
         results: list[FeatureResult] = []
         checks: list[Check] = []
         failed: str | None = None

@@ -35,6 +35,7 @@ class BuildContext:
     edge_picks: list = field(default_factory=list)  # the feature being built's picked edges (EdgePick)
     face_picks: list = field(default_factory=list)  # the feature being built's picked faces (FacePick)
     fonts_dir: object = None  # the design's fonts folder, for fonts copied into the project
+    body_ids: tuple[str, ...] = ()  # the design's bodies, for features that put shapes into another body
 
     @property
     def part(self) -> Shape | None:
@@ -52,6 +53,16 @@ class BuildContext:
         if not fid or fid not in self.outputs:
             raise FeatureError(f"needs a {role.replace('_', ' ')} feature built before it; {fid or 'none'} not available")
         return self.outputs[fid], self.params[fid]
+
+    def other_body(self, bid: str, what: str = "it") -> str:
+        """Check `bid` names a body other than the one being built into, for a feature that puts `what` there."""
+        if not bid:
+            raise FeatureError(f"choose the body to put {what} in")
+        if self.body_ids and bid not in self.body_ids:
+            raise FeatureError(f"no body {bid!r}")
+        if bid == self.body:
+            raise FeatureError(f"{what} must go into a different body than {bid}")
+        return bid
 
     def sketch_ref(self, refs: dict[str, str], role: str = "sketch") -> "Sketch":
         sid = refs.get(role)

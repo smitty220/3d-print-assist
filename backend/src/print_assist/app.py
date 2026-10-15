@@ -333,7 +333,7 @@ def get_checks() -> dict:
     from .validate import validate
 
     w = ws()
-    return validate(w.last_good, w.project.data.rules, w.project.printer).to_dict() | {"stale": bool(w.pending())}
+    return validate(w.last_good, w.project.data.rules, w.project.printer, design=w.design).to_dict() | {"stale": bool(w.pending())}
 
 
 @app.get("/api/activity")
@@ -456,6 +456,11 @@ def edit_body(bid: str, body: dict[str, Any], x_actor: str = Header(USER)) -> di
     return _change([{"op": "edit_body", **body, "id": bid}], x_actor, f"Edit {bid}")
 
 
+@app.delete("/api/bodies/{bid}")
+def delete_body(bid: str, x_actor: str = Header(USER)) -> dict:
+    return _change([{"op": "delete_body", "id": bid}], x_actor, f"Delete {bid}")
+
+
 # ---------------------------------------------------------------- picking on the part
 
 
@@ -542,13 +547,70 @@ def export_design(fmt: str) -> FileResponse:
         raise HTTPException(409, f"Can't export: the model is not ready ({why})")
     good = w.last_good
     names = {b.id: b.name for b in w.design.bodies}
+    colors = {b.id: w.design.body_color(b) for b in w.design.bodies}
     path = w.project.root / "exports" / filename(w.project.data.name, fmt)
     try:
-        export(good.parts, names, w.project.printer, fmt, path, w.project.data.name)
+        export(good.parts, names, w.project.printer, fmt, path, w.project.data.name, colors)
     except ExportError as exc:
         raise HTTPException(422, str(exc)) from exc
     w.log(USER, f"Exported {path.name}")
     return FileResponse(path, filename=path.name, headers={"X-Saved-Path": str(path)})
+
+
+class BatchRow(BaseModel):
+    variant: str | None = None  # None: the design as it is
+    colorway: str | None = None  # None: the palette's colours
+
+
+class BatchIn(BaseModel):
+    fmt: Literal["3mf", "stl", "step"] = "3mf"
+    rows: list[BatchRow] = []  # empty: every variant (or the design) in every colorway (or the palette)
+
+
+@app.post("/api/export/batch")
+def export_batch(body: BatchIn) -> Response:
+    """Several variants and colorways in one zip (each file is also saved in exports/<design>/). Each variant is built
+    first; a variant that does not build stops the batch and says which."""
+    import io
+    import zipfile
+
+    from .export import ExportError, export, filename
+    from .variants import with_colorway
+
+    w = ws()
+    d = w.design
+    rows = body.rows or [BatchRow(variant=v, colorway=c) for v in ([x.id for x in d.variants] or [None])
+                         for c in ([x.id for x in d.colorways] or [None])]
+    for r in rows:
+        if r.variant and d.variant(r.variant) is None:
+            raise HTTPException(422, f"No variant {r.variant!r}")
+        if r.colorway and d.colorway(r.colorway) is None:
+            raise HTTPException(422, f"No colorway {r.colorway!r}")
+    folder = w.project.root / "exports" / filename(w.project.data.name, "d")[:-2]
+    buf = io.BytesIO()
+    built: dict[str | None, tuple] = {}
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for r in rows:
+            if r.variant not in built:
+                built[r.variant] = w.build_variant(r.variant)
+            vd, result = built[r.variant]
+            vname = d.variant(r.variant).name if r.variant else ""
+            if not result.complete:
+                bad = next(f for f in result.features if f.status == "fail")
+                raise HTTPException(422, f"{vname or 'The design'} does not build: {bad.id}: {bad.error}")
+            cd = with_colorway(vd, d.colorway(r.colorway) if r.colorway else None)
+            label = " ".join(x for x in (w.project.data.name, vname, d.colorway(r.colorway).name if r.colorway else "") if x)
+            path = folder / filename(label, body.fmt)
+            try:
+                export(result.parts, {b.id: b.name for b in cd.bodies}, w.project.printer, body.fmt, path, label,
+                       {b.id: cd.body_color(b) for b in cd.bodies})
+            except ExportError as exc:
+                raise HTTPException(422, f"{label}: {exc}") from exc
+            z.write(path, path.name)
+    w.log(USER, f"Exported {len(rows)} file(s) to exports/{folder.name}")
+    name = filename(w.project.data.name, "zip")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Saved-Path": str(folder)})
 
 
 @app.get("/api/render")

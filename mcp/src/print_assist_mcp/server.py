@@ -161,6 +161,20 @@ def export(format: str = "3mf") -> str:
 
 
 @mcp.tool()
+def export_batch(format: str = "3mf", rows: list[dict[str, str | None]] | None = None) -> str:
+    """Export several variants and colorways at once (each variant is built first). rows: [{"variant": "V1",
+    "colorway": "C2"}, ...]; a missing key means the design as it is / the palette's colours. No rows: every variant in
+    every colorway. Returns the folder the files were saved in and their names."""
+    import io
+    import zipfile
+
+    r = _call("POST", "/api/export/batch", json={"fmt": format, "rows": rows or []})
+    if isinstance(r, dict):
+        return _text(r)
+    return _text({"saved": r.headers.get("x-saved-path"), "files": zipfile.ZipFile(io.BytesIO(r.content)).namelist()})
+
+
+@mcp.tool()
 def save_design(message: str = "") -> str:
     """Save the design to disk and record a version with an optional message. Only save when the user asks you to;
     otherwise leave your changes unsaved for them to review (the app shows they are unsaved)."""

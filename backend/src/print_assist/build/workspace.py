@@ -69,7 +69,7 @@ class Workspace:
         self.built_hashes: dict[str, str] = {}
         self.built_params: dict = {}
         self.activity: list[Activity] = []
-        self._mesh: tuple[int, dict] | None = None
+        self._mesh: tuple[int, dict[str, dict]] | None = None
         self.working: Design = project.data.design.model_copy(deep=True)
         self.saved_json = self.working.model_dump_json()
         self.undo_stack: list[Step] = []
@@ -228,6 +228,21 @@ class Workspace:
                 self.last_good = result
             return result
 
+    def build_variant(self, variant: str | None) -> tuple[Design, BuildResult]:
+        """Build the design with a variant's parameter values (None: as it is), reusing the engine's cache."""
+        from ..variants import with_variant
+
+        with self.lock:
+            d = self.design
+            v = None
+            if variant:
+                v = d.variant(variant)
+                if v is None:
+                    raise ValueError(f"no variant {variant!r}")
+            vd = with_variant(d, v)
+            result = self.engine.build(vd, self.project.data.rules, fonts_dir=self.project.root / "fonts")
+            return vd, result
+
     def pending(self) -> list[str]:
         """Ids of the sketches and features whose inputs changed since the last update."""
         p = plan(self.design, self.project.data.rules)
@@ -252,7 +267,7 @@ class Workspace:
             good = self.last_good
             bodies = []
             if good is not None:
-                colors = {b.id: b.color for b in self.design.bodies}
+                colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
                 bodies = [(shape, colors.get(bid)) for bid, shape in good.parts.items()]
         return render(bodies, view, size)
 
@@ -331,7 +346,9 @@ class Workspace:
             for b in d.bodies:
                 mine = [f for f in features if f["body"] == b.id]
                 worst = max((f["status"] for f in mine), key=lambda s: rank.get(s, 0), default="ok")
-                bodies.append({"id": b.id, "name": b.name, "color": b.color, "status": worst, "features": [f["id"] for f in mine]})
+                fed = [f["id"] for f in features if b.id in (f["params"].get("into"), f["params"].get("tool")) and f["body"] != b.id]
+                bodies.append({"id": b.id, "name": b.name, "color": d.body_color(b), "own_color": b.color,
+                               "filament": b.filament, "status": worst, "features": [f["id"] for f in mine], "fed_by": fed})
 
             pending = [k for k in hashes if k in stale]
             failed = bool(self.last and not self.last.complete)
@@ -343,29 +360,29 @@ class Workspace:
                 "pending": pending, "pending_count": len(pending), "stale": bool(pending), "failed": failed,
                 "exportable": not pending and not failed and self.last_good is not None,
                 "rollback": d.rollback, "params": params, "features": features, "sketches": sketches, "bodies": bodies,
-                "errors": r.errors,
+                "errors": r.errors, "filaments": [f.model_dump() for f in d.filaments],
+                "variants": [v.model_dump() for v in d.variants], "colorways": [c.model_dump() for c in d.colorways],
             }
 
     def part(self) -> dict:
-        """The last good part, one mesh per body, cached until the next good update."""
+        """The last good part, one mesh per body (meshes cached until the next good update; names and colours current)."""
         with self.lock:
             good = self.last_good
-            key = id(good)
-            if self._mesh is None or self._mesh[0] != key:
-                bodies = []
-                if good is not None:
-                    for b in self.design.bodies:
-                        shape = good.parts.get(b.id)
-                        if shape is None:
-                            continue
-                        m = mesh_shape(shape, b.id).to_dict()
-                        m["face_names"] = good.body_names.get(b.id, [])
-                        bodies.append({"id": b.id, "name": b.name, "color": b.color, "mesh": m})
-                self._mesh = (key, {"bodies": bodies, "volume": good.volume if good else 0.0,
-                                    "mass": good.mass if good else 0.0})
+            if self._mesh is None or self._mesh[0] != id(good):
+                meshes = {}
+                for bid, shape in (good.parts if good else {}).items():
+                    m = mesh_shape(shape, bid).to_dict()
+                    m["face_names"] = good.body_names.get(bid, [])
+                    meshes[bid] = m
+                self._mesh = (id(good), meshes)
+            meshes = self._mesh[1]
+            d = self.design
+            bodies = [{"id": b.id, "name": b.name, "color": d.body_color(b), "mesh": meshes[b.id]}
+                      for b in d.bodies if b.id in meshes]
             pending = self.pending()
-            return self._mesh[1] | {"rev": self.rev, "built_rev": self.built_rev, "stale": bool(pending),
-                                    "failed": bool(self.last and not self.last.complete)}
+            return {"bodies": bodies, "volume": good.volume if good else 0.0, "mass": good.mass if good else 0.0,
+                    "rev": self.rev, "built_rev": self.built_rev, "stale": bool(pending),
+                    "failed": bool(self.last and not self.last.complete)}
 
 
 def _literal(expr: str) -> bool:

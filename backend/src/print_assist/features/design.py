@@ -231,7 +231,7 @@ def build_design(design: Design, rules: PrintRules | None = None,
 
 
 def apply_output(ctx: BuildContext, out: FeatureOutput) -> None:
-    """Fuse, cut or replace a feature's output into its body."""
+    """Fuse, cut or replace a feature's output into its body, and set the other bodies it gives new shapes."""
     part = ctx.part
     if out.op == "add":
         part = out.shape if part is None else part + out.shape
@@ -239,9 +239,17 @@ def apply_output(ctx: BuildContext, out: FeatureOutput) -> None:
         if part is None:
             raise FeatureError("nothing to cut from yet")
         part = part - out.shape
-    else:
+    elif out.op == "replace":
         part = out.shape
-        # The faces no earlier tool explains are the ones this operation created: blends, a shell's inside.
-        prior = attribute(part, ctx.outputs, fallback=False)
-        out.named[out.new_role] = [f for f, n in zip(part.faces(), prior) if n is None]
+    if out.op == "replace" or out.bodies:
+        # The faces no earlier tool explains are the ones this operation created: blends, a shell's inside, a split's cut.
+        made = out.named.setdefault(out.new_role, [])
+        for shape in ([part] if out.op == "replace" and part is not None else []) + [s for s in out.bodies.values() if s is not None]:
+            prior = attribute(shape, ctx.outputs, fallback=False)
+            made += [f for f, n in zip(shape.faces(), prior) if n is None]
     ctx.part = part
+    for bid, shape in out.bodies.items():
+        if shape is None:
+            ctx.parts.pop(bid, None)
+        else:
+            ctx.parts[bid] = shape

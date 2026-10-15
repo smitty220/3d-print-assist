@@ -48,7 +48,35 @@ class FeatureInstance(BaseModel):
 class Body(BaseModel):
     id: str
     name: str = "Body"
-    color: str | None = None  # "#rrggbb"; used for filament assignment (M2)
+    color: str | None = None  # "#rrggbb", shown when no filament is assigned
+    filament: int | None = None  # the palette slot it prints in
+
+
+class Filament(BaseModel):
+    """One filament in the design's palette, numbered like the printer's slots (AMS slot 1 to 4 on an A1 + AMS lite)."""
+
+    slot: int = Field(ge=1)
+    name: str = ""
+    color: str = "#d0d0d0"  # "#rrggbb"
+    material: str = "PLA"
+    nozzle: int = Field(default=0, ge=0)  # which nozzle it feeds, on a dual-nozzle printer
+
+
+class Variant(BaseModel):
+    """A row of the variants table: parameter values that differ from the design's ("cards": "60")."""
+
+    id: str
+    name: str
+    overrides: dict[str, str] = Field(default_factory=dict)  # parameter -> formula or value
+
+
+class Colorway(BaseModel):
+    """A set of filament colours for the palette's slots; the slots it leaves out keep the palette's colour."""
+
+    id: str
+    name: str
+    colors: dict[int, str] = Field(default_factory=dict)  # slot -> "#rrggbb"
+    names: dict[int, str] = Field(default_factory=dict)  # slot -> filament name ("Galaxy Black")
 
 
 def _default_bodies() -> list[Body]:
@@ -61,6 +89,23 @@ class Design(BaseModel):
     features: list[FeatureInstance] = Field(default_factory=list)
     rollback: int | None = None  # features[rollback:] are past the end-of-part bar and not built
     sketches: list[Sketch] = Field(default_factory=list)  # consumed by pad / sketch_pocket features
+    filaments: list[Filament] = Field(default_factory=list)
+    variants: list[Variant] = Field(default_factory=list)
+    colorways: list[Colorway] = Field(default_factory=list)
+
+    def filament(self, slot: int | None) -> Filament | None:
+        return next((f for f in self.filaments if f.slot == slot), None)
+
+    def body_color(self, b: Body) -> str | None:
+        """What a body is shown in: its filament's colour, else its own."""
+        f = self.filament(b.filament)
+        return f.color if f else b.color
+
+    def variant(self, vid: str) -> Variant | None:
+        return next((v for v in self.variants if v.id == vid), None)
+
+    def colorway(self, cid: str) -> Colorway | None:
+        return next((c for c in self.colorways if c.id == cid), None)
 
     def sketch(self, sid: str) -> Sketch | None:
         return next((s for s in self.sketches if s.id == sid), None)
@@ -135,9 +180,10 @@ class Check:
 class FeatureOutput:
     """What a feature contributes: a tool solid fused into or cut from the part, or a modified part."""
 
-    op: Literal["add", "subtract", "replace"]
-    shape: Shape
+    op: Literal["add", "subtract", "replace", "none"]  # "none": the feature's own body is left as it is
+    shape: Shape | None
     named: dict[str, list[Face]] = field(default_factory=dict)  # role -> faces of the tool, for attribution
     driven: dict[str, float | str] = field(default_factory=dict)  # values taken from elsewhere, shown read-only
     info: dict[str, float] = field(default_factory=dict)  # numbers the rule checks use
     new_role: str = "blend"  # a "replace" op: the name given to the faces it created (a shell's are "inner")
+    bodies: dict[str, Shape | None] = field(default_factory=dict)  # other bodies' new shapes (None removes one)

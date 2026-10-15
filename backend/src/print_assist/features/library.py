@@ -11,10 +11,10 @@ from typing import ClassVar
 
 import math
 
-from build123d import (Align, Axis, Box, Face, GeomType, Kind, Location, Plane, Pos, Shape, Solid, Text, TextAlign,
-                       Vector, Wire, extrude, offset, revolve)
+from build123d import (Align, Axis, Box, Face, GeomType, Keep, Kind, Location, Plane, Pos, Shape, Solid, Text,
+                       TextAlign, Vector, Wire, extrude, offset, revolve)
 
-from .context import BuildContext, FeatureError
+from .context import BASE_PLANES, BuildContext, FeatureError
 from .model import Check, FeatureOutput, ParamSpec, RefSpec
 
 P = ParamSpec
@@ -483,9 +483,10 @@ class TextFeature(Feature):
     kind = "text"
     label = "Text"
     group = "Create"
-    summary = ("Text on a picked face (flat or curved: it wraps), raised (emboss), sunk (deboss) or cut through, in any "
-               "bundled or design font. With no face picked it stands on the bed as its own solid. The content can come "
-               "from a text parameter.")
+    summary = ("Text on a picked face (flat or curved: it wraps), raised (emboss), sunk (deboss), cut through, or inlaid "
+               "(sunk, and the letters filled flush as their own body, for a second colour), in any bundled or design "
+               "font. With no face picked it stands on the bed as its own solid. The content can come from a text "
+               "parameter.")
     params = (
         P("content", "Text", "text", "TEXT"),
         P("font", "Font", "text", "Bebas Neue"),
@@ -494,8 +495,10 @@ class TextFeature(Feature):
         P("bold", "Bold", "bool", False),
         P("italic", "Italic", "bool", False),
         P("align", "Align", "choice", "center", choices=("left", "center", "right")),
-        P("mode", "Type", "choice", "emboss", choices=("emboss", "deboss", "cut_through")),
+        P("mode", "Type", "choice", "emboss", choices=("emboss", "deboss", "cut_through", "inlay")),
         P("depth", "Depth", "length", 0.6, 0.05, 50.0, help="how far it stands out or sinks in"),
+        P("into", "Text body", "text", "", help="put the letters in this body, for a second colour (inlay needs one): "
+          "raised letters stand on the face, inlaid ones fill a pocket flush with it"),
         P("rotation", "Rotation", "angle", 0.0, -360.0, 360.0),
         P("offset_u", "Move across", "length", 0.0, -2000.0, 2000.0),
         P("offset_v", "Move up", "length", 0.0, -2000.0, 2000.0),
@@ -510,11 +513,19 @@ class TextFeature(Feature):
             raise FeatureError(f"no font {p['font']!r}; fonts: {', '.join(sorted(fams))}")
         glyphs = _glyphs(p, fam.file(p["bold"], p["italic"]))
         mode, depth = p["mode"], p["depth"]
+        into = p["into"]
+        if into:
+            if mode not in ("emboss", "inlay"):
+                raise FeatureError("only raised or inlaid letters can go in their own body")
+            ctx.other_body(into, "the letters")
+        elif mode == "inlay":
+            raise FeatureError("an inlay puts the letters in their own body; choose it (or a new body)")
+        info = _text_info(p, glyphs)
         if not ctx.face_picks:
             if mode != "emboss":
-                raise FeatureError("pick a face to sink or cut the text into")
+                raise FeatureError("pick a face to sink, inlay or cut the text into")
             tool = extrude(glyphs, amount=depth) if len(glyphs) > 1 else extrude(glyphs[0], amount=depth)
-            return FeatureOutput("add", tool, named={"text": list(tool.faces())}, info=_text_info(p, glyphs))
+            return self._output(ctx, mode, into, tool, tool, info)
         (face,) = ctx.picked_faces(ctx.face_picks[:1])
         pick = ctx.face_picks[0]
         at = face.closest_point(Vector(*pick.at)) if hasattr(face, "closest_point") else Vector(*pick.at)
@@ -524,21 +535,28 @@ class TextFeature(Feature):
         if face.geom_type == GeomType.PLANE:
             placed = [plane.location * g for g in glyphs]
             if mode == "emboss":
-                solids = [extrude(f, amount=depth, dir=n) for f in placed]
-            else:
-                solids = [extrude(f.translate(n * 0.01), amount=far + 0.01, dir=-n) for f in placed]
+                letters = cutters = [extrude(f, amount=depth, dir=n) for f in placed]
+            else:  # the cutter starts just outside the face so the boolean has no coincident faces
+                cutters = [extrude(f.translate(n * 0.01), amount=far + 0.01, dir=-n) for f in placed]
+                letters = [extrude(f, amount=depth, dir=-n) for f in placed] if mode == "inlay" else cutters
         else:
             try:
                 wrapped = [face.wrap(g, Location(plane)) for g in glyphs]
-                solids = [Solid.thicken(w, depth if mode == "emboss" else -far) for w in wrapped]
+                letters = cutters = [Solid.thicken(w, depth if mode == "emboss" else -far) for w in wrapped]
             except Exception as exc:  # noqa: BLE001 - the kernel's wrap fails on some surfaces
                 raise FeatureError(f"could not wrap the text onto that face ({exc}); try a flatter face or a smaller size") from exc
-        tool = solids[0]
-        for s_ in solids[1:]:
-            tool = tool + s_
-        named = {"text": list(tool.faces())}
-        info = _text_info(p, glyphs)
-        return FeatureOutput("add" if mode == "emboss" else "subtract", tool, named=named, info=info)
+        return self._output(ctx, mode, into, _fuse(letters), _fuse(cutters), info)
+
+    @staticmethod
+    def _output(ctx, mode: str, into: str, letters: Shape, cutter: Shape, info: dict) -> FeatureOutput:
+        named = {"text": list(letters.faces())}
+        if not into:
+            return FeatureOutput("add" if mode == "emboss" else "subtract", cutter, named=named, info=info, new_role="text")
+        held = ctx.parts.get(into)
+        bodies = {into: letters if held is None else held + letters}
+        if mode == "inlay":
+            return FeatureOutput("subtract", cutter, named=named, info=info, bodies=bodies, new_role="text")
+        return FeatureOutput("none", None, named=named, info=info, bodies=bodies, new_role="text")
 
     def checks(self, ctx, fid, p, out):
         r = ctx.rules
@@ -567,6 +585,80 @@ def _text_info(p: dict, glyphs: list[Face]) -> dict[str, float]:
         except FeatureError:
             thin += 1
     return {"height": height, "thin_glyphs": float(thin), "glyphs": float(len(glyphs))}
+
+
+def _fuse(shapes: list[Shape]) -> Shape:
+    out = shapes[0]
+    for s_ in shapes[1:]:
+        out = out + s_
+    return out
+
+
+# ---------------------------------------------------------------- bodies
+
+
+class Split(Feature):
+    kind = "split"
+    label = "Split"
+    group = "Bodies"
+    summary = ("Cut the body in two along a plane (a base plane moved by an offset, or a picked flat face): one side stays, "
+               "the other goes into another body, to print in another colour (a vase's rim band: split at the band's "
+               "height). Split again for a band in the middle. The cut faces are named cut.")
+    params = (
+        P("plane", "Plane", "choice", "XY", choices=("XY", "XZ", "YZ"), help="ignored when a face is picked"),
+        P("offset", "Offset", "length", 10.0, -2000.0, 2000.0, help="along the plane's normal (Z for XY)"),
+        P("keep", "Keep", "choice", "below", choices=("below", "above"),
+          help="the side that stays in this body; above is the side the normal points to"),
+        P("into", "Other side to", "text", "new", help="the body the other side goes into"),
+    )
+
+    def build(self, ctx, p, refs):
+        if ctx.part is None:
+            raise FeatureError("nothing to split yet")
+        into = ctx.other_body(p["into"], "the other side")
+        if ctx.face_picks:
+            (face,) = ctx.picked_faces(ctx.face_picks[:1])
+            if face.geom_type != GeomType.PLANE:
+                raise FeatureError("split along a flat face")
+            n = face.normal_at()
+            plane = Plane(origin=face.center(), z_dir=n).offset(p["offset"])
+        else:
+            plane = BASE_PLANES[p["plane"]].offset(p["offset"])
+        below = ctx.part.split(plane, keep=Keep.BOTTOM)
+        above = ctx.part.split(plane, keep=Keep.TOP)
+        stay, go = (below, above) if p["keep"] == "below" else (above, below)
+        vol = ctx.part.volume
+        if stay is None or go is None or min(stay.volume, go.volume) < 1e-6 * max(vol, 1.0):
+            raise FeatureError("the plane misses the body; move it so it cuts through")
+        held = ctx.parts.get(into)
+        return FeatureOutput("replace", stay, bodies={into: go if held is None else held + go}, new_role="cut",
+                             info={"stay": stay.volume, "go": go.volume})
+
+
+class Combine(Feature):
+    kind = "combine"
+    label = "Combine"
+    group = "Bodies"
+    summary = ("Join another body into this one, cut it out of this one, or keep only where they overlap. The other body "
+               "is used up unless kept.")
+    params = (
+        P("op", "Operation", "choice", "add", choices=OPS),
+        P("tool", "With body", "text", "", help="the body to join, cut or intersect with"),
+        P("keep_tool", "Keep that body", "bool", False),
+    )
+
+    def build(self, ctx, p, refs):
+        if ctx.part is None:
+            raise FeatureError("this body has nothing in it yet")
+        tool = ctx.other_body(p["tool"], "the other body")
+        other = ctx.parts.get(tool)
+        if other is None:
+            raise FeatureError(f"{tool} has nothing in it at this point of the tree")
+        op = p["op"]
+        result = ctx.part + other if op == "add" else ctx.part - other if op == "cut" else ctx.part & other
+        if result is None or result.volume < 1e-9:
+            raise FeatureError("nothing is left; the bodies do not overlap" if op == "intersect" else "nothing is left")
+        return FeatureOutput("replace", result, bodies={} if p["keep_tool"] else {tool: None}, new_role="combined")
 
 
 # ---------------------------------------------------------------- modify
@@ -672,7 +764,8 @@ class Chamfer(_EdgeOp):
 
 FEATURES: dict[str, Feature] = {
     cls.kind: cls()
-    for cls in (Extrude, Revolve, TextFeature, Shell, Fillet, Chamfer, Plate, ProfilePlate, ProfileCut, Pad, SketchPocket)
+    for cls in (Extrude, Revolve, TextFeature, Shell, Fillet, Chamfer, Split, Combine, Plate, ProfilePlate, ProfileCut, Pad,
+                SketchPocket)
 }
 
 

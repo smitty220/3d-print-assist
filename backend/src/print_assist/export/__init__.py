@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from build123d import Compound, Location, Mesher, Shape, Unit, export_step, export_stl
+from build123d import Color, Compound, Location, Mesher, Shape, Unit, export_step, export_stl
 
 from ..printers import PrinterProfile
 
@@ -38,7 +38,8 @@ def filename(name: str, fmt: str) -> str:
 
 
 def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfile, fmt: str, path: Path,
-           title: str = "") -> Path:
+           title: str = "", colors: dict[str, str | None] | None = None) -> Path:
+    """Write the bodies to `path`. A 3MF has one object per body, named and coloured (`colors`: body -> "#rrggbb")."""
     if fmt not in FORMATS:
         raise ExportError(f"unknown format {fmt!r}; formats: {', '.join(FORMATS)}")
     if not parts:
@@ -50,6 +51,8 @@ def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfi
         m = Mesher(unit=Unit.MM)
         for bid, shape in zip(ids, shapes):
             shape.label = names.get(bid, bid)
+            if (colors or {}).get(bid):
+                shape.color = Color(colors[bid])
             m.add_shape(shape, linear_deflection=LINEAR, angular_deflection=ANGULAR)
         m.add_meta_data("", "Title", title or "3D Print Assist design", "xs:string", False)
         m.add_meta_data("", "Application", "3D Print Assist", "xs:string", False)
