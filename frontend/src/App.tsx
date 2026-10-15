@@ -2,11 +2,13 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type FeatureSpec, type FontInfo, type PartState, type Printer, type Project, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type PartState, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { FeatureDialog, ParamDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
+import type { FileAction } from './layout/FileMenu'
 import { Header, type Mode } from './layout/Header'
+import { ConfirmModal, DesignGrid, HistoryModal, NameModal, OpenModal, UnsavedModal } from './ui/Modals'
 import { PartToolbar } from './layout/Toolbar'
 import type { Tool } from './layout/tools'
 import { SketchEditor } from './sketch/SketchEditor'
@@ -16,12 +18,21 @@ import { ViewportPane } from './viewport/ViewportPane'
 import type { FacePick as ViewPick } from './viewer/Viewer'
 
 type Dialog = { type: 'feature'; id: string } | { type: 'param'; name: string | null } | null
+type NamePurpose = 'new' | 'save-as' | 'rename' | 'save-version'
+type FileModal =
+  | { type: 'name'; purpose: NamePurpose }
+  | { type: 'unsaved'; then: () => void }
+  | { type: 'open' } | { type: 'history' } | { type: 'revert' }
+  | { type: 'delete'; design: { slug: string; name: string } }
+  | null
 const SKETCH_KINDS = new Set(['extrude', 'revolve'])
 const PICKS_AFTER_ADD: Record<string, 'faces' | 'edges'> = { shell: 'faces', text: 'faces', fillet: 'edges', chamfer: 'edges' }
 
 export default function App() {
   const [project, setProject] = useState<Project | null>(null)
-  const [designs, setDesigns] = useState<{ slug: string; name: string }[]>([])
+  const [designs, setDesigns] = useState<DesignInfo[] | null>(null)
+  const [file, setFile] = useState<FileState | null>(null)
+  const [fileModal, setFileModal] = useState<FileModal>(null)
   const [tree, setTree] = useState<Tree | null>(null)
   const [part, setPart] = useState<PartState | null>(null)
   const [catalog, setCatalog] = useState<FeatureSpec[]>([])
@@ -54,9 +65,17 @@ export default function App() {
   }, [])
 
   const loadAll = useCallback(async () => {
-    const [p, d, c, f, pr, t, pt, ch, a, act] = await Promise.all([api.project(), api.projects(), api.catalog(), api.fonts(), api.printers(),
+    const fs = await api.file()
+    setFile(fs)
+    if (!fs.open) {
+      setTree(null); setPart(null); setProject(null)
+      setDesigns(await api.projects())
+      seen.current = { slug: '', rev: -1, built: -1, activity: -1 }
+      return
+    }
+    const [p, c, f, pr, t, pt, ch, a, act] = await Promise.all([api.project(), api.catalog(), api.fonts(), api.printers(),
       api.tree(), api.part(), api.checks(), api.aiStatus(), api.activity()])
-    setProject(p); setDesigns(d); setCatalog(c); setFonts(f); setPrinters(pr); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
+    setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
     seen.current = { slug: p.slug, rev: t.rev, built: t.built_rev, activity: act.length }
   }, [])
 
@@ -66,16 +85,20 @@ export default function App() {
   useEffect(() => {
     const es = new EventSource('/api/events')
     es.onmessage = (ev) => {
-      const s = JSON.parse(ev.data) as { slug: string; rev: number; built_rev: number; activity: number }
+      const s = JSON.parse(ev.data) as { slug: string | null; rev: number; built_rev: number; activity: number }
       const k = seen.current
-      if (k.slug && s.slug !== k.slug) { run(loadAll); return }
-      if (s.rev !== k.rev || s.built_rev !== k.built) api.tree().then(setTree).catch(() => {})
+      if ((k.slug || s.slug) && (s.slug ?? '') !== k.slug) { run(loadAll); return }
+      if (!s.slug) return
+      if (s.rev !== k.rev || s.built_rev !== k.built) {
+        api.tree().then(setTree).catch(() => {})
+        api.file().then(setFile).catch(() => {})
+      }
       if (s.built_rev !== k.built) {
         api.part().then(setPart).catch(() => {})
         api.checks().then(setChecks).catch(() => {})
       }
       if (s.activity !== k.activity) api.activity().then(setActivity).catch(() => {})
-      seen.current = { slug: s.slug, rev: s.rev, built: s.built_rev, activity: s.activity }
+      seen.current = { slug: s.slug ?? '', rev: s.rev, built: s.built_rev, activity: s.activity }
     }
     return () => es.close()
   }, [run, loadAll])
@@ -87,7 +110,44 @@ export default function App() {
     return () => clearInterval(t)
   }, [ai?.chat.running])
 
-  const changed = (r?: { tree: Tree }) => { if (r) setTree(r.tree) }
+  const refreshFile = () => api.file().then(setFile).catch(() => {})
+  const changed = (r?: { tree: Tree }) => { if (r) { setTree(r.tree); refreshFile() } }
+
+  // ---------- File menu ----------
+
+  /** Run `fn` once unsaved changes are dealt with (Save / Don't save / Cancel). */
+  const guard = (fn: () => void) => (file?.dirty ? setFileModal({ type: 'unsaved', then: fn }) : fn())
+  const reopen = async () => {
+    setSelected(null); setDialog(null); setMode('part'); setSketchId(null); setPicking(null)
+    await run(loadAll)
+  }
+  const doSave = (message = '') => run(() => api.save(message)).then((f) => { if (f) setFile(f) })
+
+  function onFile(a: FileAction) {
+    if (a === 'new') guard(() => setFileModal({ type: 'name', purpose: 'new' }))
+    else if (a === 'open') guard(() => setFileModal({ type: 'open' }))
+    else if (a === 'save') doSave()
+    else if (a === 'save-version') setFileModal({ type: 'name', purpose: 'save-version' })
+    else if (a === 'save-as') setFileModal({ type: 'name', purpose: 'save-as' })
+    else if (a === 'rename') setFileModal({ type: 'name', purpose: 'rename' })
+    else if (a === 'revert') setFileModal({ type: 'revert' })
+    else if (a === 'history') setFileModal({ type: 'history' })
+    else if (a === 'close') guard(() => { run(api.close).then(reopen) })
+    else if (a === 'delete' && file?.slug) setFileModal({ type: 'delete', design: { slug: file.slug, name: file.name ?? file.slug } })
+    else if (a === 'export') setMode('export')
+    else if (a === 'reveal') run(api.reveal)
+  }
+
+  async function onName(purpose: NamePurpose, name: string) {
+    setFileModal(null)
+    if (purpose === 'new') { if (await run(() => api.createProject(name))) await reopen() }
+    else if (purpose === 'save-as') { if (await run(() => api.saveAs(name))) await reopen() }
+    else if (purpose === 'rename') { const f = await run(() => api.rename(name)); if (f) { setFile(f); api.tree().then(setTree) } }
+    else await doSave(name)
+  }
+
+  const undo = () => run(api.undo).then(changed)
+  const redo = () => run(api.redo).then(changed)
 
   const update = useCallback(() => {
     setUpdating(true)
@@ -95,10 +155,26 @@ export default function App() {
   }, [run])
 
   useEffect(() => {
-    const key = (e: KeyboardEvent) => { if (e.key.toLowerCase() === 'b' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); update() } }
+    const key = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !file?.open) return
+      const k = e.key.toLowerCase()
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)
+      if (k === 'b') { e.preventDefault(); update() }
+      else if (k === 's') { e.preventDefault(); onFile(e.shiftKey ? 'save-as' : 'save') }
+      else if (k === 'o') { e.preventDefault(); onFile('open') }
+      else if (k === 'z' && !typing && mode !== 'sketch') { e.preventDefault(); if (e.shiftKey) redo(); else undo() }
+    }
     window.addEventListener('keydown', key)
     return () => window.removeEventListener('keydown', key)
-  }, [update])
+  })
+
+  // Closing the browser tab with unsaved changes asks first (the recovery copy is kept either way).
+  useEffect(() => {
+    if (!file?.dirty) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [file?.dirty])
 
   // ---------- tools ----------
 
@@ -178,8 +254,6 @@ export default function App() {
     setPicking(null)
   }
 
-  const reopen = () => { setSelected(null); setDialog(null); setMode('part'); setSketchId(null); return run(loadAll) }
-
   const feature = dialog?.type === 'feature' ? tree?.features.find((f) => f.id === dialog.id) : undefined
   const spec = feature ? catalog.find((c) => c.kind === feature.kind) : undefined
   const param = dialog?.type === 'param' && dialog.name ? tree?.params.find((p) => p.name === dialog.name) ?? null : null
@@ -187,17 +261,66 @@ export default function App() {
   const failedAt = tree?.failed ? tree.features.find((f) => f.status === 'fail') : undefined
   const context = selected ? selected.replace(':', ' ') : null
 
-  if (!tree) return <div className="loading">{error ? `Cannot reach the app's backend: ${error}. Is ./dev.sh running?` : 'Loading…'}</div>
+  const NAMES: Record<NamePurpose, { title: string; label: string; initial: string; ok: string }> = {
+    new: { title: 'New design', label: 'Name', initial: 'Untitled', ok: 'Create' },
+    'save-as': { title: 'Save as', label: 'New name', initial: `${file?.name ?? ''} copy`, ok: 'Save' },
+    rename: { title: 'Rename design', label: 'Name', initial: file?.name ?? '', ok: 'Rename' },
+    'save-version': { title: 'Save version', label: 'What changed (shown in Saved versions)', initial: '', ok: 'Save' },
+  }
+  const modals = (
+    <>
+      {fileModal?.type === 'name' && (
+        <NameModal key={fileModal.purpose} {...NAMES[fileModal.purpose]} onClose={() => setFileModal(null)} onOk={(v) => onName(fileModal.purpose, v)} />
+      )}
+      {fileModal?.type === 'unsaved' && (
+        <UnsavedModal name={file?.name ?? 'this design'} onClose={() => setFileModal(null)}
+          onSave={() => { const then = fileModal.then; setFileModal(null); doSave().then(then) }}
+          onDiscard={() => { const then = fileModal.then; setFileModal(null); run(() => api.recover(false)).then(then) }} />
+      )}
+      {fileModal?.type === 'open' && (
+        <OpenModal current={file?.slug ?? null} onClose={() => setFileModal(null)}
+          onOpen={(slug) => { setFileModal(null); run(() => api.openProject(slug)).then(reopen) }}
+          onDelete={(d) => setFileModal({ type: 'delete', design: d })} />
+      )}
+      {fileModal?.type === 'history' && (
+        <HistoryModal onClose={() => setFileModal(null)}
+          onRestore={(v) => { setFileModal(null); run(() => api.restoreVersion(v.id)).then(changed) }} />
+      )}
+      {fileModal?.type === 'revert' && (
+        <ConfirmModal title="Revert to saved" text="Throw away the changes since the last save? (Undo can bring them back.)" ok="Revert"
+          onClose={() => setFileModal(null)} onOk={() => { setFileModal(null); run(api.revert).then(() => { refreshFile(); api.tree().then(setTree) }) }} />
+      )}
+      {fileModal?.type === 'delete' && (
+        <ConfirmModal title="Move to Trash" text={`Move “${fileModal.design.name}” and its folder to the Trash?`} ok="Move to Trash"
+          onClose={() => setFileModal(null)}
+          onOk={() => { const d = fileModal.design; setFileModal(null); run(() => api.deleteProject(d.slug)).then(reopen) }} />
+      )}
+    </>
+  )
+
+  if (file && !file.open) {
+    return (
+      <div className="start">
+        <header className="hdr"><div className="brand"><Icon name="part" size={20} color="var(--accent)" width={2} /><b>3D Print Assist</b></div></header>
+        <main className="startbody">
+          <div className="row"><h1>Designs</h1><span className="spacer" />
+            <button className="btn primary" onClick={() => setFileModal({ type: 'name', purpose: 'new' })}>New design</button></div>
+          <DesignGrid list={designs} current={null} onOpen={(slug) => { run(() => api.openProject(slug)).then(reopen) }}
+            onDelete={(d) => setFileModal({ type: 'delete', design: d })} />
+          {error && <p className="err">{error}</p>}
+        </main>
+        {modals}
+      </div>
+    )
+  }
+
+  if (!tree || !file) return <div className="loading">{error ? `Cannot reach the app's backend: ${error}. Is ./dev.sh running?` : 'Loading…'}</div>
 
   return (
     <div className={`app mode-${mode}`}>
-      <Header tree={tree} mode={mode} onMode={switchMode} onUpdate={update} updating={updating} designs={designs}
-        onUpdateMode={(m) => { run(() => api.settings({ update_mode: m })).then(() => api.tree().then(setTree)) }}
-        onOpen={(slug) => { run(() => api.openProject(slug)).then(reopen) }}
-        onNew={() => {
-          const name = window.prompt('Name of the new design')
-          if (name) run(() => api.createProject(name)).then(reopen)
-        }} />
+      {modals}
+      <Header tree={tree} mode={mode} onMode={switchMode} onUpdate={update} updating={updating} file={file} onFile={onFile} onUndo={undo} onRedo={redo}
+        onUpdateMode={(m) => { run(() => api.settings({ update_mode: m })).then(() => api.tree().then(setTree)) }} />
 
       {mode === 'sketch' ? <div ref={setToolbarHost} className="toolbar-host" /> : (
         <div className="toolbar-wrap">
@@ -240,6 +363,13 @@ export default function App() {
           <ViewportPane part={part} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
             highlight={highlight} picking={dialog?.type === 'feature' ? picking : null} onPick={onPick} onUpdate={update}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
+            {file.recovery && (
+              <div className="recovery" role="alert">
+                <span>Unsaved changes from last time were kept.</span>
+                <button className="btn primary sm" onClick={() => { run(() => api.recover(true)).then(() => { refreshFile(); api.tree().then(setTree) }) }}>Restore them</button>
+                <button className="btn sm" onClick={() => { run(() => api.recover(false)).then(refreshFile) }}>Discard</button>
+              </div>
+            )}
             {feature && spec && (
               <FeatureDialog feature={feature} spec={spec} tree={tree} fonts={fonts} picking={picking} onPick={setPicking}
                 onApply={(patch) => { run(() => api.editFeature(feature.id, patch)).then(changed) }}

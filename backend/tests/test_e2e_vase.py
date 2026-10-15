@@ -77,5 +77,7 @@ def test_twisted_hex_vase_end_to_end(tmp_path):
     assert shape.volume == pytest.approx(c.get("/api/part").json()["volume"], rel=0.01)
     png = c.get("/api/render", params={"view": "iso", "size": 320})
     assert png.status_code == 200 and png.content[:4] == b"\x89PNG"
+    assert c.get("/api/file").json()["dirty"] is True
+    c.post("/api/file/save", json={"message": "First vase"})
     hist = [h["message"] for h in c.get("/api/history").json()]
-    assert hist[0] == "Update" and hist[-1] == "Create design"
+    assert hist == ["First vase", "Create design"]

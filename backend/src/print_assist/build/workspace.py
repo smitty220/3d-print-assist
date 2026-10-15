@@ -1,5 +1,9 @@
 """The open design and its build state: what was last built, what is out of date, and every change made to it.
 
+The design being edited is a working copy: changes stay unsaved (the title shows •) until `save()` writes it to the
+design's project.json and records a version in its git history. A small recovery copy (.recovery.json) is written on
+every change, so work survives a crash; `undo()` / `redo()` step through every change, the AI's included.
+
 Every change goes through `change()` (a list of ops, applied together or not at all). In manual mode a change only
 marks what it affects as out of date (⚡); `update()` rebuilds. In auto mode a change rebuilds at once. Changes by the
 AI are always built and checked before they are kept: if they would make a feature fail, they are refused and the
@@ -8,6 +12,8 @@ design is left as it was, so the AI never leaves the model out of date or broken
 
 from __future__ import annotations
 
+import json
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,6 +31,19 @@ FEATURE_LABEL = {k: f.label for k, f in FEATURES.items()}
 
 class ChangeRefused(ValueError):
     pass
+
+
+RECOVERY = ".recovery.json"
+UNDO_LIMIT = 100
+
+
+@dataclass
+class Step:
+    """One change on the undo stack: the design before it, and what it was."""
+
+    before: str  # the design as JSON
+    label: str
+    actor: str
 
 
 @dataclass
@@ -51,11 +70,37 @@ class Workspace:
         self.built_params: dict = {}
         self.activity: list[Activity] = []
         self._mesh: tuple[int, dict] | None = None
-        self.update(checkpoint=False)
+        self.working: Design = project.data.design.model_copy(deep=True)
+        self.saved_json = self.working.model_dump_json()
+        self.undo_stack: list[Step] = []
+        self.redo_stack: list[Step] = []
+        rec = project.root / RECOVERY
+        self.recovery = rec.exists() and rec.read_text(encoding="utf-8") != self.saved_json
+        self.update()
 
     @property
     def design(self) -> Design:
-        return self.project.data.design
+        return self.working
+
+    @property
+    def dirty(self) -> bool:
+        return self.working.model_dump_json() != self.saved_json
+
+    def file_state(self) -> dict:
+        return {"open": True, "slug": self.project.slug, "name": self.project.data.name, "dirty": self.dirty,
+                "recovery": self.recovery,
+                "undo": self.undo_stack[-1].label if self.undo_stack else None,
+                "redo": self.redo_stack[-1].label if self.redo_stack else None}
+
+    def _set(self, design: Design) -> None:
+        """Make `design` the working copy (caller holds the lock) and keep the recovery copy current."""
+        self.working = design
+        self.rev += 1
+        rec = self.project.root / RECOVERY
+        if self.dirty:
+            rec.write_text(self.working.model_dump_json(), encoding="utf-8")
+        else:
+            rec.unlink(missing_ok=True)
 
     @property
     def mode(self) -> str:
@@ -83,13 +128,85 @@ class Workspace:
                     msg = "; ".join(f"{f.id}: {f.error}" for f in broken)
                     self.log(actor, f"Refused: {message or 'change'} ({msg})", ok=False)
                     raise ChangeRefused(f"not kept, it would make {msg}")
-            self.project.data.design = trial
-            self.project.save()
-            self.rev += 1
-            self.log(actor, message or ", ".join(op.get("op", "?") for op in ops))
+            label = message or ", ".join(op.get("op", "?") for op in ops)
+            self.undo_stack.append(Step(self.working.model_dump_json(), label, actor))
+            del self.undo_stack[:-UNDO_LIMIT]
+            self.redo_stack.clear()
+            self._set(trial)
+            self.log(actor, label)
             if actor != design_ops.USER or self.mode == "auto":
-                self.update(message=f"{'AI' if actor != design_ops.USER else 'Edit'}: {message or 'change'}")
+                self.update()
             return made
+
+    # ---------- undo, save, versions ----------
+
+    def _step(self, src: list[Step], dst: list[Step], verb: str, actor: str) -> str:
+        with self.lock:
+            if not src:
+                raise ChangeRefused(f"nothing to {verb}")
+            step = src.pop()
+            dst.append(Step(self.working.model_dump_json(), step.label, step.actor))
+            self._set(Design.model_validate_json(step.before))
+            self.log(actor, f"{verb.capitalize()}: {step.label}")
+            if self.mode == "auto":
+                self.update()
+            return step.label
+
+    def undo(self, actor: str = design_ops.USER) -> str:
+        return self._step(self.undo_stack, self.redo_stack, "undo", actor)
+
+    def redo(self, actor: str = design_ops.USER) -> str:
+        return self._step(self.redo_stack, self.undo_stack, "redo", actor)
+
+    def save(self, message: str = "") -> bool:
+        """Write the working copy to disk and record a version. Returns whether a version was recorded."""
+        with self.lock:
+            self.project.data.design = self.working.model_copy(deep=True)
+            self.project.save()
+            self.saved_json = self.working.model_dump_json()
+            (self.project.root / RECOVERY).unlink(missing_ok=True)
+            self.recovery = False
+            try:
+                (self.project.root / "thumbnail.png").write_bytes(self.render("iso", 320))
+            except Exception:  # noqa: BLE001 - a thumbnail is a nicety
+                pass
+            self.rev += 1
+            committed = self.project.checkpoint(message.strip() or "Save")
+            self.log(design_ops.USER, f"Saved{': ' + message if message else ''}")
+            return committed
+
+    def revert_to_saved(self) -> None:
+        with self.lock:
+            self.undo_stack.append(Step(self.working.model_dump_json(), "Revert to saved", design_ops.USER))
+            self._set(Design.model_validate_json(self.saved_json))
+            self.recovery = False
+            if self.mode == "auto":
+                self.update()
+
+    def recover(self, keep: bool) -> None:
+        """Take the recovery copy as the working copy (keep), or throw it away."""
+        with self.lock:
+            rec = self.project.root / RECOVERY
+            if keep and rec.exists():
+                self.undo_stack.append(Step(self.working.model_dump_json(), "Recover unsaved changes", design_ops.USER))
+                self._set(Design.model_validate_json(rec.read_text(encoding="utf-8")))
+                if self.mode == "auto":
+                    self.update()
+            elif not keep:
+                rec.unlink(missing_ok=True)
+            self.recovery = False
+
+    def restore_version(self, commit: str) -> None:
+        """Load a saved version into the working copy (unsaved until you save; undo brings back what was there)."""
+        with self.lock:
+            run = subprocess.run(["git", "show", f"{commit}:project.json"], cwd=self.project.root,
+                                 capture_output=True, text=True, encoding="utf-8")
+            if run.returncode != 0:
+                raise ChangeRefused(f"no saved version {commit!r}")
+            self.undo_stack.append(Step(self.working.model_dump_json(), f"Restore version {commit}", design_ops.USER))
+            self._set(Design.model_validate(json.loads(run.stdout)["design"]))
+            if self.mode == "auto":
+                self.update()
 
     def set_mode(self, mode: str) -> None:
         with self.lock:
@@ -100,7 +217,7 @@ class Workspace:
 
     # ---------- building ----------
 
-    def update(self, message: str = "Update", checkpoint: bool = True) -> BuildResult:
+    def update(self) -> BuildResult:
         with self.lock:
             result = self.engine.build(self.design, self.project.data.rules, fonts_dir=self.project.root / "fonts")
             self.last = result
@@ -109,8 +226,6 @@ class Workspace:
             self.built_params = dict(result.param_values)
             if result.complete:
                 self.last_good = result
-                if checkpoint:
-                    self.project.checkpoint(message)
             return result
 
     def pending(self) -> list[str]:
@@ -119,28 +234,16 @@ class Workspace:
         return [k for k, h in p.hashes().items() if self.built_hashes.get(k) != h]
 
     def revert_last_ai(self, actor: str = design_ops.USER) -> str:
-        """Put the design back as it was before the last change the AI kept. Returns that change's message."""
-        import subprocess
-
-        from ..features.model import Design
-
+        """Undo back to just before the last change an AI made (later changes go onto the redo stack too)."""
         with self.lock:
-            hist = self.project.history(200)
-            ai = next((h for h in hist if h["message"].startswith("AI:")), None)
-            if ai is None:
+            if not any(st.actor != design_ops.USER for st in self.undo_stack):
                 raise ChangeRefused("there is no AI change to revert")
-            run = subprocess.run(["git", "show", f"{ai['id']}^:project.json"], cwd=self.project.root,
-                                 capture_output=True, text=True, encoding="utf-8")
-            if run.returncode != 0:
-                raise ChangeRefused("could not read the design before that change")
-            import json
-
-            self.project.data.design = Design.model_validate(json.loads(run.stdout)["design"])
-            self.project.save()
-            self.rev += 1
-            self.log(actor, f"Reverted: {ai['message']}")
-            self.update(message=f"Revert {ai['message']}")
-            return ai["message"]
+            while True:
+                ai = self.undo_stack[-1].actor != design_ops.USER
+                label = self.undo(actor)
+                if ai:
+                    self.update()
+                    return f"AI: {label}"
 
     def render(self, view: str = "iso", size: int = 640) -> bytes:
         from ..geometry.render import render
@@ -233,7 +336,9 @@ class Workspace:
             pending = [k for k in hashes if k in stale]
             failed = bool(self.last and not self.last.complete)
             return {
-                "name": self.project.data.name, "slug": self.project.slug,
+                "name": self.project.data.name, "slug": self.project.slug, "dirty": self.dirty,
+                "undo": self.undo_stack[-1].label if self.undo_stack else None,
+                "redo": self.redo_stack[-1].label if self.redo_stack else None,
                 "rev": self.rev, "built_rev": self.built_rev, "mode": self.mode,
                 "pending": pending, "pending_count": len(pending), "stale": bool(pending), "failed": failed,
                 "exportable": not pending and not failed and self.last_good is not None,

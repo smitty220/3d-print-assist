@@ -161,6 +161,19 @@ def export(format: str = "3mf") -> str:
 
 
 @mcp.tool()
+def save_design(message: str = "") -> str:
+    """Save the design to disk and record a version with an optional message. Only save when the user asks you to;
+    otherwise leave your changes unsaved for them to review (the app shows they are unsaved)."""
+    return _text(_call("POST", "/api/file/save", json={"message": message}, headers=ACTOR))
+
+
+@mcp.tool()
+def undo() -> str:
+    """Undo the last change (yours or the user's): the design goes back one step; redo is in the app."""
+    return _text(_call("POST", "/api/undo", headers=ACTOR))
+
+
+@mcp.tool()
 def revert_last_ai_change() -> str:
     """Put the design back as it was before the last change an AI made."""
     return _text(_call("POST", "/api/revert-ai", headers=ACTOR))

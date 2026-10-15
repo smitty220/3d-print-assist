@@ -40,6 +40,7 @@ app.add_middleware(
 
 _projects: Projects | None = None
 _ws: Workspace | None = None
+_closed = False  # File › Close: no design open until one is opened or created
 
 
 def projects() -> Projects:
@@ -50,9 +51,12 @@ def projects() -> Projects:
 
 
 def ws() -> Workspace:
-    """The open design: the most recently changed one, or a new one when there are none."""
+    """The open design. At start-up the most recently changed one (or a new one) opens, as an editor reopens its last
+    document; after File › Close there is none until one is opened."""
     global _ws
     if _ws is None:
+        if _closed:
+            raise HTTPException(409, "No design is open; open or create one")
         listed = projects().list()
         p = projects().open(listed[0]["slug"]) if listed else projects().create("Untitled")
         _ws = Workspace(p)
@@ -65,9 +69,15 @@ def project():
 
 def reset(root=None) -> None:
     """Forget the open design (tests point the registry at a temporary folder)."""
-    global _projects, _ws
+    global _projects, _ws, _closed
     _projects = Projects(root) if root is not None else None
     _ws = None
+    _closed = False
+
+
+def _switch(w: Workspace | None) -> None:
+    global _ws, _closed
+    _ws, _closed = w, w is None
 
 
 def _change(ops: list[dict], actor: str, message: str = "", base_rev: int | None = None) -> dict:
@@ -99,9 +109,8 @@ class NewProject(BaseModel):
 
 @app.post("/api/projects")
 def create_project(body: NewProject) -> dict:
-    global _ws
     try:
-        _ws = Workspace(projects().create(body.name))
+        _switch(Workspace(projects().create(body.name)))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return _ws.project.summary()
@@ -109,17 +118,158 @@ def create_project(body: NewProject) -> dict:
 
 @app.post("/api/projects/{slug}/open")
 def open_project(slug: str) -> dict:
-    global _ws
     try:
-        _ws = Workspace(projects().open(slug))
+        _switch(Workspace(projects().open(slug)))
     except KeyError:
         raise HTTPException(404, f"No design {slug!r}") from None
     return _ws.project.summary()
 
 
+@app.delete("/api/projects/{slug}")
+def delete_project(slug: str) -> dict:
+    """Move a design to the Trash. Closes it first if it is open."""
+    if _ws is not None and _ws.project.slug == slug:
+        _switch(None)
+    try:
+        dest = projects().delete(slug)
+    except KeyError:
+        raise HTTPException(404, f"No design {slug!r}") from None
+    return {"trashed": str(dest)}
+
+
+@app.get("/api/projects/{slug}/thumbnail")
+def project_thumbnail(slug: str) -> Response:
+    try:
+        p = projects().open(slug)
+    except KeyError:
+        raise HTTPException(404, f"No design {slug!r}") from None
+    f = p.root / "thumbnail.png"
+    if not f.exists():
+        raise HTTPException(404, "No thumbnail yet (saved designs get one)")
+    return Response(f.read_bytes(), media_type="image/png")
+
+
+# ---------------------------------------------------------------- File menu
+
+
+@app.get("/api/file")
+def file_state() -> dict:
+    if _ws is None and _closed:
+        return {"open": False}
+    return ws().file_state()
+
+
+class SaveIn(BaseModel):
+    message: str = ""
+
+
+@app.post("/api/file/save")
+def file_save(body: SaveIn) -> dict:
+    ws().save(body.message)
+    return ws().file_state()
+
+
+class NameIn(BaseModel):
+    name: str
+
+
+@app.post("/api/file/save-as")
+def file_save_as(body: NameIn) -> dict:
+    """Save the working copy as a new design and switch to it; the original keeps its last save."""
+    w = ws()
+    try:
+        p = projects().save_as(w.project, w.working, body.name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    (w.project.root / ".recovery.json").unlink(missing_ok=True)
+    nw = Workspace(p)
+    nw.save("")  # thumbnail
+    _switch(nw)
+    return nw.file_state()
+
+
+@app.post("/api/file/rename")
+def file_rename(body: NameIn) -> dict:
+    w = ws()
+    if not body.name.strip():
+        raise HTTPException(422, "The name needs at least one letter or digit")
+    try:
+        p = projects().rename(w.project.slug, body.name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    w.project = p
+    return w.file_state()
+
+
+@app.post("/api/file/revert")
+def file_revert() -> dict:
+    ws().revert_to_saved()
+    return ws().file_state()
+
+
+class RecoverIn(BaseModel):
+    keep: bool
+
+
+@app.post("/api/file/recover")
+def file_recover(body: RecoverIn) -> dict:
+    ws().recover(body.keep)
+    return ws().file_state()
+
+
+@app.post("/api/file/close")
+def file_close() -> dict:
+    """Close the open design (the app asks about unsaved changes first; the recovery copy stays until then)."""
+    _switch(None)
+    return {"open": False}
+
+
+@app.post("/api/file/reveal")
+def file_reveal() -> dict:
+    """Show the design's folder in Finder (on the machine running the app)."""
+    import subprocess
+    import sys
+
+    root = ws().project.root
+    if sys.platform == "darwin":
+        subprocess.run(["open", str(root)], check=False)
+    return {"path": str(root)}
+
+
+@app.post("/api/undo")
+def post_undo(x_actor: str = Header(USER)) -> dict:
+    try:
+        label = ws().undo(x_actor)
+    except ChangeRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"undone": label, "tree": ws().tree()}
+
+
+@app.post("/api/redo")
+def post_redo(x_actor: str = Header(USER)) -> dict:
+    try:
+        label = ws().redo(x_actor)
+    except ChangeRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"redone": label, "tree": ws().tree()}
+
+
+@app.post("/api/history/{commit}/restore")
+def restore_version(commit: str) -> dict:
+    if not commit.isalnum():
+        raise HTTPException(422, "Not a version id")
+    try:
+        ws().restore_version(commit)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"tree": ws().tree()}
+
+
 @app.get("/api/project")
 def get_project() -> dict:
-    return project().summary()
+    """The design as it is being edited (the working copy, saved or not)."""
+    w = ws()
+    return w.project.summary() | {"design": json.loads(w.working.model_dump_json()), "dirty": w.dirty}
 
 
 @app.get("/api/history")
@@ -198,8 +348,12 @@ async def events(request: Request, once: bool = False) -> StreamingResponse:
     async def stream():
         last = None
         while True:
-            w = ws()
-            state = {"slug": w.project.slug, "rev": w.rev, "built_rev": w.built_rev, "activity": len(w.activity)}
+            if _ws is None and _closed:
+                state = {"slug": None, "rev": 0, "built_rev": 0, "activity": 0}
+            else:
+                w = ws()
+                state = {"slug": w.project.slug, "rev": w.rev, "built_rev": w.built_rev, "activity": len(w.activity),
+                         "dirty": w.dirty}
             if state != last:
                 yield f"data: {json.dumps(state)}\n\n"
                 last = state
@@ -266,13 +420,13 @@ def add_sketch(body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
 @app.put("/api/sketches/{sid}")
 def edit_sketch(sid: str, body: dict[str, Any], x_actor: str = Header(USER)) -> dict:
     out = _change([{"op": "edit_sketch", **body, "id": sid}], x_actor, f"Edit {sid}")
-    sk = project().data.design.sketch(sid)
+    sk = ws().design.sketch(sid)
     return out | {"sketch": sk.model_dump() if sk else None}
 
 
 @app.get("/api/sketches/{sid}")
 def get_sketch(sid: str) -> dict:
-    sk = project().data.design.sketch(sid)
+    sk = ws().design.sketch(sid)
     if sk is None:
         raise HTTPException(404, f"No sketch {sid!r}")
     return sk.model_dump()
@@ -341,7 +495,7 @@ def toggle_edge(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
     """Add an edge picked on the part to a fillet or chamfer, or take it off again if it is already picked."""
     from build123d import Vector
 
-    fi = project().data.design.get(fid)
+    fi = ws().design.get(fid)
     if fi is None:
         raise HTTPException(404, f"No feature {fid!r}")
     e = pick_edge(pick.body, pick.index)
@@ -358,7 +512,7 @@ def toggle_face(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
     """Add a face picked on the part to a feature (shell openings, text target), or take it off again."""
     from build123d import Vector
 
-    fi = project().data.design.get(fid)
+    fi = ws().design.get(fid)
     if fi is None:
         raise HTTPException(404, f"No feature {fid!r}")
     f = pick_face(pick.body, pick.index)
@@ -437,7 +591,7 @@ class ExprIn(BaseModel):
 
 @app.post("/api/expr/eval")
 def eval_expr(body: ExprIn) -> dict:
-    values = {k: v for k, v in resolve(project().data.design).values.items() if not isinstance(v, str)}
+    values = {k: v for k, v in resolve(ws().design).values.items() if not isinstance(v, str)}
     try:
         return {"value": evaluate(body.expr, values)}
     except ExprError as exc:

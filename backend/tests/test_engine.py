@@ -106,7 +106,7 @@ def test_manual_mode_marks_what_a_change_affects_then_updates(ws):
     t = ws.tree()
     assert t["pending_count"] == 0 and {f["status"] for f in t["features"]} == {"ok"}
     assert ws.engine.builds == builds + 2 and ws.part()["volume"] == pytest.approx(volume(10, 5))
-    assert [h["message"] for h in ws.project.history()][:2] == ["Update", "Create design"]
+    assert [h["message"] for h in ws.project.history()] == ["Create design"]  # versions come from Save, not Update
 
 
 def test_auto_mode_rebuilds_on_every_change(ws):

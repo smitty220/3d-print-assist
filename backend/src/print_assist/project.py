@@ -77,7 +77,7 @@ class Project:
     def init_git(self) -> None:
         if (self.root / ".git").exists():
             return
-        (self.root / ".gitignore").write_text("exports/\n*.tmp\n", encoding="utf-8")
+        (self.root / ".gitignore").write_text("exports/\n*.tmp\n.recovery.json\nthumbnail.png\n", encoding="utf-8")
         _git(self.root, "init", "-q")
         self.checkpoint("Create design")
 
@@ -146,7 +146,8 @@ class Projects:
                     name = json.loads(f.read_text(encoding="utf-8")).get("name", d.name)
                 except json.JSONDecodeError:
                     name = d.name
-                out.append({"slug": d.name, "name": name, "modified": f.stat().st_mtime})
+                out.append({"slug": d.name, "name": name, "modified": f.stat().st_mtime,
+                            "thumbnail": (d / "thumbnail.png").exists(), "recovery": (d / ".recovery.json").exists()})
         return sorted(out, key=lambda p: -p["modified"])
 
     def create(self, name: str) -> Project:
@@ -159,6 +160,47 @@ class Projects:
         p.save()
         p.init_git()
         return p
+
+    def save_as(self, src: Project, design, name: str) -> Project:
+        """A new design folder holding `design` (the working copy), with src's settings, rules and fonts."""
+        import shutil
+
+        p = self.create(name)
+        for sub in ("fonts", "references"):
+            for f in (src.root / sub).iterdir():
+                if f.is_file():
+                    shutil.copy2(f, p.root / sub / f.name)
+        p.data.design = design.model_copy(deep=True)
+        p.data.rules = src.data.rules.model_copy(deep=True)
+        p.data.settings = src.data.settings.model_copy(deep=True)
+        p.save()
+        p.checkpoint(f"Save as, from {src.data.name}")
+        return p
+
+    def rename(self, slug: str, name: str) -> Project:
+        p = self.open(slug)
+        new = slugify(name)
+        if new != slug:
+            if (self.root / new).exists():
+                raise ValueError(f"a design called {name!r} already exists")
+            p.root.rename(self.root / new)
+            p = Project(self.root / new)
+        p.data.name = name.strip()
+        p.save()
+        p.checkpoint(f"Rename to {p.data.name}")
+        return p
+
+    def delete(self, slug: str) -> Path:
+        """Move a design's folder to the Trash (nothing is erased)."""
+        import shutil
+        import time
+
+        p = self.open(slug)
+        trash = Path.home() / ".Trash"
+        trash.mkdir(exist_ok=True)
+        dest = trash / f"{p.root.name} {time.strftime('%Y-%m-%d %H.%M.%S')}"
+        shutil.move(str(p.root), dest)
+        return dest
 
     def open(self, slug: str) -> Project:
         path = (self.root / slug).resolve()

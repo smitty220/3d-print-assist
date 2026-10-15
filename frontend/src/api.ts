@@ -105,9 +105,26 @@ export interface SketchNode {
   inputs: string[]
 }
 
+export interface FileState {
+  open: boolean
+  slug?: string
+  name?: string
+  dirty?: boolean
+  recovery?: boolean
+  undo?: string | null
+  redo?: string | null
+}
+
+export interface DesignInfo { slug: string; name: string; modified: number; thumbnail: boolean; recovery: boolean }
+
+export interface Version { id: string; at: string; message: string }
+
 export interface Tree {
   name: string
   slug: string
+  dirty: boolean
+  undo: string | null
+  redo: string | null
   rev: number
   built_rev: number
   mode: 'manual' | 'auto'
@@ -204,10 +221,23 @@ type Changed = { made: (string | null)[]; tree: Tree }
 
 export const api = {
   project: () => get<Project>('/project'),
-  projects: () => get<{ slug: string; name: string }[]>('/projects'),
+  projects: () => get<DesignInfo[]>('/projects'),
+  thumbnailUrl: (slug: string, v = 0) => `/api/projects/${encodeURIComponent(slug)}/thumbnail?v=${v}`,
+  deleteProject: (slug: string) => send<{ trashed: string }>('DELETE', `/projects/${encodeURIComponent(slug)}`),
+  file: () => get<FileState>('/file'),
+  save: (message = '') => send<FileState>('POST', '/file/save', { message }),
+  saveAs: (name: string) => send<FileState>('POST', '/file/save-as', { name }),
+  rename: (name: string) => send<FileState>('POST', '/file/rename', { name }),
+  revert: () => send<FileState>('POST', '/file/revert'),
+  recover: (keep: boolean) => send<FileState>('POST', '/file/recover', { keep }),
+  close: () => send<FileState>('POST', '/file/close'),
+  reveal: () => send<{ path: string }>('POST', '/file/reveal'),
+  undo: () => send<{ undone: string; tree: Tree }>('POST', '/undo'),
+  redo: () => send<{ redone: string; tree: Tree }>('POST', '/redo'),
+  restoreVersion: (id: string) => send<{ tree: Tree }>('POST', `/history/${id}/restore`),
   createProject: (name: string) => send<Project>('POST', '/projects', { name }),
   openProject: (slug: string) => send<Project>('POST', `/projects/${encodeURIComponent(slug)}/open`),
-  history: () => get<{ id: string; at: string; message: string }[]>('/history'),
+  history: () => get<Version[]>('/history'),
   printers: () => get<Printer[]>('/printers'),
   settings: (s: Partial<Project['settings']>) => send<Project['settings']>('PUT', '/settings', s),
   catalog: () => get<FeatureSpec[]>('/features/catalog'),

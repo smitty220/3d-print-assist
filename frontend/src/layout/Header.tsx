@@ -1,5 +1,6 @@
-import type { Tree } from '../api'
+import type { FileState, Tree } from '../api'
 import { Icon } from '../ui/icons'
+import { FileMenu, type FileAction } from './FileMenu'
 
 export type Mode = 'part' | 'sketch' | 'export'
 
@@ -10,12 +11,13 @@ interface Props {
   onUpdate: () => void
   onUpdateMode: (m: 'manual' | 'auto') => void
   updating: boolean
-  designs: { slug: string; name: string }[]
-  onOpen: (slug: string) => void
-  onNew: () => void
+  file: FileState
+  onFile: (a: FileAction) => void
+  onUndo: () => void
+  onRedo: () => void
 }
 
-export function Header({ tree, mode, onMode, onUpdate, onUpdateMode, updating, designs, onOpen, onNew }: Props) {
+export function Header({ tree, mode, onMode, onUpdate, onUpdateMode, updating, file, onFile, onUndo, onRedo }: Props) {
   const n = tree?.pending_count ?? 0
   const manual = tree?.mode !== 'auto'
   return (
@@ -23,11 +25,11 @@ export function Header({ tree, mode, onMode, onUpdate, onUpdateMode, updating, d
       <div className="brand">
         <Icon name="part" size={20} color="var(--accent)" width={2} />
         <b>3D Print Assist</b>
+        <FileMenu file={file} onAction={onFile} onUndo={onUndo} onRedo={onRedo} />
         <span className="sep">/</span>
-        <select aria-label="Design" value={tree?.slug ?? ''} onChange={(e) => (e.target.value === '__new' ? onNew() : onOpen(e.target.value))}>
-          {designs.map((d) => <option key={d.slug} value={d.slug}>{d.name}</option>)}
-          <option value="__new">+ New design…</option>
-        </select>
+        <span className="docname" title={file.dirty ? 'Unsaved changes' : 'Saved'}>
+          {file.name}{file.dirty && <span className="dot" aria-label="unsaved"> •</span>}
+        </span>
       </div>
       <nav className="tabs" aria-label="Mode">
         {(['part', 'sketch', 'export'] as Mode[]).map((m) => (
