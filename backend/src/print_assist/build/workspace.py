@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from ..concepts import Concept, Concepts
 from ..features.design import BuildResult
 from ..features.library import FEATURES
 from ..features.model import Design
@@ -72,6 +73,7 @@ class Workspace:
         self._mesh: tuple[int, dict[str, dict]] | None = None
         self._checks: tuple[tuple, dict] | None = None  # the print checks, for one build, palette and printer
         self._checks_lock = threading.Lock()
+        self.concepts = Concepts(project.root / "concepts")
         self.working: Design = project.data.design.model_copy(deep=True)
         self.saved_json = self.working.model_dump_json()
         self.undo_stack: list[Step] = []
@@ -120,6 +122,10 @@ class Workspace:
         with self.lock:
             if base_rev is not None and base_rev != self.rev:
                 raise ChangeRefused(f"the design changed since revision {base_rev} (now {self.rev}); read it again")
+            waiting = self.concepts.pending() if actor != design_ops.USER else None
+            if waiting is not None:
+                raise ChangeRefused(f"concept {waiting.id} ({waiting.title}) is waiting for the user's answer: call "
+                                    "wait_for_concept, then build what they approved")
             trial = self.design.model_copy(deep=True)
             made = [design_ops.apply(trial, op, actor) for op in ops]
             if actor != design_ops.USER:
@@ -261,6 +267,21 @@ class Workspace:
                 if ai:
                     self.update()
                     return f"AI: {label}"
+
+    # ---------- concepts ----------
+
+    def propose_concept(self, actor: str, **kw) -> Concept:
+        with self.lock:
+            c = self.concepts.propose(actor=actor, **kw)
+            self.log(actor, f"Concept {c.id}: {c.title} (waiting for your answer)")
+            return c
+
+    def answer_concept(self, cid: str, decision: str, note: str = "") -> Concept:
+        with self.lock:
+            c = self.concepts.respond(cid, decision, note)  # type: ignore[arg-type]
+            verdict = "approved" if c.status == "approved" else "changes asked"
+            self.log(design_ops.USER, f"Concept {c.id} {verdict}" + (f": {c.note}" if c.note else ""))
+            return c
 
     def checks(self) -> dict:
         """The print checks of the last good build, worked out once per build (and palette and printer): requests that

@@ -59,6 +59,8 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - The A1 template came from a MakerWorld project the user re-saved for their A1 (its process tweaks: 3 walls, gyroid, no brim, back seam). Bambu Studio is not installed on this Mac, so the format is checked by `tests/test_bambu.py` and by opening exports in Bambu Studio by hand.
 
 ## AI contract
+- **Concept first.** For a request that makes or changes geometry, the AI proposes a concept (`concepts.py`, `POST /api/concepts`, MCP `propose_concept` / `wait_for_concept`): a 2D drawing it makes for that request (SVG), a summary, its assumptions and questions. The app shows it large over the 3D view; the user approves or asks for changes. While one is waiting, AI changes are refused. Concepts are kept in the design's `concepts/` folder. Nothing in this flow is specific to a kind of part.
+- The AI batches a whole step into one `apply_changes` call: each call is built and checked before it is kept.
 - Every change is an op (`build/ops.py`) applied by the Workspace. Actors other than "user" are built and checked first; a change that makes a feature fail is refused and the design is untouched. Locked features refuse AI edits. Kept AI changes are git checkpoints ("AI: ..."), revertible.
 - Claude Code: `./dev.sh`, then Claude Code in this repo picks up `.mcp.json` (server `3d-print-assist`).
 

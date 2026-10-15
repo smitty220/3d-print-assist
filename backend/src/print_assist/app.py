@@ -526,6 +526,65 @@ def toggle_face(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
     return _change([{"op": "edit_feature", "id": fid, "faces": faces}], x_actor, f"{'Unpick' if same else 'Pick'} a face for {fid}")
 
 
+# ---------------------------------------------------------------- concepts
+
+
+class ConceptIn(BaseModel):
+    title: str
+    svg: str
+    summary: str = ""
+    assumptions: list[str] = []
+    questions: list[str] = []
+
+
+class ConceptAnswer(BaseModel):
+    decision: Literal["approve", "revise"]
+    note: str = ""
+
+
+@app.get("/api/concepts")
+def list_concepts(drawings: bool = True) -> list[dict]:
+    """The design's concepts, newest first; `drawings=false` leaves out the SVGs."""
+    out = [c.model_dump() for c in reversed(ws().concepts.items)]
+    if not drawings:
+        for c in out:
+            c.pop("svg")
+    return out
+
+
+@app.get("/api/concepts/{cid}")
+def get_concept(cid: str) -> dict:
+    c = ws().concepts.get(cid)
+    if c is None:
+        raise HTTPException(404, f"No concept {cid!r}")
+    return c.model_dump()
+
+
+@app.post("/api/concepts")
+def propose_concept(body: ConceptIn, x_actor: str = Header(default=USER)) -> dict:
+    """Show the user what the AI understood (a 2D drawing, summary, assumptions, questions) before it builds; the AI's
+    changes are refused until the user answers."""
+    from .concepts import ConceptError
+
+    try:
+        c = ws().propose_concept(x_actor, title=body.title, svg=body.svg, summary=body.summary,
+                                 assumptions=body.assumptions, questions=body.questions)
+    except ConceptError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return c.model_dump(exclude={"svg"})
+
+
+@app.post("/api/concepts/{cid}/answer")
+def answer_concept(cid: str, body: ConceptAnswer) -> dict:
+    from .concepts import ConceptError
+
+    try:
+        c = ws().answer_concept(cid, body.decision, body.note)
+    except ConceptError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return c.model_dump(exclude={"svg"})
+
+
 # ---------------------------------------------------------------- import and references
 
 IMPORT_MAX = 200 * 1024 * 1024  # bytes

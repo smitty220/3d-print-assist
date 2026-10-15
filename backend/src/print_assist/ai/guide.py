@@ -11,6 +11,13 @@ Units and space: millimetres and degrees. World frame: Z is up and the print bed
 that build in order; each feature works on one body.
 
 Working method:
+0. Concept first, for every request that makes or changes geometry: work out what the user wants (read the model and \
+any references first), then propose_concept with a 2D drawing you make for this request and wait_for_concept for \
+their answer. Draw the result as it will be used (assembled, in use, beside what it fits), with the overall size and \
+the dimensions that decide whether it works, and detail views where the function is not obvious; say in the summary \
+what you will build, list the assumptions you made and the questions they should decide. Keep it quick to read: the \
+point is to agree on size and function before spending time on 3D. If they ask for changes, propose again; build only \
+what they approved. Skip the concept only for a change they spelled out exactly (a value, a colour, a name).
 1. Read the model (get_model) and, if useful, look at it (render_preview, views iso / front / top / right / ...).
 2. Make a change as one batch of ops with a short message saying what and why (apply_changes). Batch a whole \
 step (a part, a set of holes, all the text on a face) into one apply_changes call rather than one call per op: every \

@@ -145,6 +145,21 @@ export interface Tree {
   references: Reference[]
 }
 
+/** What the AI understood, shown before it builds: a 2D drawing, summary, assumptions and questions. */
+export interface Concept {
+  id: string
+  title: string
+  summary: string
+  svg: string
+  assumptions: string[]
+  questions: string[]
+  actor: string
+  status: 'pending' | 'approved' | 'revise'
+  note: string
+  created: number
+  answered: number | null
+}
+
 /** A file beside the design to look at and copy features from; never built or printed. */
 export interface Reference {
   id: string
@@ -320,6 +335,9 @@ export const api = {
   deleteBody: (id: string) => send<Changed>('DELETE', `/bodies/${id}`),
   rollback: (index: number | null) => send<Changed>('PUT', '/rollback', { index }),
   evalExpr: (expr: string) => send<{ value?: number; error?: string }>('POST', '/expr/eval', { expr }),
+  concepts: () => get<Concept[]>('/concepts'),
+  answerConcept: (id: string, decision: 'approve' | 'revise', note: string) =>
+    send<Concept>('POST', `/concepts/${id}/answer`, { decision, note }),
   addReference: (file: File, newDesign: boolean) => {
     const form = new FormData()
     form.append('file', file)

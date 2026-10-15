@@ -2,8 +2,9 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type Printer, type Project, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
+import { ConceptView } from './ai/ConceptView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
 import type { FileAction } from './layout/FileMenu'
@@ -40,6 +41,9 @@ export default function App() {
   const [printers, setPrinters] = useState<Printer[]>([])
   const [checks, setChecks] = useState<Checks | null>(null)
   const [activity, setActivity] = useState<Activity[]>([])
+  const [concepts, setConcepts] = useState<Concept[]>([])
+  const [conceptOpen, setConceptOpen] = useState<string | null>(null) // shown on request
+  const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const [selected, setSelected] = useState<NodeKey | null>(null)
@@ -77,6 +81,7 @@ export default function App() {
     const [p, c, f, pr, t, pt, ch, a, act] = await Promise.all([api.project(), api.catalog(), api.fonts(), api.printers(),
       api.tree(), api.part(), api.checks(), api.aiStatus(), api.activity()])
     setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
+    api.concepts().then(setConcepts).catch(() => {})
     seen.current = { slug: p.slug, rev: t.rev, built: t.built_rev, activity: act.length }
   }, [])
 
@@ -98,7 +103,10 @@ export default function App() {
         api.part().then(setPart).catch(() => {})
         api.checks().then(setChecks).catch(() => {})
       }
-      if (s.activity !== k.activity) api.activity().then(setActivity).catch(() => {})
+      if (s.activity !== k.activity) {
+        api.activity().then(setActivity).catch(() => {})
+        api.concepts().then(setConcepts).catch(() => {}) // a concept proposed or answered is logged as activity
+      }
       seen.current = { slug: s.slug ?? '', rev: s.rev, built: s.built_rev, activity: s.activity }
     }
     return () => es.close()
@@ -126,6 +134,11 @@ export default function App() {
     const colors = new Map<string, string | null>(JSON.parse(bodyColors))
     return { ...part, bodies: part.bodies.map((b) => ({ ...b, color: colors.has(b.id) ? colors.get(b.id)! : b.color })) }
   }, [part, bodyColors])
+
+  // A concept waiting for an answer opens by itself (until put aside); any concept opens from the AI panel.
+  const waitingConcept = concepts.find((c) => c.status === 'pending')
+  const shownConcept = concepts.find((c) => c.id === conceptOpen)
+    ?? (waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
 
   // ---------- File menu ----------
 
@@ -438,6 +451,15 @@ export default function App() {
                 <button className="btn sm" onClick={() => { run(() => api.recover(false)).then(refreshFile) }}>Discard</button>
               </div>
             )}
+            {shownConcept && (
+              <ConceptView key={shownConcept.id} concept={shownConcept}
+                onAnswer={(decision, note) => {
+                  run(() => api.answerConcept(shownConcept.id, decision, note)).then((c) => {
+                    if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
+                  })
+                }}
+                onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
+            )}
             {feature && spec && (
               <FeatureDialog feature={feature} spec={spec} tree={tree} fonts={fonts} picking={picking} onPick={setPicking}
                 onApply={(patch) => { run(() => api.editFeature(feature.id, patch)).then(changed) }}
@@ -460,7 +482,8 @@ export default function App() {
           </ViewportPane>
         )}
 
-        <AiPanel status={ai} activity={activity} context={context}
+        <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
+          onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onMode={(m) => { run(() => api.settings({ ai_mode: m })).then(() => api.aiStatus().then(setAi)) }}
           onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
           onCancel={() => { run(api.chatCancel) }} onReset={() => { run(api.chatReset).then(() => api.aiStatus().then(setAi)) }}

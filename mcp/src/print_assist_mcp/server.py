@@ -175,6 +175,39 @@ def export_batch(format: str = "3mf", rows: list[dict[str, str | None]] | None =
 
 
 @mcp.tool()
+def propose_concept(title: str, svg: str, summary: str = "", assumptions: list[str] | None = None,
+                    questions: list[str] | None = None) -> str:
+    """Before building anything for a request, show the user what you understood and wait for their answer. svg: one
+    complete <svg> document you draw for this request, showing the result as the user will use it (assembled, in
+    use), with the overall sizes and the dimensions that matter dimensioned in mm, and any detail views that make the
+    function clear. summary: what you will build, in a few sentences. assumptions: the choices you made that they did
+    not state. questions: what you need them to decide. Then call wait_for_concept with the returned id; your design
+    changes are refused until they answer."""
+    return _text(_call("POST", "/api/concepts", json={"title": title, "svg": svg, "summary": summary,
+                                                     "assumptions": assumptions or [], "questions": questions or []},
+                       headers=ACTOR))
+
+
+@mcp.tool()
+def wait_for_concept(id: str, timeout_s: int = 600) -> str:
+    """Wait for the user's answer on a concept: "approved" (build it, minding any note) or "revise" (their note says
+    what to change: propose a new concept). If it times out still "pending", call it again or ask the user."""
+    import time
+
+    deadline = time.time() + max(5, min(int(timeout_s), 3600))
+    while True:
+        r = _call("GET", "/api/concepts", params={"drawings": False})
+        if isinstance(r, dict):
+            return _text(r)
+        c = next((x for x in r if x["id"] == id), None)
+        if c is None:
+            return _text({"error": f"no concept {id!r}"})
+        if c["status"] != "pending" or time.time() >= deadline:
+            return _text({k: c[k] for k in ("id", "title", "status", "note")})
+        time.sleep(2)
+
+
+@mcp.tool()
 def list_references() -> str:
     """The design's references (files kept beside it to copy features from; never printed): id, name, file, plates,
     placement, overall bounds, and each part's name, triangle count, bounding box (min, max, size in mm) and volume."""

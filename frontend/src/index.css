@@ -295,3 +295,26 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .cw.same .swatch-in { opacity: 0.45; }
 .chip.slotchip { background: var(--line); color: var(--fg-2); }
 .batch { margin-top: 4px; }
+
+/* Concepts: the AI's proposal, large over the 3D view. */
+.concept { position: absolute; inset: 44px 10px 10px 10px; z-index: 30; display: flex; flex-direction: column; background: var(--panel, #1f2329); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 40px #0008; overflow: hidden; }
+.concept .dhead { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line-2); }
+.concept .dhead h2 { font-size: 15px; margin: 0; }
+.concept .cbody { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 0; }
+.concept .cdraw { background: #f7f7f4; display: flex; align-items: center; justify-content: center; padding: 12px; min-height: 0; overflow: auto; }
+.concept .cdraw img { width: 100%; height: 100%; object-fit: contain; }
+.concept .ctext { padding: 12px 14px; overflow: auto; border-left: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 8px; }
+.concept .ctext h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 6px 0 0; }
+.concept .ctext ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.45; }
+.concept .ctext ul.qs li { color: var(--accent); }
+.concept .csum { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.concept .canswer { margin-top: auto; display: flex; flex-direction: column; gap: 6px; position: sticky; bottom: -12px; background: var(--panel); padding: 8px 0 12px; }
+.concept .canswer textarea { width: 100%; resize: vertical; }
+.concept .canswer .row { display: flex; gap: 8px; align-items: center; }
+.chip.cstat.pending { background: #c9a22733; color: var(--accent); }
+.chip.cstat.approved { background: #3aa85633; color: var(--ok); }
+.chip.cstat.revise { background: #d94a3a26; color: var(--bad); }
+.ccard { display: flex; flex-direction: column; gap: 6px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.ccard .row { display: flex; align-items: center; gap: 8px; }
+.ccard img { width: 100%; max-height: 120px; object-fit: contain; background: #f7f7f4; border-radius: 4px; cursor: pointer; }
+@media (max-width: 900px) { .concept .cbody { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; } .concept .ctext { border-left: 0; border-top: 1px solid var(--line-2); } }

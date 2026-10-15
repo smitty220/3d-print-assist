@@ -1,13 +1,15 @@
 // The AI panel (always on the right). Two modes: Claude Code drives the app over MCP (no key needed; this panel shows
 // what it does, live), or the in-app chat calls the Claude API (for the home server).
 import { useEffect, useRef, useState } from 'react'
-import type { Activity, AiStatus } from '../api'
+import type { Activity, AiStatus, Concept } from '../api'
 import { Icon } from '../ui/icons'
 
 interface Props {
   status: AiStatus | null
   activity: Activity[]
   context: string | null
+  concept: Concept | null // the newest
+  onOpenConcept: (id: string) => void
   onMode: (m: 'mcp' | 'api') => void
   onSend: (text: string) => void
   onCancel: () => void
@@ -17,13 +19,14 @@ interface Props {
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-export function AiPanel({ status, activity, context, onMode, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, context, concept, onOpenConcept, onMode, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
   const chat = status?.chat
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }) }, [chat?.log.length, activity.length])
-  const ai = activity.filter((a) => a.actor !== 'user')
+  // The AI's changes, and the user's answers to its concepts (the conversation about what to build).
+  const ai = activity.filter((a) => a.actor !== 'user' || a.text.startsWith('Concept '))
   const send = () => {
     const t = text.trim()
     if (!t) return
@@ -42,6 +45,17 @@ export function AiPanel({ status, activity, context, onMode, onSend, onCancel, o
         </div>
       </div>
       {context && <div className="ctx">Context: {context}</div>}
+      {concept && (
+        <div className="ccard">
+          <div className="row">
+            <b>{concept.id} · {concept.title}</b><span className="spacer" />
+            <span className={`chip cstat ${concept.status}`}>{concept.status === 'pending' ? 'Waiting for you' : concept.status === 'approved' ? 'Approved' : 'Changes asked'}</span>
+          </div>
+          <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(concept.svg)}`} alt={`Concept drawing: ${concept.title}`}
+            onClick={() => onOpenConcept(concept.id)} />
+          <button className="btn sm" onClick={() => onOpenConcept(concept.id)}>{concept.status === 'pending' ? 'Answer' : 'Open'}</button>
+        </div>
+      )}
 
       {mode === 'mcp' ? (
         <>
@@ -63,7 +77,7 @@ export function AiPanel({ status, activity, context, onMode, onSend, onCancel, o
             <div ref={end} />
           </div>
           <div className="aifoot">
-            <button className="btn" onClick={onRevert} disabled={!ai.some((a) => a.ok)}>Revert last AI change</button>
+            <button className="btn" onClick={onRevert} disabled={!ai.some((a) => a.ok && a.actor !== 'user')}>Revert last AI change</button>
           </div>
         </>
       ) : (
