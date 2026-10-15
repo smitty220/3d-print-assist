@@ -3,7 +3,7 @@
     "3d-print-assist": {
       "command": "uv",
       "args": ["run", "--directory", "mcp", "print-assist-mcp"],
-      "env": {"PRINT_ASSIST_URL": "http://127.0.0.1:8000"}
+      "env": {"PRINT_ASSIST_URL": "http://127.0.0.1:8010"}
     }
   }
 }

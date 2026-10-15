@@ -37,14 +37,15 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - The backend sketch model (`sketch/model.py`) mirrors `frontend/src/sketch/model.ts`; keep them in step.
 
 ## Running
-- `./dev.sh` starts the backend (:8000) and frontend (:5173).
-- Tests: `cd backend && uv run pytest`; `cd frontend && npm run build && npm run lint`.
+- `./dev.sh` starts the backend (:8010) and frontend (:5183); cad-assist uses 8000 / 5173, so both can run.
+- Tests: `cd backend && uv run pytest`; `cd frontend && npm run build && npm run lint && npm test`.
 - Designs live in `PRINT_ASSIST_DATA` (default `~/Projects/3DPrinting/designs`).
 - AI API key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` in `backend/.env` (git-ignored).
 
 ## Status
-- M1 backend done: parameters and formulas, incremental build engine with update states, ops, Extrude / Revolve / Shell / Text, export (3MF / STL / STEP), renderer, MCP server, API chat.
-- Next: frontend layout (tree, toolbars, edit dialog, sketch tools, AI panel), end-to-end vase test; then M2 colours and variants (needs the user's Bambu Studio reference 3MF).
+- M1 done (2026-10-14): parameters and formulas, incremental build engine with update states (manual / auto, rollback), ops, Extrude / Revolve / Shell / Text / Fillet / Chamfer, sketch tools with formula dimensions, export (3MF / STL / STEP), renderer, MCP server, API chat, the full UI (tree, toolbars, edit dialogs, AI panel, Color & Export), end-to-end vase test.
+- Next: M2 colours and variants (body colours, Split / Combine, inlay text, filament slots, variants table, Bambu Studio project 3MF from the user's reference file); then M3 the rest of the toolbar and the commander deck box test.
+- Known gaps: shell can fail on a body with a through hole (OCC offset); stroke check flags thin glyphs, not hairlines.
 
 ## AI contract
 - Every change is an op (`build/ops.py`) applied by the Workspace. Actors other than "user" are built and checked first; a change that makes a feature fail is refused and the design is untouched. Locked features refuse AI edits. Kept AI changes are git checkpoints ("AI: ..."), revertible.

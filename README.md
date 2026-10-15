@@ -10,7 +10,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Node 23.6+ (the backend runs the T
 ./dev.sh
 ```
 
-Then open http://127.0.0.1:5173. The backend serves on port 8000 and the frontend proxies `/api` to it.
+Then open http://127.0.0.1:5183. The backend serves on port 8010 (clear of cad-assist's 8000 / 5173) and the frontend proxies `/api` to it.
 
 Designs are stored as git-tracked folders under `~/Projects/3DPrinting/designs` (set `PRINT_ASSIST_DATA` to change it).
 
