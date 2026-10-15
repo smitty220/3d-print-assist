@@ -76,11 +76,16 @@ def _sample_point(face) -> Vector:
     return Vector(p.X(), p.Y(), p.Z())
 
 
-def _same_surface(face, tool_face, pt: Vector) -> bool:
-    if face.geom_type != tool_face.geom_type:
-        return False
+def _box(tool_face) -> tuple[float, ...]:
     bb = tool_face.bounding_box()
-    if not (bb.min.X - 0.1 <= pt.X <= bb.max.X + 0.1 and bb.min.Y - 0.1 <= pt.Y <= bb.max.Y + 0.1 and bb.min.Z - 0.1 <= pt.Z <= bb.max.Z + 0.1):
+    return (bb.min.X - 0.1, bb.min.Y - 0.1, bb.min.Z - 0.1, bb.max.X + 0.1, bb.max.Y + 0.1, bb.max.Z + 0.1)
+
+
+def _same_surface(face, tool_face, pt: Vector, box: tuple[float, ...] | None = None) -> bool:
+    b = box or _box(tool_face)
+    if not (b[0] <= pt.X <= b[3] and b[1] <= pt.Y <= b[4] and b[2] <= pt.Z <= b[5]):
+        return False
+    if face.geom_type != tool_face.geom_type:
         return False
     if face.geom_type == GeomType.PLANE and abs(face.normal_at().dot(tool_face.normal_at())) < 0.999:
         return False
@@ -95,17 +100,18 @@ def attribute(shape: Shape, outputs: dict[str, FeatureOutput], fallback: bool = 
     """
     order = list(outputs.items())
     last_replace = next((fid for fid, out in reversed(order) if out.op == "replace"), None)
+    # Every tool face with its bounding box, latest feature first, worked out once: a mesh import has thousands.
+    candidates = [(f"{fid}.{role}", tf, _box(tf)) for fid, out in reversed(order) for role, tools in out.named.items()
+                  for tf in tools]
+    same: dict[int, str] = {}  # a face the boolean left untouched is the tool's own face: name it without measuring
+    for n, tf, _ in reversed(candidates):
+        same[hash(tf)] = n  # reversed, so the latest feature's name is the one kept
     names: list[str | None] = []
     for face in shape.faces():
-        pt = _sample_point(face)
-        name = None
-        for fid, out in reversed(order):
-            for role, tools in out.named.items():
-                if any(_same_surface(face, tf, pt) for tf in tools):
-                    name = f"{fid}.{role}"
-                    break
-            if name:
-                break
+        name = same.get(hash(face))
+        if name is None:
+            pt = _sample_point(face)
+            name = next((n for n, tf, box in candidates if _same_surface(face, tf, pt, box)), None)
         names.append(name or (f"{last_replace}.blend" if last_replace and fallback else None))
     return names
 
@@ -222,12 +228,14 @@ def find_picked_edges(shape: Shape, names: list[str | None], picks: list[EdgePic
 
 
 def build_design(design: Design, rules: PrintRules | None = None,
-                 on_feature: Callable[[FeatureResult, Shape | None], None] | None = None) -> BuildResult:
+                 on_feature: Callable[[FeatureResult, Shape | None], None] | None = None,
+                 references_dir=None) -> BuildResult:
     """Build every feature in order (world frame), carrying on past a failed feature. `on_feature` is called after each
     one with its result and its body's shape so far. The incremental, stop-at-failure build is build.engine.Engine."""
     from ..build.engine import Engine
 
-    return Engine(cache_size=0).build(design, rules or PrintRules(), stop_on_fail=False, on_feature=on_feature)
+    return Engine(cache_size=0).build(design, rules or PrintRules(), stop_on_fail=False, on_feature=on_feature,
+                                        references_dir=references_dir)
 
 
 def apply_output(ctx: BuildContext, out: FeatureOutput) -> None:

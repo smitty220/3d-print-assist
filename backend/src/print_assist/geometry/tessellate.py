@@ -12,6 +12,10 @@ from dataclasses import asdict, dataclass, field
 
 from build123d import CenterOf, Edge, Face, GeomType, Shape
 from OCP.BRepAdaptor import BRepAdaptor_Surface
+from OCP.BRep import BRep_Tool
+from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.TopAbs import TopAbs_REVERSED
+from OCP.TopLoc import TopLoc_Location
 
 LINEAR_TOL_MM = 0.02
 ANGULAR_TOL_RAD = 0.2
@@ -67,10 +71,31 @@ def _signature(face: Face) -> dict:
     return sig
 
 
+def _triangulation(face: Face) -> tuple[list[float], list[int]] | None:
+    """The face's existing triangulation (from meshing the whole shape), in world coordinates, wound outward."""
+    loc = TopLoc_Location()
+    tri = BRep_Tool.Triangulation_s(face.wrapped, loc)
+    if tri is None:
+        return None
+    trsf = loc.Transformation()
+    positions = []
+    for i in range(1, tri.NbNodes() + 1):
+        p = tri.Node(i).Transformed(trsf)
+        positions += [round(p.X(), 6), round(p.Y(), 6), round(p.Z(), 6)]
+    flip = face.wrapped.Orientation() == TopAbs_REVERSED
+    indices = []
+    for i in range(1, tri.NbTriangles() + 1):
+        a, b, c = tri.Triangle(i).Get()
+        indices += [a - 1, c - 1, b - 1] if flip else [a - 1, b - 1, c - 1]
+    return positions, indices
+
+
 def _mesh_face(face_id: int, face: Face) -> FaceMesh:
-    verts, tris = face.tessellate(LINEAR_TOL_MM, ANGULAR_TOL_RAD)
-    positions = [c for v in verts for c in _vec(v)]
-    indices = [i for tri in tris for i in tri]
+    got = _triangulation(face)
+    if got is None:
+        verts, tris = face.tessellate(LINEAR_TOL_MM, ANGULAR_TOL_RAD)
+        got = [c for v in verts for c in _vec(v)], [i for tri in tris for i in tri]
+    positions, indices = got
     return FaceMesh(
         id=face_id,
         area=round(face.area, 6),
@@ -90,6 +115,9 @@ def _polyline(edge_id: int, edge: Edge) -> EdgePolyline:
 def mesh_shape(shape: Shape, name: str) -> ShapeMesh:
     bb = shape.bounding_box()
     out = ShapeMesh(name=name, units="mm", bbox_min=_vec(bb.min), bbox_max=_vec(bb.max))
+    # Mesh the whole shape once, in parallel; each face's tessellate() below then reuses its triangulation instead of
+    # meshing face by face (a mesh import has a face per triangle).
+    BRepMesh_IncrementalMesh(shape.wrapped, LINEAR_TOL_MM, False, ANGULAR_TOL_RAD, True)
     out.faces = [_mesh_face(i, f) for i, f in enumerate(shape.faces())]
     out.edges = [_polyline(i, e) for i, e in enumerate(shape.edges())]
     return out

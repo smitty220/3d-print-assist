@@ -14,7 +14,7 @@ import json
 import os
 from typing import Any, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
@@ -527,6 +527,61 @@ def toggle_face(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
     if not same:
         faces.append(f)
     return _change([{"op": "edit_feature", "id": fid, "faces": faces}], x_actor, f"{'Unpick' if same else 'Pick'} a face for {fid}")
+
+
+# ---------------------------------------------------------------- import
+
+IMPORT_MAX = 100 * 1024 * 1024  # bytes
+
+
+@app.post("/api/import")
+async def import_file(file: UploadFile, new_design: bool = False, x_actor: str = Header(default=USER)) -> dict:
+    """Bring a STEP, STL or 3MF file in: it is copied to the design's references folder and added as an Import
+    feature in a body of its own (the first body, when the design is still empty). `new_design` starts a design named
+    after the file first."""
+    import re
+    from pathlib import Path
+
+    from .geometry.meshio import FORMATS, ImportError_, load
+
+    original = Path(file.filename or "import").name
+    stem, ext = Path(original).stem, Path(original).suffix.lower()
+    if ext not in FORMATS:
+        raise HTTPException(422, f"Can't import {ext or 'that'} files; formats: STEP, STL, 3MF")
+    data = await file.read(IMPORT_MAX + 1)
+    if len(data) > IMPORT_MAX:
+        raise HTTPException(413, f"{original} is over {IMPORT_MAX // 2**20} MB")
+    if new_design:
+        try:
+            _switch(Workspace(projects().create(stem)))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    w = ws()
+    folder = w.project.root / "references"
+    folder.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.") or "import"
+    path, n = folder / f"{safe}{ext}", 1
+    while path.exists() and path.read_bytes() != data:
+        n += 1
+        path = folder / f"{safe}-{n}{ext}"
+    fresh = not path.exists()
+    path.write_bytes(data)
+    try:
+        await asyncio.to_thread(load, path)  # read it once here, so a bad file is refused before it reaches the tree
+    except Exception as exc:
+        if fresh:
+            path.unlink(missing_ok=True)
+        msg = str(exc) if isinstance(exc, ImportError_) else f"can't read {original}: {exc}"
+        raise HTTPException(422, msg) from exc
+    d = w.design
+    if not d.features and len(d.bodies) == 1:
+        ops: list[dict] = [{"op": "edit_body", "id": d.bodies[0].id, "name": stem}]
+        body = d.bodies[0].id
+    else:
+        body = d.next_body_id()
+        ops = [{"op": "add_body", "name": stem}]
+    ops.append({"op": "add_feature", "kind": "import", "body": body, "params": {"file": path.name}})
+    return _change(ops, x_actor, f"Import {original}")
 
 
 # ---------------------------------------------------------------- export and fonts

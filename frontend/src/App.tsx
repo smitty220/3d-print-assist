@@ -137,8 +137,33 @@ export default function App() {
   }
   const doSave = (message = '') => run(() => api.save(message)).then((f) => { if (f) setFile(f) })
 
+  // Import: the browser's file picker (any folder), then the file is uploaded into the design's references folder.
+  const importInput = useRef<HTMLInputElement>(null)
+  const importNew = useRef(false)
+  const pickImport = (newDesign: boolean) => { importNew.current = newDesign; importInput.current?.click() }
+  async function onImportFile(f: File | undefined) {
+    if (importInput.current) importInput.current.value = ''
+    if (!f) return
+    setUpdating(true)
+    try {
+      const r = await run(() => api.importFile(f, importNew.current))
+      if (!r) return
+      if (importNew.current) await reopen()
+      else changed(r)
+      const t = await run(api.update)  // show it right away, whatever the update mode
+      if (t) setTree(t)
+      const id = r.made.at(-1)
+      if (id) setSelected(`feature:${id}`)
+    } finally { setUpdating(false) }
+  }
+  const importPicker = (
+    <input ref={importInput} type="file" accept=".step,.stp,.stl,.3mf" hidden onChange={(e) => onImportFile(e.target.files?.[0])} />
+  )
+
   function onFile(a: FileAction) {
-    if (a === 'new') guard(() => setFileModal({ type: 'name', purpose: 'new' }))
+    if (a === 'import') pickImport(false)
+    else if (a === 'import-new') guard(() => pickImport(true))
+    else if (a === 'new') guard(() => setFileModal({ type: 'name', purpose: 'new' }))
     else if (a === 'open') guard(() => setFileModal({ type: 'open' }))
     else if (a === 'save') doSave()
     else if (a === 'save-version') setFileModal({ type: 'name', purpose: 'save-version' })
@@ -204,6 +229,7 @@ export default function App() {
   async function onTool(t: Tool) {
     if (t.action === 'new-sketch') { setSketchMenu(!sketchMenu); return }
     if (t.action === 'new-parameter') { setDialog({ type: 'param', name: null }); return }
+    if (t.action === 'import') { pickImport(false); return }
     if (t.action === 'checks' || t.action === 'color') { setMode('export'); return }
     if (t.action === 'section') { setError('Use Cut X / Y / Z at the top of the view to section the part.'); return }
     if (!t.kind) return
@@ -317,6 +343,7 @@ export default function App() {
           onClose={() => setFileModal(null)}
           onOk={() => { const d = fileModal.design; setFileModal(null); run(() => api.deleteProject(d.slug)).then(reopen) }} />
       )}
+      {importPicker}
     </>
   )
 
@@ -326,6 +353,7 @@ export default function App() {
         <header className="hdr"><div className="brand"><Icon name="part" size={20} color="var(--accent)" width={2} /><b>3D Print Assist</b></div></header>
         <main className="startbody">
           <div className="row"><h1>Designs</h1><span className="spacer" />
+            <button className="btn" onClick={() => pickImport(true)} disabled={updating}>{updating ? 'Importing…' : 'New from file…'}</button>
             <button className="btn primary" onClick={() => setFileModal({ type: 'name', purpose: 'new' })}>New design</button></div>
           <DesignGrid list={designs} current={null} onOpen={(slug) => { run(() => api.openProject(slug)).then(reopen) }}
             onDelete={(d) => setFileModal({ type: 'delete', design: d })} />

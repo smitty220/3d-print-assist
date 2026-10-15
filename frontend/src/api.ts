@@ -285,6 +285,11 @@ export const api = {
   deleteBody: (id: string) => send<Changed>('DELETE', `/bodies/${id}`),
   rollback: (index: number | null) => send<Changed>('PUT', '/rollback', { index }),
   evalExpr: (expr: string) => send<{ value?: number; error?: string }>('POST', '/expr/eval', { expr }),
+  importFile: (file: File, newDesign: boolean) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`/api/import?new_design=${newDesign}`, { method: 'POST', body: form }).then((r) => json<Changed>(r))
+  },
   exportUrl: (fmt: '3mf' | 'stl' | 'step') => `/api/export/${fmt}`,
   exportBatch: async (fmt: '3mf' | 'stl' | 'step', rows: { variant?: string | null; colorway?: string | null }[] = []) => {
     const r = await fetch('/api/export/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fmt, rows }) })

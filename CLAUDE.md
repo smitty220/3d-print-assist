@@ -48,6 +48,10 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - Next: an X2D template (needs a project saved for the X2D in Bambu Studio); then M3 the rest of the toolbar and the commander deck box test.
 - Known gaps: shell can fail on a body with a through hole (OCC offset); stroke check flags thin glyphs, not hairlines.
 
+## Import
+- File › Import (or the Import tool) uploads a STEP / STL / 3MF into the design's `references/` folder and adds an `import` feature in a body of its own (`geometry/meshio.py`, `POST /api/import`). STEP stays exact; meshes are sewn into solids, a face per triangle (limit 250k triangles). 3MF placement follows build items and components, including Bambu Studio's split model files.
+- Face naming and viewer meshing must stay fast on thousand-face shapes: `attribute()` names untouched faces by hash, and `mesh_shape` meshes the whole shape once and reads each face's triangulation.
+
 ## Bambu Studio export
 - A 3MF export is a Bambu Studio project when the printer profile names a `bambu_template` (`printers/bambu/*.project_settings.config`, saved by Bambu Studio for that printer): one object, a part per body with its `extruder` (= palette slot), the template's settings resized to the palette (`export/bambu.py`). Project filament N is palette slot N.
 - Per-filament settings come from the template filament with the same material; a material the template lacks is an export error. To support PETG etc., or to change the default process settings, save a Bambu Studio project for that printer with those filaments and copy its `Metadata/project_settings.config` over the template.

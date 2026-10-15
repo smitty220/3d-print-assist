@@ -35,6 +35,7 @@ class BuildContext:
     edge_picks: list = field(default_factory=list)  # the feature being built's picked edges (EdgePick)
     face_picks: list = field(default_factory=list)  # the feature being built's picked faces (FacePick)
     fonts_dir: object = None  # the design's fonts folder, for fonts copied into the project
+    references_dir: object = None  # the design's references folder, for imported files
     body_ids: tuple[str, ...] = ()  # the design's bodies, for features that put shapes into another body
 
     @property

@@ -3,12 +3,13 @@ import { useEffect, useRef, useState } from 'react'
 import type { FileState } from '../api'
 import { Icon } from '../ui/icons'
 
-export type FileAction = 'new' | 'open' | 'save' | 'save-version' | 'save-as' | 'rename' | 'revert' | 'history' | 'close' | 'delete' | 'export' | 'reveal'
+export type FileAction = 'new' | 'open' | 'import' | 'import-new' | 'save' | 'save-version' | 'save-as' | 'rename' | 'revert' | 'history' | 'close' | 'delete' | 'export' | 'reveal'
 
 const MAC = /Mac|iPhone|iPad/.test(navigator.platform)
 const K = (k: string) => (MAC ? `⌘${k}` : `Ctrl+${k}`)
 const ITEMS: ({ id: FileAction; label: string; key?: string; needsDirty?: boolean } | null)[] = [
   { id: 'new', label: 'New…' }, { id: 'open', label: 'Open…', key: K('O') }, null,
+  { id: 'import', label: 'Import into this design…' }, { id: 'import-new', label: 'New design from file…' }, null,
   { id: 'save', label: 'Save', key: K('S') }, { id: 'save-version', label: 'Save version…' }, { id: 'save-as', label: 'Save as…', key: `⇧${K('S')}` },
   { id: 'revert', label: 'Revert to saved', needsDirty: true }, null,
   { id: 'rename', label: 'Rename…' }, { id: 'history', label: 'Saved versions…' }, { id: 'reveal', label: 'Show in Finder' }, null,

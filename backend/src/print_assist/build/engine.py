@@ -17,6 +17,7 @@ import json
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from build123d import Compound, Shape
 
@@ -146,7 +147,8 @@ class Engine:
         return solved
 
     def build(self, design: Design, rules: PrintRules, *, stop_on_fail: bool = True,
-              on_feature: Callable[[FeatureResult, Shape | None], None] | None = None, fonts_dir=None) -> BuildResult:
+              on_feature: Callable[[FeatureResult, Shape | None], None] | None = None, fonts_dir=None,
+              references_dir=None) -> BuildResult:
         p = plan(design, rules)
         self._sketch_ids = set(p.sketches)
         sketches: dict[str, Sketch] = {}
@@ -164,7 +166,10 @@ class Engine:
             except (SketchSolveError, ValueError) as exc:
                 sketch_status[sid], sketch_errors[sid] = "fail", str(exc)
 
-        ctx = BuildContext(rules=rules, sketches=sketches, fonts_dir=fonts_dir, body_ids=tuple(b.id for b in design.bodies))
+        if references_dir is None and fonts_dir is not None:  # fonts/ and references/ share the design's folder
+            references_dir = Path(fonts_dir).parent / "references"
+        ctx = BuildContext(rules=rules, sketches=sketches, fonts_dir=fonts_dir, references_dir=references_dir,
+                           body_ids=tuple(b.id for b in design.bodies))
         results: list[FeatureResult] = []
         checks: list[Check] = []
         failed: str | None = None
