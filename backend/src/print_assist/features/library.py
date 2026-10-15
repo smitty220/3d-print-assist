@@ -11,7 +11,8 @@ from typing import ClassVar
 
 import math
 
-from build123d import Align, Axis, Box, Face, GeomType, Kind, Location, Pos, Shape, Solid, Vector, Wire, extrude, offset, revolve
+from build123d import (Align, Axis, Box, Face, GeomType, Kind, Location, Plane, Pos, Shape, Solid, Text, TextAlign,
+                       Vector, Wire, extrude, offset, revolve)
 
 from .context import BuildContext, FeatureError
 from .model import Check, FeatureOutput, ParamSpec, RefSpec
@@ -436,6 +437,138 @@ class Revolve(Feature):
         return _op_output(p["op"], tool, ctx, named, driven={"sketch": sk.id})
 
 
+# ---------------------------------------------------------------- text
+
+
+def _glyphs(p: dict, font_file) -> list[Face]:
+    """The text as faces in the XY plane, laid out per the alignment and letter spacing, centred on the origin
+    vertically and on the alignment point horizontally."""
+    content, size, spacing = p["content"], p["size"], p["spacing"]
+    halign = {"left": TextAlign.LEFT, "center": TextAlign.CENTER, "right": TextAlign.RIGHT}[p["align"]]
+    if not spacing:
+        t = Text(content, font_size=size, font_path=str(font_file), text_align=(halign, TextAlign.CENTER))
+        faces = list(t.faces())
+    else:  # letter by letter, each advanced by its own width plus the spacing
+        faces, x = [], 0.0
+        for ch in content:
+            if ch.isspace():
+                x += size * 0.3 + spacing
+                continue
+            t = Text(ch, font_size=size, font_path=str(font_file), text_align=(TextAlign.LEFT, TextAlign.CENTER))
+            bb = t.bounding_box()
+            faces += [f.translate((x - bb.min.X, 0, 0)) for f in t.faces()]
+            x += bb.size.X + spacing
+        width = x - spacing
+        shift = {"left": 0.0, "center": -width / 2, "right": -width}[p["align"]]
+        faces = [f.translate((shift, 0, 0)) for f in faces]
+    if not faces:
+        raise FeatureError("the text is empty")
+    if p["rotation"]:
+        faces = [f.rotate(Axis.Z, p["rotation"]) for f in faces]
+    if p["offset_u"] or p["offset_v"]:
+        faces = [f.translate((p["offset_u"], p["offset_v"], 0)) for f in faces]
+    return faces
+
+
+def _upright_plane(at: Vector, n: Vector) -> Plane:
+    """A plane through `at` facing `n` whose X runs level, so text on it reads upright from outside the face."""
+    up = Vector(0, 0, 1) - n * n.Z
+    if up.length < 1e-6:  # a level face: text reads along X, up along Y
+        up = Vector(0, 1, 0) - n * n.Y
+    x = up.normalized().cross(n)
+    return Plane(origin=at, x_dir=x, z_dir=n)
+
+
+class TextFeature(Feature):
+    kind = "text"
+    label = "Text"
+    group = "Create"
+    summary = ("Text on a picked face (flat or curved: it wraps), raised (emboss), sunk (deboss) or cut through, in any "
+               "bundled or design font. With no face picked it stands on the bed as its own solid. The content can come "
+               "from a text parameter.")
+    params = (
+        P("content", "Text", "text", "TEXT"),
+        P("font", "Font", "text", "Bebas Neue"),
+        P("size", "Height", "length", 10.0, 0.5, 500.0, help="the font size in mm"),
+        P("spacing", "Letter spacing", "length", 0.0, -20.0, 100.0),
+        P("bold", "Bold", "bool", False),
+        P("italic", "Italic", "bool", False),
+        P("align", "Align", "choice", "center", choices=("left", "center", "right")),
+        P("mode", "Type", "choice", "emboss", choices=("emboss", "deboss", "cut_through")),
+        P("depth", "Depth", "length", 0.6, 0.05, 50.0, help="how far it stands out or sinks in"),
+        P("rotation", "Rotation", "angle", 0.0, -360.0, 360.0),
+        P("offset_u", "Move across", "length", 0.0, -2000.0, 2000.0),
+        P("offset_v", "Move up", "length", 0.0, -2000.0, 2000.0),
+    )
+
+    def build(self, ctx, p, refs):
+        from ..fonts import families
+
+        fams = families(ctx.fonts_dir)
+        fam = fams.get(p["font"])
+        if fam is None:
+            raise FeatureError(f"no font {p['font']!r}; fonts: {', '.join(sorted(fams))}")
+        glyphs = _glyphs(p, fam.file(p["bold"], p["italic"]))
+        mode, depth = p["mode"], p["depth"]
+        if not ctx.face_picks:
+            if mode != "emboss":
+                raise FeatureError("pick a face to sink or cut the text into")
+            tool = extrude(glyphs, amount=depth) if len(glyphs) > 1 else extrude(glyphs[0], amount=depth)
+            return FeatureOutput("add", tool, named={"text": list(tool.faces())}, info=_text_info(p, glyphs))
+        (face,) = ctx.picked_faces(ctx.face_picks[:1])
+        pick = ctx.face_picks[0]
+        at = face.closest_point(Vector(*pick.at)) if hasattr(face, "closest_point") else Vector(*pick.at)
+        n = face.normal_at(at)
+        plane = _upright_plane(at, n)
+        far = 2 * max(face.bounding_box().diagonal, 10.0) if mode == "cut_through" else depth
+        if face.geom_type == GeomType.PLANE:
+            placed = [plane.location * g for g in glyphs]
+            if mode == "emboss":
+                solids = [extrude(f, amount=depth, dir=n) for f in placed]
+            else:
+                solids = [extrude(f.translate(n * 0.01), amount=far + 0.01, dir=-n) for f in placed]
+        else:
+            try:
+                wrapped = [face.wrap(g, Location(plane)) for g in glyphs]
+                solids = [Solid.thicken(w, depth if mode == "emboss" else -far) for w in wrapped]
+            except Exception as exc:  # noqa: BLE001 - the kernel's wrap fails on some surfaces
+                raise FeatureError(f"could not wrap the text onto that face ({exc}); try a flatter face or a smaller size") from exc
+        tool = solids[0]
+        for s_ in solids[1:]:
+            tool = tool + s_
+        named = {"text": list(tool.faces())}
+        info = _text_info(p, glyphs)
+        return FeatureOutput("add" if mode == "emboss" else "subtract", tool, named=named, info=info)
+
+    def checks(self, ctx, fid, p, out):
+        r = ctx.rules
+        i = out.info
+        thin = i["thin_glyphs"]
+        return [
+            Check(fid, "Letter height", i["height"], _status(i["height"], r.min_text_height, r.min_text_height * 0.6),
+                  f"≥ {r.min_text_height:g} mm reads well"),
+            Check(fid, "Stroke width", r.min_text_stroke if not thin else 0.0, "ok" if not thin else "warn",
+                  f"strokes ≥ {r.min_text_stroke:g} mm (two nozzle widths)" + (f"; {int(thin)} letter(s) thinner" if thin else "")),
+        ]
+
+
+def _text_info(p: dict, glyphs: list[Face]) -> dict[str, float]:
+    """Letter height and how many glyphs have a stroke thinner than the minimum (an inward offset of half the minimum
+    stroke leaves almost nothing of them)."""
+    ys = [g.bounding_box() for g in glyphs]
+    height = max(b.max.Y for b in ys) - min(b.min.Y for b in ys)
+    thin = 0
+    for g in glyphs:
+        try:
+            inner = _offset([Face(g.outer_wire())], -0.4)
+            hole_free = sum(f.area for f in inner)
+            if hole_free < 0.02 * Face(g.outer_wire()).area:
+                thin += 1
+        except FeatureError:
+            thin += 1
+    return {"height": height, "thin_glyphs": float(thin), "glyphs": float(len(glyphs))}
+
+
 # ---------------------------------------------------------------- modify
 
 
@@ -539,7 +672,7 @@ class Chamfer(_EdgeOp):
 
 FEATURES: dict[str, Feature] = {
     cls.kind: cls()
-    for cls in (Extrude, Revolve, Shell, Fillet, Chamfer, Plate, ProfilePlate, ProfileCut, Pad, SketchPocket)
+    for cls in (Extrude, Revolve, TextFeature, Shell, Fillet, Chamfer, Plate, ProfilePlate, ProfileCut, Pad, SketchPocket)
 }
 
 
