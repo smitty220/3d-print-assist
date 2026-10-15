@@ -140,3 +140,4 @@ class FeatureOutput:
     named: dict[str, list[Face]] = field(default_factory=dict)  # role -> faces of the tool, for attribution
     driven: dict[str, float | str] = field(default_factory=dict)  # values taken from elsewhere, shown read-only
     info: dict[str, float] = field(default_factory=dict)  # numbers the rule checks use
+    new_role: str = "blend"  # a "replace" op: the name given to the faces it created (a shell's are "inner")

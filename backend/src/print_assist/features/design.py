@@ -241,7 +241,7 @@ def apply_output(ctx: BuildContext, out: FeatureOutput) -> None:
         part = part - out.shape
     else:
         part = out.shape
-        # The faces no earlier tool explains are the ones this edge operation created.
+        # The faces no earlier tool explains are the ones this operation created: blends, a shell's inside.
         prior = attribute(part, ctx.outputs, fallback=False)
-        out.named["blend"] = [f for f, n in zip(part.faces(), prior) if n is None]
+        out.named[out.new_role] = [f for f, n in zip(part.faces(), prior) if n is None]
     ctx.part = part

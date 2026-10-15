@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from build123d import Align, Axis, Box, Face, GeomType, Pos, Shape, Vector, Wire, extrude
+import math
+
+from build123d import Align, Axis, Box, Face, GeomType, Kind, Location, Pos, Shape, Solid, Vector, Wire, extrude, offset, revolve
 
 from .context import BuildContext, FeatureError
 from .model import Check, FeatureOutput, ParamSpec, RefSpec
@@ -95,9 +97,6 @@ class Plate(Feature):
 
     def checks(self, ctx, fid, p, out):
         return [_wall_check(ctx, fid, "Thickness", p["thickness"])]
-
-
-# ---------------------------------------------------------------- material removal
 
 
 # ---------------------------------------------------------------- 2.5D profiles
@@ -299,6 +298,184 @@ class SketchPocket(Feature):
                              driven={"sketch": sk.id}, info={"depth": depth})
 
 
+# ---------------------------------------------------------------- sketch-based solids
+
+
+OPS = ("add", "cut", "intersect")
+THROUGH = 5000.0  # mm, "through all"
+
+
+def _op_output(op: str, tool: Shape, ctx, named: dict, **kw) -> FeatureOutput:
+    if op == "add":
+        return FeatureOutput("add", tool, named=named, **kw)
+    if op == "cut":
+        return FeatureOutput("subtract", tool, named=named, **kw)
+    if ctx.part is None:
+        raise FeatureError("nothing to intersect with yet")
+    return FeatureOutput("replace", ctx.part & tool, named=named, **kw)
+
+
+def _sections(face: Face, z0: float, z1: float, twist: float, end_scale: float) -> list[Face]:
+    """Copies of a sketch face (local XY) from z0 to z1, turned and scaled progressively about the sketch origin."""
+    n = max(2, math.ceil(abs(twist) / 10) + 1)
+    out = []
+    for k in range(n):
+        u = k / (n - 1)
+        f = face.scale(1 + (end_scale - 1) * u) if end_scale != 1 else face
+        if twist:
+            f = f.rotate(Axis.Z, twist * u)
+        out.append(f.translate((0, 0, z0 + (z1 - z0) * u)))
+    return out
+
+
+def _loft(face: Face, z0: float, z1: float, twist: float, end_scale: float) -> Shape:
+    secs = _sections(face, z0, z1, twist, end_scale)
+    solid = Solid.make_loft([f.outer_wire() for f in secs])
+    for i in range(len(face.inner_wires())):
+        solid = solid - Solid.make_loft([f.inner_wires()[i] for f in secs])
+    return solid
+
+
+def _extrude_face(face: Face, z0: float, z1: float, twist: float, end_scale: float, draft: float) -> Shape:
+    """One sketch face as a solid between z0 and z1 (local), twisted, scaled or drafted."""
+    if draft and (twist or end_scale != 1):
+        raise FeatureError("use either draft or twist / end scale, not both")
+    if draft:
+        return Solid.extrude_taper(face.translate((0, 0, z0)), Vector(0, 0, z1 - z0), draft)
+    if end_scale != 1:
+        return _loft(face, z0, z1, twist, end_scale)
+    if twist:
+        base = face.translate((0, 0, z0))
+        return Solid.extrude_linear_with_rotation(base.outer_wire(), Vector(0, 0, z0), Vector(0, 0, z1 - z0), twist,
+                                                  inner_wires=base.inner_wires())
+    return extrude(face.translate((0, 0, z0)), amount=z1 - z0)
+
+
+def _local_named(tool: Shape, z0: float, z1: float, plane) -> dict[str, list[Face]]:
+    """start / end / side faces of a solid built along local Z from z0 to z1 (tool already in world)."""
+    start, end, side = [], [], []
+    for f in tool.faces():
+        z = plane.to_local_coords(f.center()).Z
+        if f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().dot(plane.z_dir)) - 1) < 1e-6 and abs(z - z0) < 1e-6:
+            start.append(f)
+        elif f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().dot(plane.z_dir)) - 1) < 1e-6 and abs(z - z1) < 1e-6:
+            end.append(f)
+        else:
+            side.append(f)
+    return {"start": start, "end": end, "side": side}
+
+
+class Extrude(Feature):
+    kind = "extrude"
+    label = "Extrude"
+    group = "Create"
+    summary = ("Extrude a sketch's closed profiles along the sketch's normal: add, cut or intersect. Optional twist "
+               "(degrees over the length), end scale (taper the end to this fraction, about the sketch origin) or draft "
+               "angle. Faces are named start, end and side.")
+    params = (
+        P("op", "Operation", "choice", "add", choices=OPS),
+        P("extent", "Extent", "choice", "distance", choices=("distance", "symmetric", "through_all")),
+        P("distance", "Distance", "length", 10.0, 0.01, 2000.0),
+        P("reverse", "Reverse", "bool", False),
+        P("twist", "Twist", "angle", 0.0, -3600.0, 3600.0, help="degrees turned over the length"),
+        P("end_scale", "End scale", "ratio", 1.0, 0.01, 100.0, help="size of the end relative to the sketch"),
+        P("draft", "Draft", "angle", 0.0, -60.0, 60.0, help="degrees; positive narrows toward the end"),
+    )
+    refs = (RefSpec("sketch", "Sketch", (), "sketch"),)
+
+    def build(self, ctx, p, refs):
+        faces, sk = _sketch_faces(ctx, refs)
+        plane = ctx.sketch_plane(sk)
+        d = p["distance"]
+        if p["extent"] == "symmetric":
+            z0, z1 = -d / 2, d / 2
+        elif p["extent"] == "through_all":
+            z0, z1 = (-THROUGH, THROUGH) if p["op"] == "cut" else (0.0, THROUGH)
+        else:
+            z0, z1 = (-d, 0.0) if p["reverse"] else (0.0, d)
+        solids = [_extrude_face(f, z0, z1, p["twist"], p["end_scale"], p["draft"]) for f in faces]
+        local = solids[0]
+        for s_ in solids[1:]:
+            local = local + s_
+        tool = plane.location * local
+        named = _local_named(tool, z0, z1, plane)
+        return _op_output(p["op"], tool, ctx, named, driven={"sketch": sk.id}, info={"length": z1 - z0})
+
+    def checks(self, ctx, fid, p, out):
+        if p["op"] != "add" or p["extent"] == "through_all":
+            return []
+        return [_wall_check(ctx, fid, "Length", out.info["length"])]
+
+
+class Revolve(Feature):
+    kind = "revolve"
+    label = "Revolve"
+    group = "Create"
+    summary = ("Spin a sketch's closed profiles about the sketch's X or Y axis (the profile must not cross the axis): "
+               "add, cut or intersect.")
+    params = (
+        P("op", "Operation", "choice", "add", choices=OPS),
+        P("axis", "Axis", "choice", "Y", choices=("X", "Y")),
+        P("angle", "Angle", "angle", 360.0, 0.1, 360.0),
+    )
+    refs = (RefSpec("sketch", "Sketch", (), "sketch"),)
+
+    def build(self, ctx, p, refs):
+        faces, sk = _sketch_faces(ctx, refs)
+        plane = ctx.sketch_plane(sk)
+        axis = Axis.X if p["axis"] == "X" else Axis.Y
+        k = 1 if p["axis"] == "X" else 0  # the other coordinate must not change sign
+        for f in faces:
+            bb = f.bounding_box()
+            lo, hi = (bb.min.Y, bb.max.Y) if k else (bb.min.X, bb.max.X)
+            if lo < -1e-6 and hi > 1e-6:
+                raise FeatureError(f"the profile crosses the sketch's {p['axis']} axis; keep it on one side")
+        local = revolve(faces, axis=axis, revolution_arc=p["angle"])
+        tool = plane.location * local
+        named = {"side": list(tool.faces())}
+        return _op_output(p["op"], tool, ctx, named, driven={"sketch": sk.id})
+
+
+# ---------------------------------------------------------------- modify
+
+
+class Shell(Feature):
+    kind = "shell"
+    label = "Shell"
+    group = "Modify"
+    summary = ("Hollow the body to a wall thickness, leaving the picked faces open (pick none for a closed hollow "
+               "part).")
+    params = (
+        P("thickness", "Wall", "length", 1.6, 0.1, 100.0),
+        P("direction", "Direction", "choice", "inside", choices=("inside", "outside")),
+    )
+
+    def build(self, ctx, p, refs):
+        if ctx.part is None:
+            raise FeatureError("nothing to shell yet")
+        solids = ctx.part.solids()
+        if len(solids) != 1:
+            raise FeatureError("the body must be one connected solid to shell it")
+        openings = ctx.picked_faces() if ctx.face_picks else []
+        t = p["thickness"] if p["direction"] == "outside" else -p["thickness"]
+        try:
+            if openings:
+                shelled = offset(solids[0], t, openings=openings, kind=Kind.INTERSECTION)
+            elif t < 0:  # closed: the solid less its inward offset
+                shelled = solids[0] - offset(solids[0], t, kind=Kind.INTERSECTION)
+            else:
+                shelled = offset(solids[0], t, kind=Kind.INTERSECTION) - solids[0]
+        except Exception as exc:  # noqa: BLE001 - the kernel's offset fails on some shapes
+            raise FeatureError(f"shell of {p['thickness']:g} mm failed; try a thinner wall ({exc})") from exc
+        if not shelled.is_valid or shelled.volume <= 0:
+            raise FeatureError(f"shell of {p['thickness']:g} mm did not make a valid solid; try a thinner wall")
+        return FeatureOutput("replace", shelled, info={"thickness": p["thickness"], "openings": float(len(openings))},
+                             new_role="inner")
+
+    def checks(self, ctx, fid, p, out):
+        return [_wall_check(ctx, fid, "Wall", p["thickness"])]
+
+
 # ---------------------------------------------------------------- edge treatment
 
 
@@ -362,7 +539,7 @@ class Chamfer(_EdgeOp):
 
 FEATURES: dict[str, Feature] = {
     cls.kind: cls()
-    for cls in (Plate, ProfilePlate, ProfileCut, Pad, SketchPocket, Fillet, Chamfer)
+    for cls in (Extrude, Revolve, Shell, Fillet, Chamfer, Plate, ProfilePlate, ProfileCut, Pad, SketchPocket)
 }
 
 
