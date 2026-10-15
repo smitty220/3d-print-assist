@@ -60,6 +60,8 @@ def test_small_or_thin_letters_are_flagged():
     assert next(c for c in small.checks if c.name == "Letter height").status != "ok"
     ok = box_with({"content": "SAGE", "size": 12.0})
     assert ok.features[1].status == "ok", ok.features[1].message
+    turned = box_with({"content": "SAGE", "size": 12.0, "rotation": 90})  # turned, it is still 12 mm type
+    assert turned.features[1].status == "ok", turned.features[1].message
 
 
 def test_content_from_a_text_parameter():

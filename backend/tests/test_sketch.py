@@ -34,6 +34,14 @@ def test_solver_makes_a_line_tangent_to_two_equal_lugs():
     assert out.report.dof == 2  # the line's two ends may still slide along it
 
 
+def test_regions_face_up_whichever_way_a_loop_was_drawn():
+    pts = [(0, 0), (0, 10), (10, 10), (10, 0)]  # clockwise
+    cw = [_pt(f"p{i}", x, y) for i, (x, y) in enumerate(pts)] + [
+        {"id": f"l{i}", "kind": "line", "p1": f"p{i}", "p2": f"p{(i + 1) % 4}"} for i in range(4)]
+    (face,) = regions(Sketch(id="S1", entities=cw))
+    assert face.normal_at().Z == pytest.approx(1)  # so an extrude goes up, along the sketch's normal
+
+
 def test_regions_nest_material_and_holes():
     sq = lambda pre, x0, y0, x1, y1: (  # noqa: E731
         [_pt(f"{pre}{i}", x, y) for i, (x, y) in enumerate([(x0, y0), (x1, y0), (x1, y1), (x0, y1)])]

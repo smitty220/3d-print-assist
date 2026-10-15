@@ -101,7 +101,9 @@ def regions(s: Sketch) -> list[Face]:
     if open_ends:
         p = open_ends[0] @ 0
         raise SketchGeometryError(f"{s.id}: a profile is not closed (open end near {p.X:.1f}, {p.Y:.1f} mm)")
-    loops = sorted((Face(w) for w in wires), key=lambda f: -f.area)
+    # A loop drawn clockwise makes a face pointing down (-Z); turn every one up, so profiles always extrude along the
+    # sketch's normal whichever way they were drawn.
+    loops = sorted((f if f.normal_at().Z > 0 else -f for f in (Face(w) for w in wires)), key=lambda f: -f.area)
     probe = [w @ 0 for w in (f.outer_wire() for f in loops)]
     depth = []
     parent: list[int | None] = []

@@ -557,7 +557,8 @@ class TextFeature(Feature):
         fam = fams.get(p["font"])
         if fam is None:
             raise FeatureError(f"no font {p['font']!r}; fonts: {', '.join(sorted(fams))}")
-        glyphs = _glyphs(p, fam.file(p["bold"], p["italic"]))
+        font_file = fam.file(p["bold"], p["italic"])
+        glyphs = _glyphs(p, font_file)
         mode, depth = p["mode"], p["depth"]
         into = p["into"]
         if into:
@@ -566,7 +567,8 @@ class TextFeature(Feature):
             ctx.other_body(into, "the letters")
         elif mode == "inlay":
             raise FeatureError("an inlay puts the letters in their own body; choose it (or a new body)")
-        info = _text_info(p, glyphs)
+        # Letter height and strokes are measured on the upright text: a turned letter's extent is not its height.
+        info = _text_info(p, glyphs if not p["rotation"] else _glyphs({**p, "rotation": 0.0}, font_file))
         if not ctx.face_picks:
             if mode != "emboss":
                 raise FeatureError("pick a face to sink, inlay or cut the text into")
