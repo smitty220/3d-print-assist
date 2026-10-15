@@ -30,6 +30,7 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - Mouse: left-drag orbits, right/middle-drag pans, wheel zooms toward the cursor.
 - Every geometry function gets a test with a hand-checked number (volume, area, position), the formula in the test.
 - Tests never call the real Anthropic API (`tests/conftest.py` blocks it) and never touch the user's designs folder (`PRINT_ASSIST_DATA` points at a temp dir).
+- Always pass `encoding="utf-8"` to `read_text` / `write_text` / `subprocess.run(text=True)`: OpenCascade's font loader (the Text feature) switches the process locale to ASCII.
 - The backend sketch model (`sketch/model.py`) mirrors `frontend/src/sketch/model.ts`; keep them in step.
 
 ## Running

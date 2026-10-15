@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .ai import generate as ai
@@ -378,6 +378,40 @@ def toggle_face(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
     if not same:
         faces.append(f)
     return _change([{"op": "edit_feature", "id": fid, "faces": faces}], x_actor, f"{'Unpick' if same else 'Pick'} a face for {fid}")
+
+
+# ---------------------------------------------------------------- export and fonts
+
+
+@app.get("/api/export/{fmt}")
+def export_design(fmt: str) -> FileResponse:
+    """The last update's part as 3MF, STL or STEP (also saved in the design's exports/ folder). Refused while the
+    model is out of date or a feature failed."""
+    from .export import FORMATS, ExportError, export, filename
+
+    if fmt not in FORMATS:
+        raise HTTPException(404, f"Unknown format {fmt!r}; formats: {', '.join(FORMATS)}")
+    w = ws()
+    t = w.tree()
+    if not t["exportable"]:
+        why = "update it first" if t["stale"] else "a feature failed" if t["failed"] else "nothing is built"
+        raise HTTPException(409, f"Can't export: the model is not ready ({why})")
+    good = w.last_good
+    names = {b.id: b.name for b in w.design.bodies}
+    path = w.project.root / "exports" / filename(w.project.data.name, fmt)
+    try:
+        export(good.parts, names, w.project.printer, fmt, path, w.project.data.name)
+    except ExportError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    w.log(USER, f"Exported {path.name}")
+    return FileResponse(path, filename=path.name)
+
+
+@app.get("/api/fonts")
+def get_fonts() -> list[dict]:
+    from .fonts import families
+
+    return [f.to_dict() for f in families(project().root / "fonts").values()]
 
 
 # ---------------------------------------------------------------- formulas

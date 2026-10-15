@@ -22,7 +22,7 @@ def solve(sketch: Sketch) -> Sketch:
     if node is None:
         raise SketchSolveError("Node.js is needed to solve sketches (the solver is WebAssembly) and was not found")
     run = subprocess.run([node, str(CLI)], input=sketch.model_dump_json(exclude={"report"}), capture_output=True,
-                         text=True, timeout=60, cwd=CLI.parent)
+                         text=True, encoding="utf-8", timeout=60, cwd=CLI.parent)
     try:
         out = json.loads(run.stdout.rsplit("@@SKETCH@@", 1)[1])  # the WebAssembly solver may print ahead of the result
     except (json.JSONDecodeError, IndexError):

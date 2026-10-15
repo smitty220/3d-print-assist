@@ -28,7 +28,7 @@ class PrinterProfile(BaseModel):
 def profiles() -> dict[str, PrinterProfile]:
     out = {}
     for path in sorted(HERE.glob("*.json")):
-        p = PrinterProfile.model_validate_json(path.read_text())
+        p = PrinterProfile.model_validate_json(path.read_text(encoding="utf-8"))
         out[p.id] = p
     return out
 

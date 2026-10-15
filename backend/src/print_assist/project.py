@@ -53,7 +53,7 @@ def slugify(name: str) -> str:
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, timeout=30)
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30)
 
 
 class Project:
@@ -63,7 +63,7 @@ class Project:
         self.file = root / "project.json"
         for sub in ("fonts", "references", "exports"):
             (root / sub).mkdir(parents=True, exist_ok=True)
-        self.data = ProjectFile.model_validate_json(self.file.read_text()) if self.file.exists() else ProjectFile()
+        self.data = ProjectFile.model_validate_json(self.file.read_text(encoding="utf-8")) if self.file.exists() else ProjectFile()
         self._build: tuple[str, BuildResult] | None = None
         self._report: tuple[str, Report] | None = None
 
@@ -71,13 +71,13 @@ class Project:
 
     def save(self) -> None:
         tmp = self.file.with_suffix(".tmp")
-        tmp.write_text(self.data.model_dump_json(indent=2))
+        tmp.write_text(self.data.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(self.file)
 
     def init_git(self) -> None:
         if (self.root / ".git").exists():
             return
-        (self.root / ".gitignore").write_text("exports/\n*.tmp\n")
+        (self.root / ".gitignore").write_text("exports/\n*.tmp\n", encoding="utf-8")
         _git(self.root, "init", "-q")
         self.checkpoint("Create design")
 
@@ -143,7 +143,7 @@ class Projects:
             f = d / "project.json"
             if f.exists():
                 try:
-                    name = json.loads(f.read_text()).get("name", d.name)
+                    name = json.loads(f.read_text(encoding="utf-8")).get("name", d.name)
                 except json.JSONDecodeError:
                     name = d.name
                 out.append({"slug": d.name, "name": name, "modified": f.stat().st_mtime})

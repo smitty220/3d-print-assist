@@ -123,8 +123,9 @@ def check_part(build: BuildResult, rules: PrintRules, printer: PrinterProfile | 
 
     out += check_wall(rules, part)
 
-    F("mass", "Mass", "ok", f"{build.mass * 1000:.1f} g of {rules.material} ({build.volume / 1000:.1f} cm³)",
-      value=build.mass, quantity="mass")
+    metres = build.volume / (3.14159265 * 0.875**2) / 1000  # 1.75 mm filament
+    F("mass", "Mass", "ok", f"{build.mass * 1000:.1f} g of {rules.material}, about {metres:.1f} m of 1.75 mm filament "
+      f"({build.volume / 1000:.1f} cm³ solid)", value=build.mass, quantity="mass")
     return out
 
 

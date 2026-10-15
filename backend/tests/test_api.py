@@ -114,3 +114,25 @@ def test_ai_generate_gates(client, monkeypatch, tmp_path):
     r = client.post("/api/ai/generate", json={})
     assert r.status_code == 503 and "ANTHROPIC_API_KEY" in r.json()["detail"]
     assert client.post("/api/ai/revert").status_code == 409
+
+
+def test_export_only_when_up_to_date(client, tmp_path):
+    from build123d import Mesher, import_step
+
+    client.post("/api/features", json={"kind": "plate", "params": {"corner_radius": 0.0}})
+    assert client.get("/api/export/3mf").status_code == 409  # not updated yet
+    client.post("/api/update")
+    r = client.get("/api/export/3mf")
+    assert r.status_code == 200
+    out = tmp_path / "designs" / "untitled" / "exports" / "untitled.3mf"
+    assert out.exists()
+    (shape,) = Mesher().read(str(out))
+    assert shape.volume == pytest.approx(60 * 40 * 5, rel=1e-6)
+    bb = shape.bounding_box()
+    assert bb.min.Z == pytest.approx(0) and (bb.min.X + bb.max.X) / 2 == pytest.approx(128)  # on the A1 plate, centred
+    assert client.get("/api/export/step").status_code == 200
+    assert import_step(str(out.with_suffix(".step"))).volume == pytest.approx(60 * 40 * 5, rel=1e-6)
+    assert client.get("/api/export/stl").status_code == 200
+    assert client.get("/api/export/obj").status_code == 404
+    fonts = {f["name"]: f for f in client.get("/api/fonts").json()}
+    assert "Lato" in fonts and fonts["Lato"]["license"].startswith("SIL")

@@ -51,7 +51,7 @@ def load_env_key(env: Path = ENV_FILE) -> None:
     """
     if not env.exists():
         return
-    for line in env.read_text().splitlines():
+    for line in env.read_text(encoding="utf-8").splitlines():
         k, sep, v = line.strip().partition("=")
         k = k.removeprefix("export ").strip()
         if sep and k in ENV_KEYS and k not in _SHELL_ENV:
