@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from .ai import generate as ai
+from .ai import client as ai
 from .build.ops import USER, OpError
 from .build.workspace import ChangeRefused, Workspace
 from .features.context import FeatureError
@@ -40,7 +40,6 @@ app.add_middleware(
 
 _projects: Projects | None = None
 _ws: Workspace | None = None
-generator = ai.Generator()
 
 
 def projects() -> Projects:
@@ -71,13 +70,7 @@ def reset(root=None) -> None:
     _ws = None
 
 
-def _not_generating() -> None:
-    if generator.running():
-        raise HTTPException(409, "The AI is changing the design; wait for it or cancel it")
-
-
 def _change(ops: list[dict], actor: str, message: str = "", base_rev: int | None = None) -> dict:
-    _not_generating()
     try:
         made = ws().change(ops, actor=actor or USER, message=message, base_rev=base_rev)
     except OpError as exc:
@@ -107,7 +100,6 @@ class NewProject(BaseModel):
 @app.post("/api/projects")
 def create_project(body: NewProject) -> dict:
     global _ws
-    _not_generating()
     try:
         _ws = Workspace(projects().create(body.name))
     except ValueError as exc:
@@ -118,7 +110,6 @@ def create_project(body: NewProject) -> dict:
 @app.post("/api/projects/{slug}/open")
 def open_project(slug: str) -> dict:
     global _ws
-    _not_generating()
     try:
         _ws = Workspace(projects().open(slug))
     except KeyError:
@@ -183,7 +174,6 @@ def get_part() -> dict:
 
 @app.post("/api/update")
 def post_update() -> dict:
-    _not_generating()
     ws().update()
     return ws().tree()
 
@@ -454,46 +444,66 @@ def eval_expr(body: ExprIn) -> dict:
         return {"error": str(exc)}
 
 
-# ---------------------------------------------------------------- AI generation (one-shot; the chat replaces it)
+# ---------------------------------------------------------------- AI
 
 
-class GenerateRequest(BaseModel):
-    instruction: str = ""
-    max_rounds: int = 6
+@app.get("/api/ai/guide")
+def ai_guide() -> dict:
+    from .ai.guide import GUIDE
+
+    from .build.ops import OP_NAMES
+
+    return {"guide": GUIDE, "ops": OP_NAMES}
 
 
-def _job() -> dict | None:
-    return generator.job.to_dict() if generator.job else None
+# ---------------------------------------------------------------- AI chat (the panel's API mode)
+
+
+def chat():
+    w = ws()
+    if not hasattr(w, "chat"):
+        from .ai.chat import Chat
+
+        w.chat = Chat()
+    return w.chat
 
 
 @app.get("/api/ai/status")
 def ai_status() -> dict:
     model = ai.model_name()  # also re-reads backend/.env
-    return {"model": model, "key": bool(os.environ.get("ANTHROPIC_API_KEY")), "job": _job()}
+    return {"model": model, "key": bool(os.environ.get("ANTHROPIC_API_KEY")), "mode": project().data.settings.ai_mode,
+            "chat": chat().to_dict()}
 
 
-@app.post("/api/ai/generate")
-def ai_generate(body: GenerateRequest) -> dict:
-    if generator.running():
-        raise HTTPException(409, "A generation is already running")
+class ChatIn(BaseModel):
+    message: str
+
+
+@app.post("/api/ai/chat")
+def ai_chat(body: ChatIn) -> dict:
+    if not body.message.strip():
+        raise HTTPException(422, "Say what you want changed")
     try:
         client = ai.make_client()
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
-    generator.start(project(), client, body.instruction, max(1, min(body.max_rounds, 12)))
-    return {"job": _job()}
-
-
-@app.post("/api/ai/cancel")
-def ai_cancel() -> dict:
-    generator.cancel()
-    return {"job": _job()}
-
-
-@app.post("/api/ai/revert")
-def ai_revert() -> dict:
     try:
-        generator.revert(project())
+        chat().send(body.message.strip(), client)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
-    return {"job": _job()}
+    return chat().to_dict()
+
+
+@app.post("/api/ai/chat/cancel")
+def ai_chat_cancel() -> dict:
+    chat().cancel.set()
+    return chat().to_dict()
+
+
+@app.post("/api/ai/chat/reset")
+def ai_chat_reset() -> dict:
+    try:
+        chat().reset()
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return chat().to_dict()

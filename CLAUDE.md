@@ -23,6 +23,9 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 | `backend/src/print_assist/sketch/` | 2D sketches: model, solve bridge, sketch → faces, faces → sketch |
 | `backend/src/print_assist/rules.py`, `printers/` | Print rules (min wall, nozzle) and printer profiles (bed, nozzles, slots) |
 | `frontend/` | React + TypeScript + plain three.js viewer, sketcher |
+| `mcp/` | MCP server (`print-assist-mcp`): Claude Code's tools, talking to the backend over HTTP. Registered in `.mcp.json`; the in-app chat reuses the same tools in process |
+| `backend/src/print_assist/build/` | Incremental build engine (`engine.py`), design ops (`ops.py`), the open design's state (`workspace.py`) |
+| `backend/src/print_assist/ai/` | Shared AI guide (`guide.py`), API client, in-app chat |
 | `frontend/sketch-cli.ts` | The planegcs solver run by Node for the backend. **Must stay at `frontend/`**: `sketch/solve.py` finds it via `parents[4]` |
 
 ## Conventions
@@ -40,8 +43,12 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - AI API key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` in `backend/.env` (git-ignored).
 
 ## Status
-- M1.0 done: copied from cad-assist, aircraft analysis removed, world frame, print rules, printer profiles, git-tracked design folders.
-- Next (M1): parameters and formulas, incremental build engine with update states, Extrude/Revolve/Shell/Text, sketch tools, new UI, MCP server, export.
+- M1 backend done: parameters and formulas, incremental build engine with update states, ops, Extrude / Revolve / Shell / Text, export (3MF / STL / STEP), renderer, MCP server, API chat.
+- Next: frontend layout (tree, toolbars, edit dialog, sketch tools, AI panel), end-to-end vase test; then M2 colours and variants (needs the user's Bambu Studio reference 3MF).
+
+## AI contract
+- Every change is an op (`build/ops.py`) applied by the Workspace. Actors other than "user" are built and checked first; a change that makes a feature fail is refused and the design is untouched. Locked features refuse AI edits. Kept AI changes are git checkpoints ("AI: ..."), revertible.
+- Claude Code: `./dev.sh`, then Claude Code in this repo picks up `.mcp.json` (server `3d-print-assist`).
 
 ## Deployment
 Local while iterating; stable builds go on the user's home server. Plan placement with the `homelab-consultant` agent.

@@ -1,0 +1,16 @@
+[project]
+name = "print-assist-mcp"
+version = "0.1.0"
+description = "MCP server so Claude Code can design in 3D Print Assist (talks to the app's API over HTTP)"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "mcp>=1.20.0",
+]
+
+[project.scripts]
+print-assist-mcp = "print_assist_mcp.server:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"

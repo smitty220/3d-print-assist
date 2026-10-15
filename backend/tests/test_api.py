@@ -104,18 +104,6 @@ def test_sketch_put_solves_and_rebuilds(client):
     assert client.delete("/api/sketches/S1").status_code == 422  # F1 uses it
 
 
-def test_ai_generate_gates(client, monkeypatch, tmp_path):
-    from print_assist.ai import generate as gen
-
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(gen.load_env_key, "__defaults__", (tmp_path / "no.env",))
-    status = client.get("/api/ai/status").json()
-    assert status["key"] is False and status["job"] is None and status["model"]
-    r = client.post("/api/ai/generate", json={})
-    assert r.status_code == 503 and "ANTHROPIC_API_KEY" in r.json()["detail"]
-    assert client.post("/api/ai/revert").status_code == 409
-
-
 def test_export_only_when_up_to_date(client, tmp_path):
     from build123d import Mesher, import_step
 

@@ -11,6 +11,7 @@ dependencies = [
     "build123d>=0.13.0",
     "fastapi>=0.142.2",
     "numpy>=2.0",
+    "print-assist-mcp",
     "python-multipart>=0.0.32",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -24,3 +25,6 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
 ]
+
+[tool.uv.sources]
+print-assist-mcp = { path = "../mcp", editable = true }
