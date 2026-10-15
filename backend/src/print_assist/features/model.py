@@ -35,7 +35,7 @@ class FeatureInstance(BaseModel):
     id: str
     kind: str
     params: dict[str, ParamValue] = Field(default_factory=dict)
-    refs: dict[str, str] = Field(default_factory=dict)  # role -> intent id or feature id
+    refs: dict[str, str] = Field(default_factory=dict)  # role -> feature id or sketch id
     edges: list[EdgePick] = Field(default_factory=list)  # picked edges (fillet, chamfer)
     locked: bool = False
     suppressed: bool = False
@@ -44,17 +44,6 @@ class FeatureInstance(BaseModel):
 class Design(BaseModel):
     features: list[FeatureInstance] = Field(default_factory=list)
     sketches: list[Sketch] = Field(default_factory=list)  # consumed by pad / sketch_pocket features
-    recipe: dict | None = None  # the plate recipe the AI drafted this design from (topo/recipe.py), if any
-    recipe_key: str | None = None  # sketch_key() when it was drafted: differs once the engineer edits the sketches
-    recipe_summary: str = ""  # what the AI said about its draft
-    recipe_questions: list[str] = Field(default_factory=list)  # what it asked the engineer to decide
-
-    def sketch_key(self) -> str:
-        import hashlib
-        import json
-
-        blob = json.dumps([s.model_dump(include={"entities", "constraints"}) for s in self.sketches], sort_keys=True)
-        return hashlib.sha1(blob.encode()).hexdigest()[:16]
 
     def sketch(self, sid: str) -> Sketch | None:
         return next((s for s in self.sketches if s.id == sid), None)
@@ -89,8 +78,8 @@ class ParamSpec:
 class RefSpec:
     role: str
     label: str
-    kinds: tuple[str, ...]  # intent kinds (planar_mount, bolt_pattern, bore) or feature kinds
-    target: Literal["intent", "feature", "sketch"]
+    kinds: tuple[str, ...]  # feature kinds the ref accepts (empty = any)
+    target: Literal["feature", "sketch"]
 
 
 @dataclass
@@ -112,5 +101,5 @@ class FeatureOutput:
     op: Literal["add", "subtract", "replace"]
     shape: Shape
     named: dict[str, list[Face]] = field(default_factory=dict)  # role -> faces of the tool, for attribution
-    driven: dict[str, float | str] = field(default_factory=dict)  # values taken from intent, shown read-only
+    driven: dict[str, float | str] = field(default_factory=dict)  # values taken from elsewhere, shown read-only
     info: dict[str, float] = field(default_factory=dict)  # numbers the rule checks use

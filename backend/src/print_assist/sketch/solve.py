@@ -8,27 +8,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from ..intent.models import Intent
-from .model import Point, Sketch, SolveReport
+from .model import Sketch, SolveReport
 
 CLI = Path(__file__).resolve().parents[4] / "frontend" / "sketch-cli.ts"
 
 
 class SketchSolveError(RuntimeError):
     pass
-
-
-def place_refs(sketch: Sketch, intent: Intent, to_local) -> Sketch:
-    """Move points tied to intent objects (pin centres) to where the intent puts them, in the sketch plane."""
-    out = sketch.model_copy(deep=True)
-    for e in out.entities:
-        if isinstance(e, Point) and e.ref:
-            obj = intent.get(e.ref)
-            if obj is None or not hasattr(obj, "frame"):
-                raise SketchSolveError(f"{e.id} is tied to {e.ref}, which no longer exists")
-            p = to_local(obj.frame.origin)
-            e.x, e.y = float(p.X), float(p.Y)
-    return out
 
 
 def solve(sketch: Sketch) -> Sketch:

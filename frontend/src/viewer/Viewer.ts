@@ -1,14 +1,7 @@
 import * as THREE from 'three'
-import type { Fastener, Finding, IntentObject, InterpretOverlay, ShapeMesh, TopoPreview } from '../api'
-import { buildFindingMarker } from './findingMarker'
-import { buildOverlay } from './intentOverlay'
-import { buildTopoPreview } from './topoPreview'
+import type { ShapeMesh } from '../api'
 import { SectionTool, type CapStyle } from './section'
 
-// Traced outlines: the profile, through cut-outs, and pockets from the top and the bottom.
-export const SKETCH_COLORS = [0x1d2733, 0xe0782a, 0x2f9e8f, 0x8a4fd6, 0xc2412d, 0x2a6fd9]
-
-export type MouseScheme = 'catia' | 'simple'
 export type ViewName = 'iso' | 'front' | 'top' | 'right'
 
 export interface FacePick {
@@ -21,22 +14,6 @@ export interface FacePick {
 }
 
 export type PickMode = 'face' | 'edge'
-
-/** A surface mesh for display: positions (mm), triangles, and element edges as index pairs. */
-export interface SurfaceMesh {
-  positions: number[]
-  indices: number[]
-  edges: number[] | null
-}
-
-/** Mesh controls drawn on a part: edges with divisions, mapped faces, spheres of influence. `active` is highlighted. */
-export interface MeshControlOverlay {
-  part: string
-  edges: { id: number; n: number }[]
-  faces: number[]
-  spheres: { center: number[]; radius: number }[]
-  active: { kind: 'edge' | 'face' | 'sphere'; index: number } | null
-}
 
 export interface PartStyle {
   color: number
@@ -72,13 +49,13 @@ const VIEWS: Record<ViewName, [theta: number, phi: number]> = {
   right: [0, Math.PI / 2],
 }
 
-/** Three.js viewport with CATIA-style navigation, per-B-rep-face picking and a section tool. Scene units are mm, Z up. */
+/** Three.js viewport: left-drag orbits, right- or middle-drag pans, the wheel zooms toward the cursor. Per-B-rep-face
+ *  and edge picking, and a section tool. Scene units are mm, Z up (the print bed is Z = 0). */
 export class Viewer {
   onSelect?: (pick: FacePick | null) => void
   /** Called while the section handle is dragged, with the plane's movement along its normal in mm. */
   onSectionDrag?: (deltaMm: number) => void
-  mouseScheme: MouseScheme = 'catia'
-  /** What a click picks: B-rep faces (default) or edges (for mesh controls). */
+  /** What a click picks: B-rep faces (default) or edges (for blends). */
   pickMode: PickMode = 'face'
 
   private el: HTMLElement
@@ -97,20 +74,11 @@ export class Viewer {
   private triCam = new THREE.PerspectiveCamera(35, 1, 0.1, 20)
   private section: SectionTool
   private sectionOn = false
-  private intentGroup = new THREE.Group()
-  private findingGroup = new THREE.Group()
-  private topoGroup = new THREE.Group()
-  private traceGroup = new THREE.Group()
-  private contourGroup = new THREE.Group()
-  private meshGroup = new THREE.Group()
-  private controlGroup = new THREE.Group()
   private edgeHoverGroup = new THREE.Group()
   private edgeMarkGroup = new THREE.Group()
   private abort = new AbortController()
   private frame = 0
   private resizeObs: ResizeObserver
-  /** The flag at the contour's peak: an HTML label over the canvas, kept on the projected point each frame. */
-  private peakFlag: { el: HTMLDivElement; at: THREE.Vector3 } | null = null
 
   constructor(el: HTMLElement) {
     this.el = el
@@ -130,8 +98,7 @@ export class Viewer {
     this.scene.add(key, fill)
 
     this.section = new SectionTool(dpr)
-    this.scene.add(this.section.caps, this.section.gizmo, this.intentGroup, this.findingGroup, this.topoGroup, this.traceGroup, this.contourGroup,
-      this.meshGroup, this.controlGroup, this.edgeHoverGroup, this.edgeMarkGroup)
+    this.scene.add(this.section.caps, this.section.gizmo, this.edgeHoverGroup, this.edgeMarkGroup)
 
     const axes: [THREE.Vector3, number][] = [
       [new THREE.Vector3(1, 0, 0), 0xd94a3a],
@@ -154,7 +121,6 @@ export class Viewer {
     for (const name of [...this.parts.keys()]) this.removePart(name)
     this.renderer.dispose()
     this.renderer.domElement.remove()
-    this.setPeakFlag(null)
   }
 
   // ---------- parts ----------
@@ -260,117 +226,7 @@ export class Viewer {
     return this.orbit.target.clone().sub(this.persp.position).normalize()
   }
 
-  // ---------- intent overlays ----------
-
-  setIntent(objects: IntentObject[], catalog: Map<string, Fastener>, selectedId: string | null) {
-    for (const child of [...this.intentGroup.children]) {
-      this.intentGroup.remove(child)
-      child.traverse((n) => {
-        const m = n as THREE.Mesh
-        m.geometry?.dispose()
-        ;(m.material as THREE.Material | undefined)?.dispose()
-      })
-    }
-    for (const o of objects) {
-      const g = buildOverlay(o, objects, catalog, o.id === selectedId)
-      if (g) this.intentGroup.add(g)
-    }
-    this.applyOverlayClipping()
-  }
-
-  /** Show one validation finding's location (or nothing). */
-  setFinding(f: Finding | null) {
-    for (const child of [...this.findingGroup.children]) {
-      this.findingGroup.remove(child)
-      child.traverse((n) => {
-        const m = n as THREE.Mesh
-        m.geometry?.dispose()
-        ;(m.material as THREE.Material | undefined)?.dispose()
-      })
-    }
-    const g = f && buildFindingMarker(f, Math.max(this.bounds().radius * 0.025, 0.5))
-    if (g) this.findingGroup.add(g)
-  }
-
-  /** Show the topology set-up (interface elements, supports, loads), or clear it. */
-  setTopoPreview(p: TopoPreview | null) {
-    clearGroup(this.topoGroup)
-    if (p) this.topoGroup.add(buildTopoPreview(p, Math.max(this.bounds().radius * 0.35, 5)))
-    this.applyOverlayClipping()
-  }
-
-  /** A stress (or displacement) contour on the part's surface, coloured from `lo` (blue) to `hi` (red): a smooth gradient,
-   *  or `bands` flat colour bands (each a fixed range of the value). `edges` (index pairs) draws the element edges over
-   *  it. A marker sits at the peak. Pass null to clear. */
-  setContour(c: { positions: number[]; indices: number[]; values: number[]; lo: number; hi: number; peak: number[]; bands?: number; edges?: number[] | null; peakLabel?: string } | null) {
-    clearGroup(this.contourGroup)
-    this.setPeakFlag(null)
-    if (!c) return
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(c.positions, 3))
-    geo.setIndex(c.indices)
-    // The value as a texture coordinate into a colour-map strip: interpolated per pixel, so bands come out crisp.
-    const uv = new Float32Array(c.values.length * 2)
-    const span = c.hi - c.lo || 1
-    c.values.forEach((v, i) => {
-      uv[2 * i] = Math.min(1, Math.max(0, (v - c.lo) / span))
-      uv[2 * i + 1] = 0.5
-    })
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2))
-    geo.computeVertexNormals()
-    const map = colorStrip(c.bands ?? 0)
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map, roughness: 0.75, metalness: 0, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }))
-    this.contourGroup.add(mesh)
-    if (c.edges?.length) this.contourGroup.add(edgeLines(geo.getAttribute('position') as THREE.BufferAttribute, c.edges, 0x111111, 0.45))
-    const r = Math.max(this.bounds().radius * 0.012, 0.4)
-    const peak = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshBasicMaterial({ color: 0x111111, depthTest: false }))
-    peak.position.set(c.peak[0], c.peak[1], c.peak[2])
-    peak.renderOrder = 6
-    this.contourGroup.add(peak)
-    if (c.peakLabel) this.setPeakFlag(peak.position.clone(), c.peakLabel)
-    this.applyOverlayClipping()
-  }
-
-  private setPeakFlag(at: THREE.Vector3 | null, text = '') {
-    this.peakFlag?.el.remove()
-    this.peakFlag = null
-    if (!at) return
-    if (getComputedStyle(this.el).position === 'static') this.el.style.position = 'relative'
-    const el = document.createElement('div')
-    el.className = 'peak-flag'
-    el.setAttribute('role', 'note')
-    const label = document.createElement('span')
-    label.textContent = text
-    el.append(label)
-    this.el.append(el)
-    this.peakFlag = { el, at }
-  }
-
-  /** Keep the peak flag on its point: the flag's tail corner (bottom left) sits at the projected peak. */
-  private placePeakFlag(w: number, h: number) {
-    const f = this.peakFlag
-    if (!f) return
-    const p = f.at.clone().project(this.cam)
-    const off = p.z > 1 || p.z < -1 || Math.abs(p.x) > 1.05 || Math.abs(p.y) > 1.05
-    f.el.style.display = off ? 'none' : ''
-    if (off) return
-    f.el.style.transform = `translate(${((p.x + 1) / 2) * w}px, ${((1 - p.y) / 2) * h}px)`
-  }
-
-  /** The finite-element mesh on its own (before solving): a light surface with the element edges. Null clears it. */
-  setMeshPreview(m: SurfaceMesh | null) {
-    clearGroup(this.meshGroup)
-    if (!m) return
-    const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(m.positions, 3))
-    geo.setIndex(m.indices)
-    geo.computeVertexNormals()
-    this.meshGroup.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xc9d3dc, roughness: 0.8, metalness: 0, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })))
-    if (m.edges?.length) this.meshGroup.add(edgeLines(geo.getAttribute('position') as THREE.BufferAttribute, m.edges, 0x1f3550, 0.7))
-    this.applyOverlayClipping()
-  }
+  // ---------- overlays ----------
 
   /** Edges picked for a blend (polylines, world mm), drawn over the part; the active list is orange. Null clears. */
   setEdgeMarks(lines: number[][][] | null) {
@@ -388,93 +244,12 @@ export class Viewer {
     }
   }
 
-  /** Mark the mesh controls on a part: edges with divisions (with tick marks at each division), mapped faces, spheres. */
-  setMeshControls(o: MeshControlOverlay | null) {
-    clearGroup(this.controlGroup)
-    const p = o ? this.parts.get(o.part) : undefined
-    if (!o || !p) return
-    const isActive = (kind: 'edge' | 'face' | 'sphere', i: number) => o.active?.kind === kind && o.active.index === i
-    const tick = Math.max(this.bounds().radius * 0.008, 0.25)
-    o.edges.forEach((e, i) => {
-      const poly = p.data.edges.find((x) => x.id === e.id)
-      if (!poly) return
-      const pts: THREE.Vector3[] = []
-      for (let k = 0; k < poly.points.length; k += 3) pts.push(new THREE.Vector3(poly.points[k], poly.points[k + 1], poly.points[k + 2]))
-      const color = isActive('edge', i) ? 0xff9a1f : 0xd6338a
-      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true }))
-      line.renderOrder = 7
-      this.controlGroup.add(line)
-      // Division marks: n + 1 dots evenly spaced along the edge.
-      const lens = [0]
-      for (let k = 1; k < pts.length; k++) lens.push(lens[k - 1] + pts[k].distanceTo(pts[k - 1]))
-      const L = lens[lens.length - 1] || 1
-      const dots: number[] = []
-      for (let j = 0; j <= e.n; j++) {
-        const target = (j / e.n) * L
-        let k = 1
-        while (k < lens.length - 1 && lens[k] < target) k++
-        const t = (target - lens[k - 1]) / ((lens[k] - lens[k - 1]) || 1)
-        const q = pts.length > 1 ? pts[k - 1].clone().lerp(pts[k], t) : pts[0]
-        dots.push(q.x, q.y, q.z)
-      }
-      const pg = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(dots, 3))
-      const marks = new THREE.Points(pg, new THREE.PointsMaterial({ color, size: tick * 2.2, depthTest: false, transparent: true }))
-      marks.renderOrder = 7
-      this.controlGroup.add(marks)
-    })
-    o.faces.forEach((fid, i) => {
-      const f = p.data.faces.find((x) => x.id === fid)
-      if (!f) return
-      const geo = new THREE.BufferGeometry()
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(f.positions, 3))
-      geo.setIndex(f.indices)
-      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: isActive('face', i) ? 0xff9a1f : 0x2f9e8f, transparent: true, opacity: 0.45,
-        depthTest: false, side: THREE.DoubleSide }))
-      m.renderOrder = 6
-      this.controlGroup.add(m)
-    })
-    o.spheres.forEach((sp, i) => {
-      const m = new THREE.Mesh(new THREE.SphereGeometry(sp.radius, 28, 18), new THREE.MeshBasicMaterial({
-        color: isActive('sphere', i) ? 0xff9a1f : 0x3a7bd9, wireframe: true, transparent: true, opacity: isActive('sphere', i) ? 0.6 : 0.28 }))
-      m.position.set(sp.center[0], sp.center[1], sp.center[2])
-      this.controlGroup.add(m)
-    })
-  }
-
-  /** The sketches a part was drafted from, one colour each, drawn over everything. */
-  setTraceOverlay(o: InterpretOverlay | null) {
-    clearGroup(this.traceGroup)
-    if (!o) return
-    o.sketches.forEach((s, i) => {
-      const material = new THREE.LineBasicMaterial({ color: SKETCH_COLORS[i % SKETCH_COLORS.length], depthTest: false, transparent: true })
-      for (const pts of s.polylines) {
-        const line = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)), material)
-        line.renderOrder = 5
-        this.traceGroup.add(line)
-      }
-    })
-  }
-
-  private applyOverlayClipping() {
-    const planes = this.sectionOn ? [this.section.plane] : null
-    for (const group of [this.intentGroup, this.topoGroup, this.contourGroup, this.meshGroup]) {
-      group.traverse((n) => {
-        const m = (n as THREE.Mesh).material as THREE.Material | undefined
-        if (m) {
-          m.clippingPlanes = planes
-          m.needsUpdate = true
-        }
-      })
-    }
-  }
-
   // ---------- section ----------
 
   setSection(on: boolean) {
     this.sectionOn = on
     this.section.setEnabled(on)
     for (const p of this.parts.values()) this.applyClipping(p)
-    this.applyOverlayClipping()
   }
 
   setSectionPlane(normal: THREE.Vector3, point: THREE.Vector3) {
@@ -680,8 +455,19 @@ export class Viewer {
     this.updateCam()
   }
 
-  private zoom(factor: number) {
-    this.orbit.r = THREE.MathUtils.clamp(this.orbit.r * factor, 1, 1e5)
+  /** Zoom toward the point under the cursor: the target slides toward it as the camera closes in. */
+  private zoomAt(factor: number, clientX: number, clientY: number) {
+    const r = this.renderer.domElement.getBoundingClientRect()
+    const before = this.orbit.r
+    const next = THREE.MathUtils.clamp(before * factor, 1, 1e5)
+    const wpp = (2 * this.halfHeight()) / (r.height || 1)
+    const dx = (clientX - r.left - r.width / 2) * wpp
+    const dy = (clientY - r.top - r.height / 2) * wpp
+    const right = new THREE.Vector3().setFromMatrixColumn(this.persp.matrix, 0)
+    const up = new THREE.Vector3().setFromMatrixColumn(this.persp.matrix, 1)
+    const k = 1 - next / before
+    this.orbit.target.addScaledVector(right, dx * k).addScaledVector(up, -dy * k)
+    this.orbit.r = next
     this.updateCam()
   }
 
@@ -694,8 +480,6 @@ export class Viewer {
     const names = ['L', 'M', 'R'] as const
     let last: [number, number] | null = null
     let moved = 0
-    let chordMoved = 0
-    let zoomArmed = false
     let clickStart = false
     let draggingHandle = false
 
@@ -704,7 +488,6 @@ export class Viewer {
       const b = names[e.button]
       if (!b) return
       e.preventDefault()
-      if (b !== 'M' && btn.M) chordMoved = 0
       btn[b] = true
       last = [e.clientX, e.clientY]
       if (b === 'L' && !btn.M) {
@@ -718,8 +501,6 @@ export class Viewer {
       if (!b) return
       if (b === 'L' && clickStart && !btn.M && moved < 4 && e.target === cv) this.select(this.pickAt(e.clientX, e.clientY))
       btn[b] = false
-      if (b === 'M') zoomArmed = false
-      else if (btn.M && this.mouseScheme === 'catia' && chordMoved < 4) zoomArmed = true
       if (b === 'L') {
         clickStart = false
         draggingHandle = false
@@ -739,21 +520,16 @@ export class Viewer {
       const dy = e.clientY - last[1]
       last = [e.clientX, e.clientY]
       moved += Math.abs(dx) + Math.abs(dy)
-      chordMoved += Math.abs(dx) + Math.abs(dy)
       if (draggingHandle) {
         cv.style.cursor = 'grabbing'
         this.handleDrag(dx, dy)
-      } else if (this.mouseScheme === 'catia') {
-        if (btn.M && (btn.L || btn.R)) this.rotate(dx, dy)
-        else if (btn.M && zoomArmed) this.zoom(Math.exp(dy * 0.006))
-        else if (btn.M) this.pan(dx, dy)
       } else if (btn.L) this.rotate(dx, dy)
       else if (btn.R || btn.M) this.pan(dx, dy)
     }, opts)
     cv.addEventListener('mouseleave', () => this.setHover(null), opts)
     cv.addEventListener('wheel', (e) => {
       e.preventDefault()
-      this.zoom(Math.exp(e.deltaY * 0.0012))
+      this.zoomAt(Math.exp(e.deltaY * 0.0012), e.clientX, e.clientY)
     }, { ...opts, passive: false })
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.select(null)
@@ -767,11 +543,7 @@ export class Viewer {
     const h = this.el.clientHeight
     const r = this.renderer
     r.setViewport(0, 0, w, h)
-    this.findingGroup.traverse((n) => {
-      if (n.userData.billboard) n.quaternion.copy(this.cam.quaternion)
-    })
     r.render(this.scene, this.cam)
-    this.placePeakFlag(w, h)
     const s = 78
     r.setScissorTest(true)
     r.setScissor(w - s - 6, 6, s, s)
@@ -803,48 +575,3 @@ function same(a: FacePick | null, b: FacePick | null) {
 }
 
 const NO_RAYCAST = () => {}
-
-/** A colour-map strip for contours: 256 texels blended (a gradient), or `bands` flat colours with hard edges. */
-export function colorStrip(bands: number): THREE.DataTexture {
-  const n = bands > 0 ? bands : 256
-  const data = new Uint8Array(4 * n)
-  for (let i = 0; i < n; i++) {
-    const [r, g, b] = bands > 0 ? bandColor(i, n) : turbo(i / (n - 1))
-    data.set([Math.round(255 * r), Math.round(255 * g), Math.round(255 * b), 255], 4 * i)
-  }
-  const tex = new THREE.DataTexture(data, n, 1, THREE.RGBAFormat)
-  tex.colorSpace = THREE.SRGBColorSpace
-  tex.magFilter = tex.minFilter = bands > 0 ? THREE.NearestFilter : THREE.LinearFilter
-  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping
-  tex.generateMipmaps = false
-  tex.needsUpdate = true
-  return tex
-}
-
-/** Element edges as line segments sharing a mesh's position attribute (so a deformed shape moves them too). */
-function edgeLines(position: THREE.BufferAttribute, pairs: number[], color: number, opacity: number): THREE.LineSegments {
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', position)
-  geo.setIndex(pairs)
-  const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color, transparent: true, opacity }))
-  lines.renderOrder = 2
-  lines.raycast = NO_RAYCAST
-  return lines
-}
-
-/** Band `i` of `n` on the blue-to-red rainbow of banded stress plots (hue 240° down to 0°, full saturation). */
-export function bandColor(i: number, n: number): [number, number, number] {
-  const h = (240 * (1 - i / Math.max(1, n - 1))) / 60
-  const x = 1 - Math.abs((h % 2) - 1)
-  const k = Math.floor(h) % 6
-  return ([[1, x, 0], [x, 1, 0], [0, 1, x], [0, x, 1], [x, 0, 1], [1, 0, x]] as [number, number, number][])[k]
-}
-
-/** Turbo colour map (Google, Apache 2.0), polynomial approximation: t in [0, 1] -> rgb in [0, 1]. */
-export function turbo(t: number): [number, number, number] {
-  const x = Math.min(1, Math.max(0, t))
-  const r = 0.13572138 + x * (4.6153926 + x * (-42.66032258 + x * (132.13108234 + x * (-152.94239396 + x * 59.28637943))))
-  const g = 0.09140261 + x * (2.19418839 + x * (4.84296658 + x * (-14.18503333 + x * (4.27729857 + x * 2.82956604))))
-  const b = 0.1066733 + x * (12.64194608 + x * (-60.58204836 + x * (110.36276771 + x * (-89.90310912 + x * 27.34824973))))
-  return [Math.min(1, Math.max(0, r)), Math.min(1, Math.max(0, g)), Math.min(1, Math.max(0, b))]
-}

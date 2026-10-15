@@ -1,13 +1,12 @@
 import math
 
 import pytest
-from build123d import Face, IN, Vector, Wire
+from build123d import Face, Vector, Wire
 
 from print_assist.features.design import build_design
 from print_assist.features.library import _offset
 from print_assist.features.model import Design
 from print_assist.features.model import FeatureInstance as FI
-from print_assist.intent.models import Intent
 from print_assist.sketch.from_faces import faces_to_sketch
 from print_assist.sketch.geometry import SketchGeometryError, regions
 from print_assist.sketch.model import Sketch
@@ -66,14 +65,11 @@ def test_pad_and_pocket_from_sketches():
         pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         return Sketch(id=sid, entities=[_pt(f"p{i}", x, y) for i, (x, y) in enumerate(pts)]
                       + [{"id": f"l{i}", "kind": "line", "p1": f"p{i}", "p2": f"p{(i + 1) % 4}"} for i in range(4)])
-    it = Intent()
-    from print_assist.intent.models import DesignSpace, Frame
-    it.objects.append(DesignSpace(id="DS-01", frame=Frame(origin=(0, 0, 0), z=(0, 0, 1), x=(1, 0, 0)), min=(-50, -50, -10), max=(50, 50, 10)))
     d = Design(sketches=[rect("S1", 0, 0, 40, 30), rect("S2", 10, 5, 30, 25)], features=[
         FI(id="F1", kind="pad", params={"z_min": -5.0, "z_max": 5.0}, refs={"sketch": "S1"}),
         FI(id="F2", kind="sketch_pocket", params={"side": "-z", "depth": 3.0}, refs={"base": "F1", "sketch": "S2"}),
     ])
-    res = build_design(it, d)
+    res = build_design(d)
     assert [f.error for f in res.features] == [None, None]
     assert res.volume == pytest.approx(40 * 30 * 10 - 20 * 20 * 3, rel=1e-9)
     bb = res.local.bounding_box()
@@ -92,26 +88,3 @@ def test_spline_ends_follow_the_curves_they_join():
     assert tuple(sp[0].tangent_at(0)) == pytest.approx((0, 1, 0))  # the arc's tangent at (10, 0), heading toward m
     assert tuple(sp[-1].tangent_at(1)) == pytest.approx((-1, 0, 0))  # arriving at (0, 10) along the arc
     assert sum(f.area for f in regions(s)) > math.pi * 100 / 4  # a closed region: quarter arc plus the bulge
-
-
-def test_offset_pocket_keeps_a_rim_and_clears_the_lugs():
-    from print_assist.topo.sketch_seed import offset_pocket
-
-    R, rim = 14.0, 3.0
-    tri = Face(Wire.make_polygon([Vector(0, 0, 0), Vector(100, 0, 0), Vector(0, 60, 0)], close=True))
-    pins = {"IF-00": (0, 0), "IF-01": (100, 0), "IF-02": (0, 60)}
-    profile = solve(faces_to_sketch(_offset([tri], R), "S1", "Profile", pins))
-    pocket = solve(offset_pocket(profile, "S2", "Web", rim, 3.175))
-    assert pocket.report.status == "solved" and not pocket.report.redundant and not pocket.report.conflicting
-    # Every boss arc is concentric with its pin (shares the pin's held point) at the lug radius.
-    bosses = [e for e in pocket.entities if e.kind == "arc" and e.c.startswith("pin_")]
-    assert len(bosses) == 3
-    for a in bosses:
-        c, s0 = pocket.point(a.c), pocket.point(a.start)
-        assert math.hypot(s0.x - c.x, s0.y - c.y) == pytest.approx(R, abs=1e-6)
-    # The pocket stays the rim inside the outline, and clear of each lug circle.
-    from print_assist.sketch.geometry import edges
-    outer = regions(profile)[0].outer_wire()
-    pts = [e @ (i / 10) for e in edges(pocket) for i in range(11)]
-    assert min(outer.distance_to(q) for q in pts) == pytest.approx(rim, abs=1e-3)
-    assert all(math.hypot(q.X - x, q.Y - y) >= R - 1e-6 for q in pts for x, y in pins.values())

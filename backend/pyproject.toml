@@ -1,7 +1,7 @@
 [project]
 name = "print-assist"
 version = "0.1.0"
-description = "3D Print Assist backend: intent model, geometry and API"
+description = "3D Print Assist backend: parametric model, geometry and API"
 authors = [
     { name = "Ryan Smith", email = "ryanasmith@gmail.com" }
 ]
@@ -10,10 +10,8 @@ dependencies = [
     "anthropic>=1.11.0",
     "build123d>=0.13.0",
     "fastapi>=0.142.2",
-    "gmsh>=4.15.2",
-    "pyamg>=5.3.0",
+    "numpy>=2.0",
     "python-multipart>=0.0.32",
-    "scikit-image>=0.26.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -26,6 +24,3 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
 ]
-
-[tool.pytest.ini_options]
-filterwarnings = ["ignore:Setting the shape on a NumPy array:DeprecationWarning:skimage"]

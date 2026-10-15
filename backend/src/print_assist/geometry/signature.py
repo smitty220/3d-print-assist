@@ -7,7 +7,21 @@ import math
 from build123d import CenterOf, Face, GeomType, Shape
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 
-from ..intent.models import FaceSignature
+from pydantic import BaseModel
+
+Vec3 = tuple[float, float, float]
+
+
+class FaceSignature(BaseModel):
+    """Geometry that identifies a face independent of its index, used to re-find it after a revision."""
+
+    type: str
+    area: float
+    centroid: Vec3
+    normal: Vec3 | None = None
+    axis_origin: Vec3 | None = None
+    axis_dir: Vec3 | None = None
+    radius: float | None = None
 
 
 def _r(v: float) -> float:

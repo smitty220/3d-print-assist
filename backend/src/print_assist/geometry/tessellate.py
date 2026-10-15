@@ -2,7 +2,7 @@
 
 Every face is tessellated separately and keeps its index, so a click on a triangle
 in the viewer maps straight back to a B-rep face. Each face also carries a
-geometric signature (type, area, centroid, normal or axis) that lets intent objects
+geometric signature (type, area, centroid, normal or axis) that lets picked faces
 re-find the face after the source file is revised.
 """
 

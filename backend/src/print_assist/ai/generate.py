@@ -22,12 +22,9 @@ from ..features.context import FeatureError
 from ..features.design import build_design
 from ..features.library import FEATURES
 from ..features.model import Design, FeatureInstance
-from ..features.templates import TEMPLATES
 from ..validate import Report, validate
 
 DEFAULT_MODEL = "claude-opus-5-5"
-IN = 25.4
-LB = 0.45359237
 
 
 def _param_text(v) -> str:
@@ -70,15 +67,7 @@ def model_name() -> str:
     return os.environ.get("PRINT_ASSIST_MODEL") or DEFAULT_MODEL
 
 
-def replay_mode() -> bool:
-    return os.environ.get("PRINT_ASSIST_AI_REPLAY") == "1"
-
-
 def make_client() -> MessagesClient:
-    if replay_mode():
-        from .replay import ReplayClient
-
-        return ReplayClient()
     load_env_key()
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("No Anthropic API key: set ANTHROPIC_API_KEY in your shell or in backend/.env, then restart the backend")
@@ -94,7 +83,7 @@ def make_client() -> MessagesClient:
 
 @dataclass
 class Step:
-    kind: Literal["note", "build", "template", "finish", "error"]
+    kind: Literal["note", "build", "finish", "error"]
     text: str
     round: int = 0
     counts: dict[str, int] | None = None
@@ -132,58 +121,34 @@ class Job:
 # ---------------------------------------------------------------- prompt
 
 
-SYSTEM = """You are the design engine inside 3D Print Assist, an aerospace bracket design tool. You design machined \
-brackets by composing parametric library features. You never write geometry yourself: you propose a feature tree, \
-the tool builds it with OpenCascade and runs a validator, and you revise from the results.
-
-The engineer you work for is a career stress engineer who manages designers and works with machine shops. They \
-have defined the design intent: interfaces picked on mating parts (planar mounts, bolt patterns, pin bores), \
-keep-out volumes, a design space, load cases and design rules. The intent is fixed; your job is a part that \
-satisfies it.
+SYSTEM = """You are the design engine inside 3D Print Assist, a parametric CAD tool for 3D-printed products. You \
+design parts by composing parametric library features. You never write geometry yourself: you propose a feature \
+tree, the tool builds it with OpenCascade and runs print checks, and you revise from the results.
 
 Units and frame:
-- All lengths are millimetres (1 in = 25.4 mm). Report sizes to the engineer in inches.
-- Parts are built in the design frame: Z = 0 is the primary mount face, +Z points away from the mating part, \
-X and Y lie in the mount face. Feature positions (center_x, center_y) are in this frame.
+- All lengths are millimetres. Z is up and the print bed is Z = 0; parts are built in this world frame.
 
 How the feature tree works:
 - A design is an ordered list of features. Each has an id ("F1", "F2", ...), a kind from the catalog, params \
-(numbers in mm, or a choice string) and refs. A ref points at an intent object id ("IF-01") or at an earlier \
-feature id ("F1"). Edge features (fillet, chamfer) take face groups such as "F1.top" or "F3" for refs faces_a / \
-faces_b and act on the edges between them. A fillet or chamfer shown with "picked edges" uses edges the engineer \
-picked on the part: keep its id and kind and leave faces_a / faces_b out, and the picks carry over.
-- Features build in order: add features fuse, pocket/holes cut, fillet/chamfer modify edges. Values marked as \
-driven (pin size, hole size, gap) come from the intent and need no params.
+(numbers in mm, or a choice string) and refs. A ref points at an earlier feature id ("F1") or a sketch id. Edge \
+features (fillet, chamfer) take face groups such as "F1.top" or "F3" for refs faces_a / faces_b and act on the \
+edges between them. A fillet or chamfer shown with "picked edges" uses edges the user picked on the part: keep \
+its id and kind and leave faces_a / faces_b out, and the picks carry over.
+- Features build in order: add features fuse, cuts subtract, fillet/chamfer modify edges.
 - Params outside a spec's min/max are clamped; the build result shows the resolved values.
-- Features marked locked were fixed by the engineer. Keep them exactly as given; the tool restores them if you \
+- Features marked locked were fixed by the user. Keep them exactly as given; the tool restores them if you \
 change or drop them.
 
 Working method:
-1. If no design exists, get the reference template that matches the interfaces (get_template) and use it as \
-the starting point. Clevis bracket = male rod end (bore without a gap); single-lug fitting = forked end (bore \
-with a gap); angle bracket = second bolt pattern on an upright face.
-2. Call build_and_check with a complete design. Read every failure and warning.
-3. Revise and rebuild. Change a few things per round and say why in one short sentence before the call.
-4. Stop when there are no failures and nothing more worth improving, or when you cannot make progress. Then \
+1. Call build_and_check with a complete design. Read every failure and warning.
+2. Revise and rebuild. Change a few things per round and say why in one short sentence before the call.
+3. Stop when there are no failures and nothing more worth improving, or when you cannot make progress. Then \
 call finish.
 
-Priorities, in order: no build errors; no validator failures (keep-out clearance, design space, interference, \
-interfaces matched, minimum wall, rule checks); then the mass target; then fewer warnings; then simplicity and \
-machinability (fewer features, standard radii, no thin walls). A soft warning you cannot clear without breaking \
-something more important is acceptable: explain it in finish.
+Priorities, in order: no build errors; no print-check failures (fits the bed, minimum wall, rule checks); then \
+fewer warnings; then simplicity (fewer features, printable without supports where possible).
 
-Keep your text short and specific. The engineer reads every note you write, between builds, as a log."""
-
-
-def _intent_brief(intent) -> list[dict]:
-    """The intent without face signatures and footprints: what Claude needs to design against."""
-    out = []
-    for o in intent.objects:
-        d = json.loads(o.model_dump_json(exclude={"face", "footprint"}))
-        if o.kind == "bolt_pattern":
-            d["holes"] = [{"center": h["center"], "diameter": round(h["diameter"], 3)} for h in d["holes"]]
-        out.append(d)
-    return out
+Keep your text short and specific. The user reads every note you write, between builds, as a log."""
 
 
 def _catalog() -> list[dict]:
@@ -192,21 +157,12 @@ def _catalog() -> list[dict]:
 
 TOOLS = [
     {
-        "name": "get_template",
-        "description": "Return a reference bracket's feature tree, sized from this project's intent. Use it as a starting point; it is not applied until you build it.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"name": {"type": "string", "enum": list(TEMPLATES)}},
-            "required": ["name"],
-        },
-    },
-    {
         "name": "build_and_check",
-        "description": "Build a complete design (replacing the current one) and run the validator. Returns build errors, resolved params, mass and every validator finding.",
+        "description": "Build a complete design (replacing the current one) and run the print checks. Returns build errors, resolved params, mass and every finding.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "note": {"type": "string", "description": "One sentence for the engineer: what this round changes and why."},
+                "note": {"type": "string", "description": "One sentence for the user: what this round changes and why."},
                 "features": {
                     "type": "array",
                     "items": {
@@ -233,7 +189,7 @@ TOOLS = [
             "properties": {
                 "summary": {
                     "type": "string",
-                    "description": "For the engineer, 2-5 sentences: what the part is, its mass against target, any remaining warnings and why they stand, anything they should decide.",
+                    "description": "For the user, 2-5 sentences: what the part is, any remaining warnings and why they stand, anything they should decide.",
                 }
             },
             "required": ["summary"],
@@ -245,32 +201,28 @@ TOOLS = [
 # ---------------------------------------------------------------- the loop
 
 
-def _score(report: Report, mass: float, target: float | None) -> tuple:
+def _score(report: Report, mass: float) -> tuple:
     c = report.to_dict()["counts"]
-    over = max(0.0, mass - target) if target else 0.0
-    return (c["fail"], over, c["warn"], mass)
+    return (c["fail"], c["warn"], mass)
 
 
-def _report_text(design: Design, build, report: Report, kept: list[str], target: float | None) -> str:
+def _report_text(design: Design, build, report: Report, kept: list[str]) -> str:
     lines = []
     if kept:
-        lines.append(f"Locked features restored as the engineer set them: {', '.join(kept)}.")
+        lines.append(f"Locked features restored as the user set them: {', '.join(kept)}.")
     for fr, fi in zip(build.features, design.features):
         state = "ERROR " + fr.error if fr.error else ("suppressed" if fr.suppressed else "ok")
         params = ", ".join(f"{k}={_param_text(v)}" for k, v in fr.params.items())
         driven = f" driven: {fr.driven}" if fr.driven else ""
         picked = f" picked edges: {len(fi.edges)}" if fi.edges else ""
         lines.append(f"{fi.id} {fi.kind} [{state}] params: {params} refs: {fi.refs}{picked}{driven}")
-    mass_line = f"Mass {build.mass / LB:.3f} lb"
-    if target:
-        mass_line += f" against target {target / LB:.3f} lb ({(build.mass / target - 1) * 100:+.0f}%)"
-    lines.append(mass_line)
+    lines.append(f"Mass {build.mass * 1000:.1f} g, volume {build.volume / 1000:.1f} cm³")
     counts = report.to_dict()["counts"]
     lines.append(f"Validator: {counts['fail']} fail, {counts['warn']} warn, {counts['ok']} ok")
     for f in report.preflight + report.part:
         if f.code == "mass":
             continue
-        if f.status != "ok" or f.code in ("keepout", "in_space", "wall"):
+        if f.status != "ok" or f.code in ("bed", "wall"):
             val = f" (value {f.value:.3f} mm)" if f.value is not None and f.quantity == "length" else ""
             lines.append(f"[{f.status}] {f.title}: {f.detail}{val}")
     return "\n".join(lines)
@@ -287,7 +239,7 @@ def _restore_locked(proposed: list[FeatureInstance], base: Design) -> tuple[list
             out.append(locked[f.id].model_copy(deep=True))
             seen.add(f.id)
         else:
-            # Picked edges are the engineer's (Claude cannot pick): they stay with the same fillet / chamfer unless
+            # Picked edges are the user's (Claude cannot pick): they stay with the same fillet / chamfer unless
             # Claude gives it face groups instead.
             old = before.get(f.id)
             update: dict = {"locked": False}
@@ -303,24 +255,21 @@ def _restore_locked(proposed: list[FeatureInstance], base: Design) -> tuple[list
 
 def run(job: Job, project, client: MessagesClient, lock: threading.Lock) -> None:
     """Run one generation session to completion, writing each candidate into the project as it is built."""
-    intent = project.data.intent
     base = project.data.design.model_copy(deep=True)
     before = base.model_copy(deep=True)
-    roles = {k: v.role for k, v in project.data.parts.items()}
-    target = intent.rules.mass_target
     best: list = [None]  # [(score, design)], shared with the tool calls
 
     first = {
-        "intent": _intent_brief(intent),
-        "rules": json.loads(intent.rules.model_dump_json()),
+        "rules": json.loads(project.data.rules.model_dump_json()),
+        "printer": json.loads(project.printer.model_dump_json()),
         "current_design": json.loads(base.model_dump_json())["features"],
-        "templates": {k: v[1] for k, v in TEMPLATES.items()},
+        "sketches": [s.id for s in base.sketches],
         "max_builds": job.max_rounds,
     }
-    ask = job.instruction.strip() or "Design a part that satisfies the intent."
+    ask = job.instruction.strip() or "Improve the design."
     messages: list[dict] = [{
         "role": "user",
-        "content": f"Engineer's request: {ask}\n\nProject state (mm):\n{json.dumps(first, separators=(',', ':'))}",
+        "content": f"Request: {ask}\n\nProject state (mm):\n{json.dumps(first, separators=(',', ':'))}",
     }]
     system = [
         {"type": "text", "text": SYSTEM},
@@ -348,7 +297,7 @@ def run(job: Job, project, client: MessagesClient, lock: threading.Lock) -> None
                 if b.type == "text" and b.text.strip():
                     log("note", b.text.strip())
                 elif b.type == "tool_use":
-                    text, is_error, done = _call_tool(b, job, project, intent, base, roles, target, lock, log, best)
+                    text, is_error, done = _call_tool(b, job, project, base, lock, log, best)
                     results.append({"type": "tool_result", "tool_use_id": b.id, "content": text, "is_error": is_error})
                     finished = finished or done
             if finished:
@@ -386,20 +335,8 @@ def _block_dict(b) -> dict:
     return b.model_dump() if hasattr(b, "model_dump") else dict(b)
 
 
-def _call_tool(b, job: Job, project, intent, base: Design, roles, target, lock, log, best_ref) -> tuple[str, bool, bool]:
+def _call_tool(b, job: Job, project, base: Design, lock, log, best_ref) -> tuple[str, bool, bool]:
     name, args = b.name, b.input or {}
-    if name == "get_template":
-        tname = args.get("name", "")
-        if tname not in TEMPLATES:
-            return f"No template {tname!r}; choose from {list(TEMPLATES)}", True, False
-        try:
-            d = TEMPLATES[tname][2](intent)
-        except FeatureError as exc:
-            log("template", f"{TEMPLATES[tname][0]} does not fit: {exc}")
-            return f"{tname} does not fit this intent: {exc}", True, False
-        log("template", f"Starting from the {TEMPLATES[tname][0].lower()} template")
-        return json.dumps(json.loads(d.model_dump_json())["features"]), False, False
-
     if name == "build_and_check":
         if job.rounds >= job.max_rounds:
             return "Build limit reached. Call finish now.", True, False
@@ -414,12 +351,12 @@ def _call_tool(b, job: Job, project, intent, base: Design, roles, target, lock, 
         design = base.model_copy(update={"features": features})  # keeps the sketches the pads and pockets consume
         job.rounds += 1
         try:
-            build = build_design(intent, design)
+            build = build_design(design, project.data.rules)
         except FeatureError as exc:
             log("build", f"Round {job.rounds}: {exc}")
             return f"Build failed: {exc}", True, False
-        report = validate(intent, build, project.shape, roles)
-        score = _score(report, build.mass, target)
+        report = validate(build, project.data.rules, project.printer)
+        score = _score(report, build.mass)
         counts = report.to_dict()["counts"]
         if best_ref[0] is None or score < best_ref[0][0]:
             best_ref[0] = (score, design)
@@ -430,7 +367,7 @@ def _call_tool(b, job: Job, project, intent, base: Design, roles, target, lock, 
             project.save()
             job.design_rev += 1
         log("build", args.get("note", "").strip() or f"Round {job.rounds}", counts=counts, mass=build.mass)
-        return _report_text(design, build, report, kept, target), False, False
+        return _report_text(design, build, report, kept), False, False
 
     if name == "finish":
         job.summary = (args.get("summary") or "").strip()

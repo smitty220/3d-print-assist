@@ -14,7 +14,7 @@ class Point(BaseModel):
     x: float
     y: float
     fixed: bool = False
-    ref: str | None = None  # an intent id that places this point (a pin centre); held there
+    ref: str | None = None  # unused; kept so older project files still load
 
 
 class Line(BaseModel):

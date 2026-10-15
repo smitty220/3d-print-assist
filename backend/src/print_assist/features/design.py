@@ -11,21 +11,12 @@ from OCP.BRep import BRep_Tool
 from OCP.gp import gp_Pnt
 from OCP.ShapeAnalysis import ShapeAnalysis_Surface
 
-from ..intent.models import Frame, Intent
-from .context import BuildContext, FeatureError, frame_plane
+from ..rules import PrintRules
+from .context import BuildContext, FeatureError
 from .library import FEATURES, resolve_params
 from .model import Check, Design, EdgePick, FeatureOutput
 
 ATTR_TOL = 1e-3  # mm
-
-
-def design_frame(intent: Intent) -> Frame:
-    """The design space's frame if one exists, else the first planar mount's."""
-    for kind in ("design_space", "planar_mount"):
-        obj = next((o for o in intent.objects if o.kind == kind), None)
-        if obj is not None:
-            return obj.frame
-    raise FeatureError("Create a planar mount first; parts are built in its frame")
 
 
 @dataclass
@@ -43,7 +34,7 @@ class FeatureResult:
 
 @dataclass
 class BuildResult:
-    local: Shape | None
+    local: Shape | None  # the part; local and world are the same (world frame, Z up, bed at Z = 0)
     world: Shape | None
     features: list[FeatureResult]
     checks: list[Check]
@@ -159,7 +150,7 @@ def _sharp(shape: Shape, owner_ids: list[int], edge) -> bool:
 
 
 def describe_edge(shape: Shape, names: list[str | None], index: int) -> EdgePick:
-    """The pick record for edge `index` of `shape` (design frame). Raises FeatureError for an edge with nothing to blend."""
+    """The pick record for edge `index` of `shape`. Raises FeatureError for an edge with nothing to blend."""
     edges = shape.edges()
     if not 0 <= index < len(edges):
         raise FeatureError(f"no edge {index}")
@@ -198,17 +189,18 @@ def find_picked_edges(shape: Shape, names: list[str | None], picks: list[EdgePic
                 best = near[0][1]
         if best is None:
             where = " / ".join(f for f in pick.faces if f) or "?"
-            raise FeatureError(f"picked edge {k} ({where}, {pick.length / 25.4:.3f} in long) is not on the part; "
+            raise FeatureError(f"picked edge {k} ({where}, {pick.length:.1f} mm long) is not on the part; "
                                f"pick it again (it may come from a later feature)")
         found[best] = edge_obj[best]
     return list(found.values())
 
 
-def build_design(intent: Intent, design: Design, on_feature: Callable[[FeatureResult, Shape | None, Frame], None] | None = None) -> BuildResult:
-    """Build every feature in order. `on_feature` is called after each one with its result and the part so far
-    (design frame), for showing a build as it happens."""
-    frame = design_frame(intent)
-    ctx = BuildContext(intent=intent, frame=frame, sketches={s.id: s for s in design.sketches})
+def build_design(design: Design, rules: PrintRules | None = None,
+                 on_feature: Callable[[FeatureResult, Shape | None], None] | None = None) -> BuildResult:
+    """Build every feature in order (world frame). `on_feature` is called after each one with its result and the part
+    so far, for showing a build as it happens."""
+    rules = rules or PrintRules()
+    ctx = BuildContext(rules=rules, sketches={s.id: s for s in design.sketches})
     results: list[FeatureResult] = []
     checks: list[Check] = []
     part: Shape | None = None
@@ -246,18 +238,10 @@ def build_design(intent: Intent, design: Design, on_feature: Callable[[FeatureRe
         except Exception as exc:  # geometry kernel failures
             res.error = f"geometry error: {exc}"
         if on_feature is not None:
-            on_feature(res, part, frame)
+            on_feature(res, part)
 
     if part is None:
         return BuildResult(None, None, results, checks, [], 0.0, 0.0)
     names = attribute(part, ctx.outputs)
-    world = frame_plane(frame).location * part
-    density = intent_density(intent)
     volume = part.volume
-    return BuildResult(part, world, results, checks, names, volume, volume * 1e-9 * density)
-
-
-def intent_density(intent: Intent) -> float:
-    from ..intent.models import MATERIALS
-
-    return MATERIALS.get(intent.rules.material, 2810.0)
+    return BuildResult(part, part, results, checks, names, volume, volume * 1e-9 * rules.density)
