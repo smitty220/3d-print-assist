@@ -66,7 +66,7 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .toolbar-host { min-height: 66px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .tgroup { display: flex; flex-direction: column; align-items: center; padding: 0 4px; border-right: 1px solid var(--line-2); }
 .tbtns { display: flex; gap: 1px; align-items: stretch; }
-.tool { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 42px; padding: 4px 2px 2px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; font-size: 10.5px; }
+.tool { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 38px; padding: 4px 2px 2px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--fg-2); cursor: pointer; font-size: 10.5px; }
 .tool span { white-space: nowrap; max-width: 58px; overflow: hidden; text-overflow: ellipsis; }
 .tool:hover:not(:disabled) { background: #2c313a; }
 .tool:disabled { cursor: default; opacity: 0.5; }
@@ -98,6 +98,13 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .val.edited { color: #f6c46e; }
 .chip { font-size: 10px; padding: 0 6px; border-radius: 10px; background: var(--accent-soft); color: #f6c46e; white-space: nowrap; }
 .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; border: 1px solid #0006; }
+.sw.ghost { opacity: .55; border-style: dashed; }
+.lb.hidden { opacity: .5; }
+.eyebtn { display: inline-flex; padding: 2px 4px; border-radius: 4px; color: var(--muted); opacity: .45; cursor: pointer; }
+.eyebtn.on { opacity: 1; color: var(--text); }
+.eyebtn:hover, .eyebtn:focus-visible { background: #ffffff14; opacity: 1; }
+.refparts { margin: 4px 0 0; padding: 0; list-style: none; max-height: 140px; overflow: auto; font-size: 12px; color: var(--muted); }
+.refparts li { display: flex; gap: 8px; justify-content: space-between; padding: 1px 0; }
 .endbar { display: flex; align-items: center; gap: 8px; margin: 6px 4px; color: var(--accent); font-size: 11px; cursor: grab; }
 .endbar .rule { flex: 1; height: 3px; border-radius: 2px; background: var(--accent); }
 .legend { margin-top: auto; display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line-2); }

@@ -142,6 +142,41 @@ export interface Tree {
   filaments: Filament[]
   variants: Variant[]
   colorways: Colorway[]
+  references: Reference[]
+}
+
+/** A file beside the design to look at and copy features from; never built or printed. */
+export interface Reference {
+  id: string
+  name: string
+  file: string
+  plate: number | null
+  visible: boolean
+  place: 'on_bed' | 'as_in_file'
+  x: number
+  y: number
+  z: number
+  rotate_z: number
+  scale: number
+  color: string
+}
+
+export interface ReferenceInfo extends Reference {
+  error?: string
+  triangles?: number
+  plates?: string[]
+  part_count?: number
+  bounds?: { min: number[]; max: number[]; size: number[] }
+  parts?: { name: string; triangles: number; size: number[]; volume: number | null }[]
+}
+
+export interface ReferenceMesh { id: string; color: string; parts: { name: string; positions: Float32Array; indices: Uint32Array }[] }
+
+const decode = <T extends Float32Array | Uint32Array>(b64: string, Arr: { new (b: ArrayBuffer): T }): T => {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new Arr(bytes.buffer)
 }
 
 export interface BodyNode {
@@ -285,6 +320,16 @@ export const api = {
   deleteBody: (id: string) => send<Changed>('DELETE', `/bodies/${id}`),
   rollback: (index: number | null) => send<Changed>('PUT', '/rollback', { index }),
   evalExpr: (expr: string) => send<{ value?: number; error?: string }>('POST', '/expr/eval', { expr }),
+  addReference: (file: File, newDesign: boolean) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`/api/references?new_design=${newDesign}`, { method: 'POST', body: form }).then((r) => json<Changed>(r))
+  },
+  references: () => get<ReferenceInfo[]>('/references'),
+  referenceMesh: async (id: string): Promise<ReferenceMesh> => {
+    const r = await get<{ id: string; color: string; parts: { name: string; positions: string; indices: string }[] }>(`/references/${id}/mesh`)
+    return { ...r, parts: r.parts.map((p) => ({ name: p.name, positions: decode(p.positions, Float32Array), indices: decode(p.indices, Uint32Array) })) }
+  },
   importFile: (file: File, newDesign: boolean) => {
     const form = new FormData()
     form.append('file', file)

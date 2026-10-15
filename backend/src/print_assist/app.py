@@ -529,25 +529,23 @@ def toggle_face(fid: str, pick: PickIn, x_actor: str = Header(USER)) -> dict:
     return _change([{"op": "edit_feature", "id": fid, "faces": faces}], x_actor, f"{'Unpick' if same else 'Pick'} a face for {fid}")
 
 
-# ---------------------------------------------------------------- import
+# ---------------------------------------------------------------- import and references
 
-IMPORT_MAX = 100 * 1024 * 1024  # bytes
+IMPORT_MAX = 200 * 1024 * 1024  # bytes
 
 
-@app.post("/api/import")
-async def import_file(file: UploadFile, new_design: bool = False, x_actor: str = Header(default=USER)) -> dict:
-    """Bring a STEP, STL or 3MF file in: it is copied to the design's references folder and added as an Import
-    feature in a body of its own (the first body, when the design is still empty). `new_design` starts a design named
-    after the file first."""
+async def _store(file: UploadFile, kinds: tuple[str, ...], new_design: bool):
+    """Save an uploaded file in the open design's references folder (a new design named after it first, if asked),
+    reusing the stored copy when the same file is there already. Returns the workspace, the path, the file's stem and
+    whether the file is new (so a file that turns out unreadable can be removed again)."""
     import re
     from pathlib import Path
 
-    from .geometry.meshio import FORMATS, ImportError_, load
-
-    original = Path(file.filename or "import").name
+    original = Path(file.filename or "file").name
     stem, ext = Path(original).stem, Path(original).suffix.lower()
-    if ext not in FORMATS:
-        raise HTTPException(422, f"Can't import {ext or 'that'} files; formats: STEP, STL, 3MF")
+    if ext not in kinds:
+        raise HTTPException(422, f"Can't use {ext or 'that'} files here; formats: "
+                                 + ", ".join(sorted({k.strip('.').upper() for k in kinds})))
     data = await file.read(IMPORT_MAX + 1)
     if len(data) > IMPORT_MAX:
         raise HTTPException(413, f"{original} is over {IMPORT_MAX // 2**20} MB")
@@ -559,20 +557,40 @@ async def import_file(file: UploadFile, new_design: bool = False, x_actor: str =
     w = ws()
     folder = w.project.root / "references"
     folder.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.") or "import"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-.") or "file"
     path, n = folder / f"{safe}{ext}", 1
     while path.exists() and path.read_bytes() != data:
         n += 1
         path = folder / f"{safe}-{n}{ext}"
     fresh = not path.exists()
-    path.write_bytes(data)
+    if fresh:
+        path.write_bytes(data)
+    return w, path, stem, fresh
+
+
+def _unreadable(path, exc: Exception, fresh: bool) -> HTTPException:
+    from .geometry.meshio import ImportError_
+
+    if fresh:
+        path.unlink(missing_ok=True)
+    return HTTPException(422, str(exc) if isinstance(exc, ImportError_) else f"can't read {path.name}: {exc}")
+
+
+@app.post("/api/import")
+async def import_file(file: UploadFile, new_design: bool = False, x_actor: str = Header(default=USER)) -> dict:
+    """Bring a STEP file in as an exact solid: it is kept in the design's references folder and added as an Import
+    feature in a body of its own (the first body, when the design is still empty). `new_design` starts a design named
+    after the file first. Meshes (STL, 3MF) are references instead: POST /api/references."""
+    from .geometry.meshio import STEP, load_step
+
+    if (file.filename or "").lower().endswith((".stl", ".3mf")):
+        raise HTTPException(422, "STL and 3MF files are meshes: add them as references (File › Add reference) to look "
+                                 "at, measure and copy features from; import STEP files to edit")
+    w, path, stem, fresh = await _store(file, STEP, new_design)
     try:
-        await asyncio.to_thread(load, path)  # read it once here, so a bad file is refused before it reaches the tree
+        await asyncio.to_thread(load_step, path)  # read it once here, so a bad file is refused before the tree
     except Exception as exc:
-        if fresh:
-            path.unlink(missing_ok=True)
-        msg = str(exc) if isinstance(exc, ImportError_) else f"can't read {original}: {exc}"
-        raise HTTPException(422, msg) from exc
+        raise _unreadable(path, exc, fresh) from exc
     d = w.design
     if not d.features and len(d.bodies) == 1:
         ops: list[dict] = [{"op": "edit_body", "id": d.bodies[0].id, "name": stem}]
@@ -581,7 +599,122 @@ async def import_file(file: UploadFile, new_design: bool = False, x_actor: str =
         body = d.next_body_id()
         ops = [{"op": "add_body", "name": stem}]
     ops.append({"op": "add_feature", "kind": "import", "body": body, "params": {"file": path.name}})
-    return _change(ops, x_actor, f"Import {original}")
+    return _change(ops, x_actor, f"Import {path.name}")
+
+
+@app.post("/api/references")
+async def add_reference(file: UploadFile, plate: int | None = None, new_design: bool = False,
+                        x_actor: str = Header(default=USER)) -> dict:
+    """Add a STEP, STL or 3MF file as a reference: shown beside the design (never printed) for the user and the AI to
+    look at, measure and copy features from."""
+    from .geometry.meshio import FORMATS, read_mesh
+
+    w, path, stem, fresh = await _store(file, FORMATS, new_design)
+    try:
+        await asyncio.to_thread(read_mesh, path, plate)
+    except Exception as exc:
+        raise _unreadable(path, exc, fresh) from exc
+    op = {"op": "set_reference", "file": path.name, "name": stem}
+    if plate:
+        op["plate"] = plate
+    return _change([op], x_actor, f"Add reference {path.name}")
+
+
+def _ref(rid: str):
+    w = ws()
+    r = w.design.reference(rid)
+    if r is None:
+        raise HTTPException(404, f"No reference {rid!r}")
+    return w, r
+
+
+@app.get("/api/references")
+def list_references(parts: bool = True) -> list[dict]:
+    """Every reference with its size and parts (name, triangles, bounding box, volume when closed), as placed."""
+    from .references import summary
+
+    w = ws()
+    return [summary(r, w.project.root / "references", parts) for r in w.design.references]
+
+
+@app.get("/api/references/{rid}/mesh")
+def reference_mesh(rid: str) -> dict:
+    """The placed reference's triangles for the view: per part, base64 little-endian float32 positions and uint32
+    indices."""
+    import base64
+
+    import numpy as np
+
+    from .references import placed
+
+    w, r = _ref(rid)
+    try:
+        mesh = placed(r, w.project.root / "references")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, str(exc)) from exc
+    b64 = lambda a: base64.b64encode(a.tobytes()).decode()  # noqa: E731
+    return {"id": r.id, "color": r.color, "parts": [
+        {"name": p.name, "positions": b64(p.points.astype("<f4")), "indices": b64(p.tris.astype("<u4"))}
+        for p in mesh.parts]}
+
+
+def _region(region: str | None):
+    if not region:
+        return None
+    try:
+        v = tuple(float(x) for x in region.split(","))
+    except ValueError:
+        v = ()
+    if len(v) != 6:
+        raise HTTPException(422, "region is xmin,ymin,zmin,xmax,ymax,zmax in mm")
+    return v
+
+
+@app.get("/api/references/{rid}/render")
+def reference_render(rid: str, view: str = "iso", size: int = 768, part: str | None = None,
+                     with_design: bool = False, region: str | None = None) -> Response:
+    """A picture of the reference (or one part of it) as placed; `with_design` draws the design's last good build in
+    with it, to compare; `region` (xmin,ymin,zmin,xmax,ymax,zmax) zooms to what lies inside a box."""
+    from .geometry.render import render
+    from .references import pick_parts, placed
+
+    w, r = _ref(rid)
+    try:
+        mesh = placed(r, w.project.root / "references")
+        parts = pick_parts(mesh, part)
+    except KeyError as exc:
+        raise HTTPException(422, exc.args[0]) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, str(exc)) from exc
+    bodies = []
+    if with_design and w.last_good:
+        bodies = [(s, w.design.body_color(b)) for b in w.design.bodies if (s := w.last_good.parts.get(b.id)) is not None]
+    try:
+        png = render(bodies, view, size, meshes=[(p.points, p.tris, r.color) for p in parts], region=_region(region))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(png, media_type="image/png")
+
+
+@app.get("/api/references/{rid}/section")
+def reference_section(rid: str, axis: Literal["X", "Y", "Z", "x", "y", "z"] = "Z", offset: float = 0.0,
+                      part: str | None = None, tol: float = 0.05) -> dict:
+    """Where the plane axis = offset cuts the reference: its closed outlines in the plane's other two coordinates
+    (Z: x, y; Y: x, z; X: y, z), largest first, with area, length, and centre and radius for circles."""
+    from .geometry.meshio import section
+    from .references import pick_parts, placed
+
+    w, r = _ref(rid)
+    try:
+        parts = pick_parts(placed(r, w.project.root / "references"), part)
+    except KeyError as exc:
+        raise HTTPException(422, exc.args[0]) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, str(exc)) from exc
+    loops = section(parts, axis.upper(), offset, max(tol, 0.001))
+    coords = {"X": ["y", "z"], "Y": ["x", "z"], "Z": ["x", "y"]}[axis.upper()]
+    return {"reference": rid, "axis": axis.upper(), "offset": offset, "coords": coords, "outlines": loops[:60],
+            "more": max(0, len(loops) - 60)}
 
 
 # ---------------------------------------------------------------- export and fonts

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type Activity, type AiStatus, type Checks, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
-import { FeatureDialog, ParamDialog } from './edit/Dialogs'
+import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
 import type { FileAction } from './layout/FileMenu'
 import { Header, type Mode } from './layout/Header'
@@ -17,7 +17,7 @@ import { Icon } from './ui/icons'
 import { ViewportPane } from './viewport/ViewportPane'
 import type { FacePick as ViewPick } from './viewer/Viewer'
 
-type Dialog = { type: 'feature'; id: string } | { type: 'param'; name: string | null } | null
+type Dialog = { type: 'feature'; id: string } | { type: 'param'; name: string | null } | { type: 'ref'; id: string } | null
 type NamePurpose = 'new' | 'save-as' | 'rename' | 'save-version'
 type FileModal =
   | { type: 'name'; purpose: NamePurpose }
@@ -138,31 +138,43 @@ export default function App() {
   const doSave = (message = '') => run(() => api.save(message)).then((f) => { if (f) setFile(f) })
 
   // Import: the browser's file picker (any folder), then the file is uploaded into the design's references folder.
+  // STEP files import as solids (an Import feature); STEP, STL and 3MF files can be references beside the design.
   const importInput = useRef<HTMLInputElement>(null)
+  const refInput = useRef<HTMLInputElement>(null)
   const importNew = useRef(false)
   const pickImport = (newDesign: boolean) => { importNew.current = newDesign; importInput.current?.click() }
-  async function onImportFile(f: File | undefined) {
-    if (importInput.current) importInput.current.value = ''
+  const pickReference = (newDesign: boolean) => { importNew.current = newDesign; refInput.current?.click() }
+  async function onImportFile(f: File | undefined, asReference: boolean) {
+    for (const el of [importInput.current, refInput.current]) if (el) el.value = ''
     if (!f) return
     setUpdating(true)
     try {
-      const r = await run(() => api.importFile(f, importNew.current))
+      const r = await run(() => (asReference ? api.addReference(f, importNew.current) : api.importFile(f, importNew.current)))
       if (!r) return
       if (importNew.current) await reopen()
       else changed(r)
+      const id = r.made.at(-1)
+      if (asReference) {
+        if (id) { setSelected(`ref:${id}`); setDialog({ type: 'ref', id }) }
+        return
+      }
       const t = await run(api.update)  // show it right away, whatever the update mode
       if (t) setTree(t)
-      const id = r.made.at(-1)
       if (id) setSelected(`feature:${id}`)
     } finally { setUpdating(false) }
   }
   const importPicker = (
-    <input ref={importInput} type="file" accept=".step,.stp,.stl,.3mf" hidden onChange={(e) => onImportFile(e.target.files?.[0])} />
+    <>
+      <input ref={importInput} type="file" accept=".step,.stp" hidden onChange={(e) => onImportFile(e.target.files?.[0], false)} />
+      <input ref={refInput} type="file" accept=".step,.stp,.stl,.3mf" hidden onChange={(e) => onImportFile(e.target.files?.[0], true)} />
+    </>
   )
 
   function onFile(a: FileAction) {
     if (a === 'import') pickImport(false)
     else if (a === 'import-new') guard(() => pickImport(true))
+    else if (a === 'reference') pickReference(false)
+    else if (a === 'reference-new') guard(() => pickReference(true))
     else if (a === 'new') guard(() => setFileModal({ type: 'name', purpose: 'new' }))
     else if (a === 'open') guard(() => setFileModal({ type: 'open' }))
     else if (a === 'save') doSave()
@@ -230,6 +242,7 @@ export default function App() {
     if (t.action === 'new-sketch') { setSketchMenu(!sketchMenu); return }
     if (t.action === 'new-parameter') { setDialog({ type: 'param', name: null }); return }
     if (t.action === 'import') { pickImport(false); return }
+    if (t.action === 'reference') { pickReference(false); return }
     if (t.action === 'checks' || t.action === 'color') { setMode('export'); return }
     if (t.action === 'section') { setError('Use Cut X / Y / Z at the top of the view to section the part.'); return }
     if (!t.kind) return
@@ -288,6 +301,7 @@ export default function App() {
     const [kind, id] = k.split(':')
     if (kind === 'feature') { setDialog({ type: 'feature', id }); setPicking(null) }
     else if (kind === 'param') setDialog({ type: 'param', name: id })
+    else if (kind === 'ref') setDialog({ type: 'ref', id })
     else if (kind === 'sketch') { setSketchId(id); setMode('sketch') }
     else if (kind === 'body') setMode('export')
   }
@@ -353,7 +367,9 @@ export default function App() {
         <header className="hdr"><div className="brand"><Icon name="part" size={20} color="var(--accent)" width={2} /><b>3D Print Assist</b></div></header>
         <main className="startbody">
           <div className="row"><h1>Designs</h1><span className="spacer" />
-            <button className="btn" onClick={() => pickImport(true)} disabled={updating}>{updating ? 'Importing…' : 'New from file…'}</button>
+            <button className="btn" onClick={() => pickReference(true)} disabled={updating}
+              title="A new design with a STEP, STL or 3MF file beside it, to look at and copy features from">{updating ? 'Loading…' : 'New with reference…'}</button>
+            <button className="btn" onClick={() => pickImport(true)} disabled={updating} title="A new design starting from a STEP file's solid">New from STEP…</button>
             <button className="btn primary" onClick={() => setFileModal({ type: 'name', purpose: 'new' })}>New design</button></div>
           <DesignGrid list={designs} current={null} onOpen={(slug) => { run(() => api.openProject(slug)).then(reopen) }}
             onDelete={(d) => setFileModal({ type: 'delete', design: d })} />
@@ -390,6 +406,7 @@ export default function App() {
       <main className="main">
         <aside className="side left" aria-label={mode === 'export' ? 'Print and export' : 'Specification tree'}>
           {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
+            onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
             onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
           {mode === 'sketch' && <div ref={setTreeHost} />}
           {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
@@ -411,7 +428,7 @@ export default function App() {
               onChanged={setTree} onExit={() => { setMode('part'); setSketchId(null) }} />
           </section>
         ) : (
-          <ViewportPane part={shownPart} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
+          <ViewportPane part={shownPart} references={tree.references} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
             highlight={highlight} picking={dialog?.type === 'feature' ? picking : null} onPick={onPick} onUpdate={update}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
             {file.recovery && (
@@ -427,6 +444,12 @@ export default function App() {
                 onDelete={() => { run(() => api.deleteFeature(feature.id)).then((r) => { changed(r); if (r) { setDialog(null); setSelected(null) } }) }}
                 onEditSketch={(sid) => { setSketchId(sid); setMode('sketch') }}
                 onClose={() => { setDialog(null); setPicking(null) }} />
+            )}
+            {dialog?.type === 'ref' && tree.references.some((r) => r.id === dialog.id) && (
+              <ReferenceDialog reference={tree.references.find((r) => r.id === dialog.id)!}
+                onSet={(patch) => onOps([{ op: 'set_reference', id: dialog.id, ...patch }], `Change ${dialog.id}`)}
+                onDelete={() => { onOps([{ op: 'delete_reference', id: dialog.id }], `Remove ${dialog.id}`); setDialog(null); setSelected(null) }}
+                onClose={() => setDialog(null)} />
             )}
             {dialog?.type === 'param' && (
               <ParamDialog key={dialog.name ?? 'new'} param={param} tree={tree}

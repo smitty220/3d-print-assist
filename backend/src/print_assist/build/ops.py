@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from ..features.library import FEATURES
-from ..features.model import Body, Colorway, Design, EdgePick, FeatureInstance, Filament, Variant
+from ..features.model import Body, Colorway, Design, EdgePick, FeatureInstance, Filament, Reference, Variant
 from ..params.expr import ExprError, is_literal, names
 from ..params.graph import resolve
 from ..params.model import Parameter
@@ -455,6 +455,46 @@ def _delete_colorway(d: Design, op: dict, actor: str):
     return None
 
 
+# ---------------------------------------------------------------- references
+
+REF_FIELDS = ("name", "plate", "visible", "place", "x", "y", "z", "rotate_z", "scale", "color")
+
+
+def _set_reference(d: Design, op: dict, actor: str):
+    """Add a reference (a `file` in the references folder) or change one (`id`): name, plate, visibility, placement,
+    colour."""
+    rid = op.get("id")
+    if rid:
+        r = d.reference(rid)
+        if r is None:
+            raise OpError(f"no reference {rid!r}; references are {', '.join(x.id for x in d.references) or 'none'}")
+        data = r.model_dump()
+    else:
+        f = str(op.get("file", "")).strip()
+        if not f or "/" in f or "\\" in f or f.startswith("."):
+            raise OpError("a reference needs the name of a file in the design's references folder")
+        rid = _next("R", [x.id for x in d.references])
+        data = {"id": rid, "name": op.get("name") or f.rsplit(".", 1)[0], "file": f}
+    for k in REF_FIELDS:
+        if k in op:
+            data[k] = _color(op[k]) if k == "color" else op[k]
+    try:
+        new = Reference.model_validate(data)
+    except ValidationError as exc:
+        raise OpError(f"reference: {exc.errors()[0]['loc'][-1]}: {exc.errors()[0]['msg']}") from exc
+    if new.scale <= 0 or (new.plate is not None and new.plate < 1):
+        raise OpError("reference: scale must be positive and plates count from 1")
+    d.references = [new if x.id == rid else x for x in d.references] if d.reference(rid) else [*d.references, new]
+    return rid
+
+
+def _delete_reference(d: Design, op: dict, actor: str):
+    if d.reference(op["id"]) is None:
+        raise OpError(f"no reference {op['id']!r}")
+    d.references = [r for r in d.references if r.id != op["id"]]
+    return None
+
+
 _OPS = {
     "set_parameter": _set_parameter, "delete_parameter": _delete_parameter,
     "add_feature": _add_feature, "edit_feature": _edit_feature, "delete_feature": _delete_feature,
@@ -464,5 +504,6 @@ _OPS = {
     "set_filament": _set_filament, "delete_filament": _delete_filament,
     "set_variant": _set_variant, "delete_variant": _delete_variant,
     "set_colorway": _set_colorway, "delete_colorway": _delete_colorway,
+    "set_reference": _set_reference, "delete_reference": _delete_reference,
 }
 OP_NAMES = list(_OPS)

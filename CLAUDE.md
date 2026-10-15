@@ -48,9 +48,10 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - Next: an X2D template (needs a project saved for the X2D in Bambu Studio); then M3 the rest of the toolbar and the commander deck box test.
 - Known gaps: shell can fail on a body with a through hole (OCC offset); stroke check flags thin glyphs, not hairlines.
 
-## Import
-- File › Import (or the Import tool) uploads a STEP / STL / 3MF into the design's `references/` folder and adds an `import` feature in a body of its own (`geometry/meshio.py`, `POST /api/import`). STEP stays exact; meshes are sewn into solids, a face per triangle (limit 250k triangles). 3MF placement follows build items and components, including Bambu Studio's split model files.
-- Face naming and viewer meshing must stay fast on thousand-face shapes: `attribute()` names untouched faces by hash, and `mesh_shape` meshes the whole shape once and reads each face's triangulation.
+## Import and references
+- **References** (`Design.references`, `references.py`, `geometry/meshio.py`): STEP / STL / 3MF files in the design's `references/` folder shown as see-through ghosts beside the design, never built or exported. They exist so the user can point the AI at "the hinge from this file": the AI measures them (`list_references`), looks (`look_at_reference`, with `region` zoom and `with_design` overlay) and slices them (`section_reference`: outlines with areas and fitted circles), then rebuilds the feature with our own sketches and features. Meshes stay triangles (no sewing), so size is not limited; 3MF keeps part names, placement and Bambu plates (plate 1 by default).
+- **Import** (the `import` feature) is STEP only: an exact solid in a body of its own.
+- Big meshes must stay fast: the renderer rasterises small triangles in vectorised batches and draws edges in one pass; `attribute()` names untouched faces by hash; `mesh_shape` meshes the whole shape once and reads each face's triangulation.
 
 ## Bambu Studio export
 - A 3MF export is a Bambu Studio project when the printer profile names a `bambu_template` (`printers/bambu/*.project_settings.config`, saved by Bambu Studio for that printer): one object, a part per body with its `extruder` (= palette slot), the template's settings resized to the palette (`export/bambu.py`). Project filament N is palette slot N.

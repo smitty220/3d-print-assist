@@ -66,6 +66,7 @@ export class Viewer {
   private cam: THREE.Camera = this.persp
   private orbit = { target: new THREE.Vector3(), r: 400, theta: VIEWS.iso[0], phi: VIEWS.iso[1] }
   private parts = new Map<string, PartEntry>()
+  private refs = new Map<string, THREE.Group>() // references: see-through, never picked
   private hover: FacePick | null = null
   private selected: FacePick | null = null
   private highlight: { part: string; faces: Set<number> } | null = null
@@ -119,6 +120,7 @@ export class Viewer {
     this.abort.abort()
     this.resizeObs.disconnect()
     for (const name of [...this.parts.keys()]) this.removePart(name)
+    for (const id of [...this.refs.keys()]) this.removeReference(id)
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }
@@ -192,6 +194,62 @@ export class Viewer {
     this.section.addPart(data.name, geo, { ...style.cap, angle })
   }
 
+  // ---------- references ----------
+
+  /** A reference file's meshes, shown see-through in its colour with its creases outlined; never picked. */
+  setReference(id: string, parts: { positions: Float32Array; indices: Uint32Array }[], color: string, visible: boolean) {
+    this.removeReference(id)
+    const group = new THREE.Group()
+    const c = new THREE.Color(color)
+    let tris = 0
+    for (const p of parts) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
+      geo.setIndex(new THREE.BufferAttribute(p.indices, 1))
+      geo.computeVertexNormals()
+      const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+        color: c, metalness: 0.1, roughness: 0.6, transparent: true, opacity: 0.38, depthWrite: false, side: THREE.DoubleSide,
+      }))
+      mesh.raycast = NO_RAYCAST
+      mesh.renderOrder = 2
+      group.add(mesh)
+      tris += p.indices.length / 3
+      if (tris <= 400_000) { // creases: cheap enough below this, and they show the shape through the tint
+        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30),
+          new THREE.LineBasicMaterial({ color: c.clone().multiplyScalar(0.55), transparent: true, opacity: 0.7 }))
+        lines.raycast = () => {}
+        lines.renderOrder = 3
+        group.add(lines)
+      }
+    }
+    group.visible = visible
+    group.userData.reference = id
+    this.scene.add(group)
+    this.refs.set(id, group)
+  }
+
+  setReferenceVisible(id: string, visible: boolean) {
+    const g = this.refs.get(id)
+    if (g) g.visible = visible
+  }
+
+  referenceIds(): string[] {
+    return [...this.refs.keys()]
+  }
+
+  removeReference(id: string) {
+    const g = this.refs.get(id)
+    if (!g) return
+    this.scene.remove(g)
+    g.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (m.geometry) m.geometry.dispose()
+      const mat = m.material as THREE.Material | undefined
+      mat?.dispose()
+    })
+    this.refs.delete(id)
+  }
+
   partNames(): string[] {
     return [...this.parts.keys()]
   }
@@ -220,6 +278,7 @@ export class Viewer {
   bounds(): SceneBounds {
     const box = new THREE.Box3()
     for (const p of this.parts.values()) if (p.group.visible) box.expandByObject(p.group)
+    for (const g of this.refs.values()) if (g.visible) box.expandByObject(g)
     if (box.isEmpty()) return { center: new THREE.Vector3(), radius: 100 }
     const s = box.getBoundingSphere(new THREE.Sphere())
     return { center: s.center, radius: s.radius }

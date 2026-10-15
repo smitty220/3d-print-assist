@@ -2,7 +2,7 @@
 // says so. Clicks select faces, or pick faces / edges for the feature being edited.
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import type { PartState } from '../api'
+import { api, type PartState, type Reference } from '../api'
 import { Icon } from '../ui/icons'
 import { Viewer, type FacePick, type ViewName } from '../viewer/Viewer'
 
@@ -11,6 +11,7 @@ const hex = (c: string | null, i: number) => (c && /^#[0-9a-f]{6}$/i.test(c) ? p
 
 interface Props {
   part: PartState | null
+  references: Reference[]
   stale: number // features waiting for an update
   failed: string | null // why the last update stopped
   highlight: string | null // feature id whose faces to tint
@@ -21,7 +22,7 @@ interface Props {
   children?: React.ReactNode // dialogs float over the view
 }
 
-export function ViewportPane({ part, stale, failed, highlight, edgeMarks, picking, onPick, onUpdate, children }: Props) {
+export function ViewportPane({ part, references, stale, failed, highlight, edgeMarks, picking, onPick, onUpdate, children }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const viewer = useRef<Viewer | null>(null)
   const fitted = useRef(false)
@@ -49,6 +50,25 @@ export function ViewportPane({ part, stale, failed, highlight, edgeMarks, pickin
       setTimeout(() => viewer.current?.fit(), 120) // after the layout settles
     }
   }, [part])
+
+  // References: fetch a reference's meshes when it is added or placed differently; visibility needs no fetch.
+  const loaded = useRef(new Map<string, string>())
+  useEffect(() => {
+    const v = viewer.current
+    if (!v) return
+    const ids = new Set(references.map((r) => r.id))
+    for (const id of v.referenceIds()) if (!ids.has(id)) { v.removeReference(id); loaded.current.delete(id) }
+    for (const r of references) {
+      const key = JSON.stringify([r.file, r.plate, r.place, r.x, r.y, r.z, r.rotate_z, r.scale, r.color])
+      if (loaded.current.get(r.id) === key) { v.setReferenceVisible(r.id, r.visible); continue }
+      loaded.current.set(r.id, key)
+      api.referenceMesh(r.id).then((m) => {
+        if (loaded.current.get(r.id) !== key || !viewer.current) return // placed again meanwhile
+        viewer.current.setReference(r.id, m.parts, m.color, r.visible)
+        if (!fitted.current) { fitted.current = true; viewer.current.fit() } // nothing else in view yet: show it
+      }).catch(() => loaded.current.delete(r.id))
+    }
+  }, [references])
 
   useEffect(() => {
     const v = viewer.current
@@ -101,7 +121,7 @@ export function ViewportPane({ part, stale, failed, highlight, edgeMarks, pickin
         </div>
       )}
       {picking && <div className="pickhint">Picking {picking}: click on the part</div>}
-      {part && !part.bodies.length && <div className="empty">Nothing built yet: start with a sketch, then extrude it — or ask the AI.</div>}
+      {part && !part.bodies.length && !references.length && <div className="empty">Nothing built yet: start with a sketch, then extrude it — or ask the AI.</div>}
       {children}
       <div className="vinfo">{part ? `${(part.volume / 1000).toFixed(1)} cm³ · ${(part.mass * 1000).toFixed(0)} g` : ''}</div>
     </section>

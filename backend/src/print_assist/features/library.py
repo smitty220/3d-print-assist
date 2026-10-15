@@ -441,11 +441,11 @@ class Import(Feature):
     kind = "import"
     label = "Import"
     group = "Create"
-    summary = ("A solid from a STEP, STL or 3MF file kept in the design's references folder (File > Import puts it "
+    summary = ("An exact solid from a STEP file kept in the design's references folder (File > Import STEP puts it "
                "there): add, cut or intersect. Placed on the bed, centred, or where the file puts it; then scaled, "
-               "turned about Z and moved. STEP stays exact; meshes become solids with a face per triangle.")
+               "turned about Z and moved. Meshes (STL, 3MF) are references, not imports.")
     params = (
-        P("file", "File", "text", "", help="a file in the design's references folder"),
+        P("file", "File", "text", "", help="a STEP file in the design's references folder"),
         P("op", "Operation", "choice", "add", choices=OPS),
         P("place", "Placement", "choice", "on_bed", choices=("on_bed", "as_in_file"),
           help="on_bed: centred on the origin, lowest point on the bed"),
@@ -459,15 +459,15 @@ class Import(Feature):
     def build(self, ctx, p, refs):
         from pathlib import Path
 
-        from ..geometry.meshio import BIG, ImportError_, load
+        from ..geometry.meshio import ImportError_, load_step
 
         name = p["file"].strip()
         if not name:
-            raise FeatureError("no file: use File > Import, or name a file in the references folder")
+            raise FeatureError("no file: use File > Import STEP, or name a STEP file in the references folder")
         if ctx.references_dir is None or Path(name).name != name:
             raise FeatureError("the file must be in the design's references folder")
         try:
-            shape, tris = load(Path(ctx.references_dir) / name)
+            shape = load_step(Path(ctx.references_dir) / name)
         except ImportError_ as exc:
             raise FeatureError(str(exc)) from exc
         except Exception as exc:  # a malformed file: say which, not a stack trace
@@ -480,14 +480,7 @@ class Import(Feature):
             bb = shape.bounding_box()
             shape = Pos(-(bb.min.X + bb.max.X) / 2, -(bb.min.Y + bb.max.Y) / 2, -bb.min.Z) * shape
         tool = Pos(p["x"], p["y"], p["z"]) * shape
-        info = {"triangles": float(tris), "big": float(tris > BIG)}
-        return _op_output(p["op"], tool, ctx, {"surface": list(tool.faces())}, info=info)
-
-    def checks(self, ctx, fid, p, out):
-        if not out.info.get("big"):
-            return []
-        n = int(out.info["triangles"])
-        return [Check(fid, "Mesh size", float(n), "warn", f"{n:,} triangles: cuts and fillets on it will be slow")]
+        return _op_output(p["op"], tool, ctx, {"surface": list(tool.faces())})
 
 
 # ---------------------------------------------------------------- text

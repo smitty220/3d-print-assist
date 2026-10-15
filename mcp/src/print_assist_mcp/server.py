@@ -175,6 +175,59 @@ def export_batch(format: str = "3mf", rows: list[dict[str, str | None]] | None =
 
 
 @mcp.tool()
+def list_references() -> str:
+    """The design's references (files kept beside it to copy features from; never printed): id, name, file, plates,
+    placement, overall bounds, and each part's name, triangle count, bounding box (min, max, size in mm) and volume."""
+    return _text(_call("GET", "/api/references"))
+
+
+@mcp.tool()
+def look_at_reference(id: str, view: str = "iso", part: str | None = None, with_design: bool = False,
+                      region: list[float] | None = None, size: int = 768) -> Image | str:
+    """A picture of reference `id` as placed beside the design, or of one `part` (a name from list_references).
+    Views: iso, front, back, left, right, top, bottom. with_design draws the design's last build in too, to compare.
+    region [xmin, ymin, zmin, xmax, ymax, zmax] (mm) zooms in on what lies inside that box."""
+    params: dict[str, Any] = {"view": view, "size": size, "with_design": with_design}
+    if part:
+        params["part"] = part
+    if region:
+        params["region"] = ",".join(str(v) for v in region)
+    r = _call("GET", f"/api/references/{id}/render", params=params)
+    if isinstance(r, dict):
+        return _text(r)
+    return Image(data=r.content, format="png")
+
+
+@mcp.tool()
+def section_reference(id: str, axis: str = "Z", offset: float = 0.0, part: str | None = None,
+                      tolerance: float = 0.05) -> str:
+    """Cut reference `id` (or one `part`) with the plane axis = offset (mm, as placed) and get its outlines: closed
+    point lists in the plane's other two coordinates (Z: x, y; Y: x, z; X: y, z), largest first, each with area,
+    length, and centre and radius when it is a circle. Use these numbers to draw sketches that rebuild a feature."""
+    params: dict[str, Any] = {"axis": axis, "offset": offset, "tol": tolerance}
+    if part:
+        params["part"] = part
+    return _text(_call("GET", f"/api/references/{id}/section", params=params))
+
+
+@mcp.tool()
+def add_reference(path: str, plate: int | None = None) -> str:
+    """Add a STEP, STL or 3MF file from the user's computer (an absolute path) as a reference beside the open design.
+    plate: which plate of a multi-plate Bambu project (default the first)."""
+    from pathlib import Path
+
+    p = Path(path).expanduser()
+    if not p.is_file():
+        return _text({"error": f"no file at {p}"})
+    params = {"plate": plate} if plate else {}
+    with p.open("rb") as fh:
+        r = _call("POST", "/api/references", params=params, files={"file": (p.name, fh)}, headers=ACTOR)
+    if isinstance(r, dict) and "tree" in r:
+        return _text({"made": r.get("made"), "references": r["tree"].get("references")})
+    return _text(r)
+
+
+@mcp.tool()
 def save_design(message: str = "") -> str:
     """Save the design to disk and record a version with an optional message. Only save when the user asks you to;
     otherwise leave your changes unsaved for them to review (the app shows they are unsaved)."""

@@ -1,7 +1,7 @@
 // The floating edit dialogs over the viewport: a feature's parameters, references and picks; a parameter's value.
 // Every field commits as you leave it (in manual mode that marks the model out of date until you update).
-import { useState } from 'react'
-import type { FeatureNode, FeatureSpec, FontInfo, ParamNode, ParamSpec, Tree } from '../api'
+import { useEffect, useState } from 'react'
+import { api, type FeatureNode, type FeatureSpec, type FontInfo, type ParamNode, type ParamSpec, type Reference, type ReferenceInfo, type Tree } from '../api'
 import { fmtValue } from '../tree/SpecTree'
 import { Icon, StatusIcon } from '../ui/icons'
 import { ExprField } from './ExprField'
@@ -228,6 +228,85 @@ export function ParamDialog({ param, tree, onSave, onDelete, onClose }: ParamPro
         <span className="spacer" />
         {!param && <button className="btn primary" onClick={() => save()} disabled={!name.trim() || !expr.trim()}>Add</button>}
         {param && <button className="btn primary" onClick={onClose}>OK</button>}
+      </div>
+    </section>
+  )
+}
+
+interface RefProps {
+  reference: Reference
+  onSet: (patch: Partial<Reference>) => void
+  onDelete: () => void
+  onClose: () => void
+}
+
+/** A reference's placement, plate and colour, with its size and parts (what the AI sees with list_references). */
+export function ReferenceDialog({ reference: r, onSet, onDelete, onClose }: RefProps) {
+  const [info, setInfo] = useState<ReferenceInfo | null>(null)
+  const placement = JSON.stringify([r.plate, r.place, r.x, r.y, r.z, r.rotate_z, r.scale])
+  useEffect(() => {
+    let live = true
+    api.references().then((all) => { if (live) setInfo(all.find((x) => x.id === r.id) ?? null) }).catch(() => {})
+    return () => { live = false }
+  }, [r.id, placement])
+  const num = (key: 'x' | 'y' | 'z' | 'rotate_z' | 'scale', label: string, unit?: string) => (
+    <div className="xfield" key={key}><label htmlFor={`r-${key}`}>{label}{unit ? <span className="nm"> ({unit})</span> : null}</label>
+      <input id={`r-${key}`} type="number" step="any" defaultValue={r[key]} key={`${r.id}-${key}-${r[key]}`}
+        onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v) && v !== r[key]) onSet({ [key]: v }) }}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }} />
+    </div>
+  )
+  const size = info?.bounds?.size.map((v) => Math.round(v * 10) / 10).join(' × ')
+  return (
+    <section className="dialog" aria-label={`Reference ${r.id}`}>
+      <div className="dhead">
+        <span className="sw ghost" style={{ background: r.color }} />
+        <h2>{r.id} · {r.name}</h2>
+        <span className="spacer" />
+        <button className="x" onClick={onClose} aria-label="Close">×</button>
+      </div>
+      <div className="dbody">
+        <div className="note">{r.file} · shown beside the design to look at and copy features from; never printed or exported.</div>
+        {info?.error && <div className="dmsg fail">{info.error}</div>}
+        <div className="xfield"><label htmlFor="r-name">Name</label>
+          <input id="r-name" defaultValue={r.name} key={`${r.id}-name-${r.name}`}
+            onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== r.name) onSet({ name: v }) }} />
+        </div>
+        {info?.plates && info.plates.length > 1 && (
+          <div className="xfield"><label htmlFor="r-plate">Plate</label>
+            <select id="r-plate" value={r.plate ?? 1} onChange={(e) => onSet({ plate: Number(e.target.value) })}>
+              {info.plates.map((n, i) => <option key={i} value={i + 1}>{i + 1}: {n}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="xfield"><label htmlFor="r-place">Placement</label>
+          <select id="r-place" value={r.place} onChange={(e) => onSet({ place: e.target.value as Reference['place'] })}>
+            <option value="on_bed">on the bed, centred</option><option value="as_in_file">as in the file</option>
+          </select>
+        </div>
+        {num('x', 'Move X', 'mm')}{num('y', 'Move Y', 'mm')}{num('z', 'Move Z', 'mm')}
+        {num('rotate_z', 'Rotate Z', '°')}{num('scale', 'Scale')}
+        <div className="xfield"><label htmlFor="r-color">Colour</label>
+          <input id="r-color" type="color" value={r.color} onChange={(e) => onSet({ color: e.target.value })} />
+        </div>
+        {info && !info.error && (
+          <div className="note">
+            {size} mm · {info.triangles?.toLocaleString()} triangles · {info.part_count} part{info.part_count === 1 ? '' : 's'}
+            {info.parts && info.parts.length > 1 && (
+              <ul className="refparts">
+                {info.parts.slice(0, 80).map((p, i) => (
+                  <li key={i}><span>{p.name}</span><span>{p.size.map((v) => Math.round(v * 10) / 10).join(' × ')}</span></li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="dfoot">
+        <button className="btn danger" onClick={onDelete}>Remove</button>
+        <span className="spacer" />
+        <button className="btn" onClick={() => onSet({ visible: !r.visible })}>{r.visible ? 'Hide' : 'Show'}</button>
+        <button className="btn primary" onClick={onClose}>OK</button>
       </div>
     </section>
   )

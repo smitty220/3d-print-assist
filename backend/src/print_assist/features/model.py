@@ -62,6 +62,25 @@ class Filament(BaseModel):
     nozzle: int = Field(default=0, ge=0)  # which nozzle it feeds, on a dual-nozzle printer
 
 
+class Reference(BaseModel):
+    """A file in the design's references folder shown beside the design to look at, measure and copy features from;
+    never built, printed or exported. Placed like the Import feature: scaled, turned about Z, then on the bed centred
+    (or as the file puts it), then moved."""
+
+    id: str  # "R1"
+    name: str
+    file: str  # in the references folder
+    plate: int | None = None  # a Bambu project's plate (1-based); None: the first
+    visible: bool = True
+    place: Literal["on_bed", "as_in_file"] = "on_bed"
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+    rotate_z: float = 0.0  # degrees
+    scale: float = 1.0
+    color: str = "#7fb2e5"
+
+
 class Variant(BaseModel):
     """A row of the variants table: parameter values that differ from the design's ("cards": "60")."""
 
@@ -92,6 +111,7 @@ class Design(BaseModel):
     filaments: list[Filament] = Field(default_factory=list)
     variants: list[Variant] = Field(default_factory=list)
     colorways: list[Colorway] = Field(default_factory=list)
+    references: list[Reference] = Field(default_factory=list)
 
     def filament(self, slot: int | None) -> Filament | None:
         return next((f for f in self.filaments if f.slot == slot), None)
@@ -103,6 +123,9 @@ class Design(BaseModel):
 
     def variant(self, vid: str) -> Variant | None:
         return next((v for v in self.variants if v.id == vid), None)
+
+    def reference(self, rid: str) -> Reference | None:
+        return next((r for r in self.references if r.id == rid), None)
 
     def colorway(self, cid: str) -> Colorway | None:
         return next((c for c in self.colorways if c.id == cid), None)

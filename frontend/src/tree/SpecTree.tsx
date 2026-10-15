@@ -5,7 +5,7 @@ import { Fragment, useState } from 'react'
 import type { ParamNode, Tree } from '../api'
 import { Icon, StatusIcon } from '../ui/icons'
 
-export type NodeKey = string // "param:h" | "sketch:S1" | "feature:F1" | "body:B1"
+export type NodeKey = string // "param:h" | "sketch:S1" | "feature:F1" | "body:B1" | "ref:R1"
 
 export function fmtValue(p: Pick<ParamNode, 'quantity' | 'value'>): string {
   if (p.value == null) return '—'
@@ -22,10 +22,11 @@ interface Props {
   onSelect: (k: NodeKey | null) => void
   onEdit: (k: NodeKey) => void
   onRollback: (index: number | null) => void
+  onToggleRef: (id: string, visible: boolean) => void
 }
 
-export function SpecTree({ tree, selected, onSelect, onEdit, onRollback }: Props) {
-  const [open, setOpen] = useState<Record<string, boolean>>({ params: true, sketches: true, bodies: true, history: true })
+export function SpecTree({ tree, selected, onSelect, onEdit, onRollback, onToggleRef }: Props) {
+  const [open, setOpen] = useState<Record<string, boolean>>({ params: true, sketches: true, bodies: true, refs: true, history: true })
   const [dragging, setDragging] = useState(false)
   const sel = selected ?? ''
   // What lights up: a parameter's users, or the parameters a sketch / feature reads.
@@ -89,6 +90,17 @@ export function SpecTree({ tree, selected, onSelect, onEdit, onRollback }: Props
         <span className="lb">{b.name}<span className="nm"> · {b.features.length + b.fed_by.length} features{b.fed_by.length ? ` (from ${b.fed_by.join(', ')})` : ''}</span></span>
         {b.filament != null && <span className="chip slotchip" title={`Prints in filament slot ${b.filament}`}>{b.filament}</span>}
         <StatusIcon status={b.status} />
+      </>))}
+      {tree.references.length > 0 && folder('refs', 'References', tree.references.length)}
+      {open.refs && tree.references.map((r) => row(`ref:${r.id}`, 1, <>
+        <span className="sw ghost" style={{ background: r.color }} />
+        <span className={`lb${r.visible ? '' : ' hidden'}`}>{r.id}<span className="nm"> · {r.name}{r.plate ? ` (plate ${r.plate})` : ''}</span></span>
+        <span role="button" tabIndex={0} className={`eyebtn${r.visible ? ' on' : ''}`} aria-pressed={r.visible}
+          title={r.visible ? 'Hide reference' : 'Show reference'} aria-label={r.visible ? `Hide ${r.name}` : `Show ${r.name}`}
+          onClick={(e) => { e.stopPropagation(); onToggleRef(r.id, !r.visible) }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onToggleRef(r.id, !r.visible) } }}>
+          <Icon name="eye" size={14} />
+        </span>
       </>))}
       {folder('history', 'History', tree.features.length)}
       {open.history && tree.features.map((f, i) => (

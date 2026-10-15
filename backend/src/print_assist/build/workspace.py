@@ -362,6 +362,7 @@ class Workspace:
                 "rollback": d.rollback, "params": params, "features": features, "sketches": sketches, "bodies": bodies,
                 "errors": r.errors, "filaments": [f.model_dump() for f in d.filaments],
                 "variants": [v.model_dump() for v in d.variants], "colorways": [c.model_dump() for c in d.colorways],
+                "references": [x.model_dump() for x in d.references],
             }
 
     def part(self) -> dict:

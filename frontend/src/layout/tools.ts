@@ -43,6 +43,7 @@ export const PART_TOOLS: { group: string; tools: Tool[] }[] = [
   { group: 'Design', tools: [
     { id: 'parameter', label: 'Parameter', icon: 'vars', action: 'new-parameter', color: 'var(--accent)' },
     { id: 'color', label: 'Color', icon: 'color', action: 'color', color: 'var(--accent)' },
+    { id: 'reference', label: 'Reference', icon: 'eye', action: 'reference', color: 'var(--accent)' },
     { id: 'import', label: 'Import', icon: 'importF', action: 'import', color: 'var(--accent)' },
   ] },
 ]
