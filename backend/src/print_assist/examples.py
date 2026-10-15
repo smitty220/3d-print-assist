@@ -1,6 +1,6 @@
 """Ready-made example projects, set up the way a user would pick them.
 
-    uv run python -m cad_assist.examples bell_crank data/projects/bell_crank
+    uv run python -m print_assist.examples bell_crank data/projects/bell_crank
 """
 
 from __future__ import annotations

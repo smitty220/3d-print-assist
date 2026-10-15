@@ -1,9 +1,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from cad_assist import app as app_module
-from cad_assist.geometry.samples import frame_rib
-from cad_assist.geometry.step_io import write_step
+from print_assist import app as app_module
+from print_assist.geometry.samples import frame_rib
+from print_assist.geometry.step_io import write_step
 
 
 @pytest.fixture
@@ -179,7 +179,7 @@ def test_validation_api(client):
 
 
 def test_ai_generate_gates(client, monkeypatch, tmp_path):
-    from cad_assist.ai import generate as gen
+    from print_assist.ai import generate as gen
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     # Never read the developer's real backend/.env in tests.
@@ -228,10 +228,10 @@ def test_topo_setup_api(client, monkeypatch):
 
 def test_sketch_put_solves_and_rebuilds(client, monkeypatch):
     """Editing a sketch: the backend solves it (pins follow the intent), saves it and rebuilds the part."""
-    monkeypatch.setenv("CAD_ASSIST_PROJECT", "bell_crank")
+    monkeypatch.setenv("PRINT_ASSIST_PROJECT", "bell_crank")
     app_module._project = None
-    from cad_assist.features.model import Design, FeatureInstance
-    from cad_assist.sketch.model import Sketch
+    from print_assist.features.model import Design, FeatureInstance
+    from print_assist.sketch.model import Sketch
 
     p = app_module.project()
     assert "pivot_fitting" in p.data.parts  # seeded from the example

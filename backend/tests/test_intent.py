@@ -1,12 +1,12 @@
 import pytest
 from build123d import IN, Axis
 
-from cad_assist.geometry.samples import frame_rib, rod_end
-from cad_assist.geometry.signature import face_signature, find_face
-from cad_assist.geometry.step_io import write_step
-from cad_assist.intent import builders
-from cad_assist.intent.models import Intent
-from cad_assist.project import Project
+from print_assist.geometry.samples import frame_rib, rod_end
+from print_assist.geometry.signature import face_signature, find_face
+from print_assist.geometry.step_io import write_step
+from print_assist.intent import builders
+from print_assist.intent.models import Intent
+from print_assist.project import Project
 
 
 def _top_face_id(shape):

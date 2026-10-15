@@ -3,14 +3,14 @@ import math
 import pytest
 from build123d import IN, Axis
 
-from cad_assist.features.context import FeatureError
-from cad_assist.features.design import build_design
-from cad_assist.features.model import Design
-from cad_assist.features.model import FeatureInstance as FI
-from cad_assist.features.templates import TEMPLATES
-from cad_assist.geometry.samples import actuator_clevis_end, frame_rib, rod_end, side_panel
-from cad_assist.intent import builders
-from cad_assist.intent.models import Intent
+from print_assist.features.context import FeatureError
+from print_assist.features.design import build_design
+from print_assist.features.model import Design
+from print_assist.features.model import FeatureInstance as FI
+from print_assist.features.templates import TEMPLATES
+from print_assist.geometry.samples import actuator_clevis_end, frame_rib, rod_end, side_panel
+from print_assist.intent import builders
+from print_assist.intent.models import Intent
 
 
 def _base_intent():
@@ -171,7 +171,7 @@ def _edge_at(shape, x, y, z):
 
 
 def test_fillet_on_a_picked_edge_follows_upstream_edits(clevis_intent):
-    from cad_assist.features.design import describe_edge
+    from print_assist.features.design import describe_edge
 
     base = build_design(clevis_intent, Design(features=[_box()]))
     pick = describe_edge(base.local, base.face_names, _edge_at(base.local, 40, 30, 5))  # the vertical edge at (40, 30)
@@ -192,7 +192,7 @@ def test_fillet_on_a_picked_edge_follows_upstream_edits(clevis_intent):
 
 
 def test_picked_edge_blend_runs_on_along_tangent_edges(clevis_intent):
-    from cad_assist.features.design import describe_edge
+    from print_assist.features.design import describe_edge
 
     plate = FI(id="F1", kind="profile_plate", params={"outline": L_SHAPE, "z_min": 0.0, "z_max": 5.0, "corner_radius": 3.0})
     base = build_design(clevis_intent, Design(features=[plate]))

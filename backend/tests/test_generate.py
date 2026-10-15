@@ -7,10 +7,10 @@ from types import SimpleNamespace as NS
 import pytest
 from build123d import IN
 
-from cad_assist.ai.generate import Generator, Job, run
-from cad_assist.features.model import Design
-from cad_assist.features.templates import TEMPLATES
-from cad_assist.project import Project
+from print_assist.ai.generate import Generator, Job, run
+from print_assist.features.model import Design
+from print_assist.features.templates import TEMPLATES
+from print_assist.project import Project
 from test_validate import SHAPES, _intent
 
 
@@ -175,7 +175,7 @@ def test_generator_revert(tmp_path):
 
 
 def test_replay_client_runs_the_loop_offline():
-    from cad_assist.ai.replay import ReplayClient
+    from print_assist.ai.replay import ReplayClient
 
     proj = FakeProject(_intent())
     job = Job(id="r", instruction="", model="replay", max_rounds=6)
@@ -186,7 +186,7 @@ def test_replay_client_runs_the_loop_offline():
 
 
 def test_env_file_key(tmp_path, monkeypatch):
-    from cad_assist.ai import generate
+    from print_assist.ai import generate
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(generate, "_SHELL_ENV", set())
@@ -202,10 +202,10 @@ def test_env_file_key(tmp_path, monkeypatch):
 def test_candidates_keep_sketches_and_picked_edges():
     """Claude proposes features only: the design's sketches (what pads and pockets consume) and the engineer's picked
     fillet edges stay with every candidate."""
-    from cad_assist.features.context import FeatureError
-    from cad_assist.features.design import build_design, describe_edge
-    from cad_assist.features.model import FeatureInstance
-    from cad_assist.sketch.model import Sketch
+    from print_assist.features.context import FeatureError
+    from print_assist.features.design import build_design, describe_edge
+    from print_assist.features.model import FeatureInstance
+    from print_assist.sketch.model import Sketch
 
     it = _intent()
     base = TEMPLATES["clevis_bracket"][2](it)

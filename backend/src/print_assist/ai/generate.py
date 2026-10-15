@@ -48,7 +48,7 @@ ENV_FILE = Path(__file__).resolve().parents[3] / ".env"  # backend/.env
 
 
 def load_env_key(env: Path = ENV_FILE) -> None:
-    """Read ANTHROPIC_API_KEY (and CAD_ASSIST_MODEL, ANTHROPIC_WORKSPACE_ID) from backend/.env unless the shell set them.
+    """Read ANTHROPIC_API_KEY (and PRINT_ASSIST_MODEL, ANTHROPIC_WORKSPACE_ID) from backend/.env unless the shell set them.
 
     Called before every AI request, so a key added to the file works without restarting the backend.
     """
@@ -61,17 +61,17 @@ def load_env_key(env: Path = ENV_FILE) -> None:
             os.environ[k] = v.strip().strip('"').strip("'")
 
 
-ENV_KEYS = ("ANTHROPIC_API_KEY", "CAD_ASSIST_MODEL", "ANTHROPIC_WORKSPACE_ID")
+ENV_KEYS = ("ANTHROPIC_API_KEY", "PRINT_ASSIST_MODEL", "ANTHROPIC_WORKSPACE_ID")
 _SHELL_ENV = {k for k in ENV_KEYS if os.environ.get(k)}
 
 
 def model_name() -> str:
     load_env_key()
-    return os.environ.get("CAD_ASSIST_MODEL") or DEFAULT_MODEL
+    return os.environ.get("PRINT_ASSIST_MODEL") or DEFAULT_MODEL
 
 
 def replay_mode() -> bool:
-    return os.environ.get("CAD_ASSIST_AI_REPLAY") == "1"
+    return os.environ.get("PRINT_ASSIST_AI_REPLAY") == "1"
 
 
 def make_client() -> MessagesClient:
@@ -132,7 +132,7 @@ class Job:
 # ---------------------------------------------------------------- prompt
 
 
-SYSTEM = """You are the design engine inside CAD Assist, an aerospace bracket design tool. You design machined \
+SYSTEM = """You are the design engine inside 3D Print Assist, an aerospace bracket design tool. You design machined \
 brackets by composing parametric library features. You never write geometry yourself: you propose a feature tree, \
 the tool builds it with OpenCascade and runs a validator, and you revise from the results.
 

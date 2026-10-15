@@ -3,9 +3,9 @@ import math
 import pytest
 from build123d import IN
 
-from cad_assist.geometry.samples import SAMPLES, frame_rib, write_samples
-from cad_assist.geometry.step_io import StepImportError, read_step
-from cad_assist.geometry.tessellate import mesh_shape
+from print_assist.geometry.samples import SAMPLES, frame_rib, write_samples
+from print_assist.geometry.step_io import StepImportError, read_step
+from print_assist.geometry.tessellate import mesh_shape
 
 
 def _tri_normal(pos, a, b, c):

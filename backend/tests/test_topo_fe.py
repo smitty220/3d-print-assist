@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from cad_assist.topo.fe import Grid, Stiffness, hex8_stiffness, solve
+from print_assist.topo.fe import Grid, Stiffness, hex8_stiffness, solve
 
 
 def test_hex8_rigid_modes_and_symmetry():

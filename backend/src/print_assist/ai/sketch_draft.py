@@ -25,7 +25,7 @@ from ..validate import validate
 
 MAX_BUILDS = 5
 
-SYSTEM = """You are the design engine inside CAD Assist, turning a topology-optimisation result into a machined part.
+SYSTEM = """You are the design engine inside 3D Print Assist, turning a topology-optimisation result into a machined part.
 
 The engineer is a career aerospace stress engineer who works with machine shops. They ran a 2.5D topology \
 optimisation of a pin-mounted plate part (a bell crank or lever). Your job: draft the part a good designer would \

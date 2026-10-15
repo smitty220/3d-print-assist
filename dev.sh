@@ -3,7 +3,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")" && pwd)"
 
-(cd "$root/backend" && uv run uvicorn cad_assist.app:app --host 127.0.0.1 --port 8000 --reload) &
+(cd "$root/backend" && uv run uvicorn print_assist.app:app --host 127.0.0.1 --port 8000 --reload) &
 backend=$!
 trap 'kill $backend 2>/dev/null' EXIT
 

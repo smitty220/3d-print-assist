@@ -792,7 +792,7 @@ export default function App() {
     <div className="app">
       <header className="panel bar">
         <div className="brand">
-          CAD Assist <span className="badge">T1–T3 · Topology</span>
+          3D Print Assist <span className="badge">T1–T3 · Topology</span>
         </div>
         <div className="spacer" />
         <button className="btn ai" onClick={openTopo} aria-pressed={topoOpen} title="Topology optimisation of the design space">

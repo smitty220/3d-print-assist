@@ -1,13 +1,13 @@
 import pytest
 from build123d import IN, Axis, Box, Cylinder, Pos, Rot
 
-from cad_assist.features.design import build_design
-from cad_assist.features.model import FeatureInstance as FI
-from cad_assist.features.templates import TEMPLATES
-from cad_assist.geometry.samples import actuator_clevis_end, frame_rib, hyd_line_envelope, rod_end, side_panel
-from cad_assist.intent import builders
-from cad_assist.intent.models import Intent, KeepOut
-from cad_assist.validate import _check_bore, check_part, preflight
+from print_assist.features.design import build_design
+from print_assist.features.model import FeatureInstance as FI
+from print_assist.features.templates import TEMPLATES
+from print_assist.geometry.samples import actuator_clevis_end, frame_rib, hyd_line_envelope, rod_end, side_panel
+from print_assist.intent import builders
+from print_assist.intent.models import Intent, KeepOut
+from print_assist.validate import _check_bore, check_part, preflight
 
 SHAPES = {
     "rib": frame_rib(),
@@ -169,8 +169,8 @@ def test_design_space_and_min_wall():
 def test_wall_check_ignores_acute_corners_but_finds_thin_walls():
     from build123d import Box, BuildPart, BuildSketch, Polygon, extrude
 
-    from cad_assist.intent.models import Intent
-    from cad_assist.validate import _check_wall
+    from print_assist.intent.models import Intent
+    from print_assist.validate import _check_wall
 
     it = Intent()
     with BuildPart() as wedge:  # a 30° wedge, 20 mm long, 10 mm tall: thick everywhere but its tip

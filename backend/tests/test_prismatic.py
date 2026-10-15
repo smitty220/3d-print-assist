@@ -1,9 +1,9 @@
 import numpy as np
 import pytest
 
-from cad_assist.topo.fe import Grid
-from cad_assist.topo.prismatic import Prismatic25D, setup_faces
-from cad_assist.topo.simp import Problem
+from print_assist.topo.fe import Grid
+from print_assist.topo.prismatic import Prismatic25D, setup_faces
+from print_assist.topo.simp import Problem
 
 
 def _problem(shape=(6, 5, 8)):

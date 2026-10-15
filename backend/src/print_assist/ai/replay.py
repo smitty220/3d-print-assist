@@ -1,4 +1,4 @@
-"""Offline stand-in for Claude (CAD_ASSIST_AI_REPLAY=1): runs the loop end to end with no API key or cost.
+"""Offline stand-in for Claude (PRINT_ASSIST_AI_REPLAY=1): runs the loop end to end with no API key or cost.
 
 It starts from the best-fitting template, tries thinner gussets to chase the mass target, and backs off if the
 validator objects. Useful for exercising the UI; it is not a designer.

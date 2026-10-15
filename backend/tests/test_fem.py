@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from build123d import Box, Cylinder, Pos
 
-from cad_assist.fem.element import principal, traction_load, von_mises
-from cad_assist.fem.mesh import mesh_shape
-from cad_assist.fem.solve import solve
+from print_assist.fem.element import principal, traction_load, von_mises
+from print_assist.fem.mesh import mesh_shape
+from print_assist.fem.solve import solve
 
 E, NU = 71_000.0, 0.33  # MPa, 7075-ish
 
@@ -70,7 +70,7 @@ def test_plate_with_hole_stress_concentration():
     from build123d import Mode
 
     plate = Pos(0, 0, t / 2) * Box(Lx, W, t) - Pos(0, 0, t / 2) * Cylinder(D / 2, t)
-    from cad_assist.fem.mesh import Refine
+    from print_assist.fem.mesh import Refine
 
     mesh = mesh_shape(plate, size=12.0, curvature=48, refine=[Refine((0, 0, 0), (0, 0, 1), 1.6 * D, 1.5)])
     s = 100.0
@@ -97,17 +97,17 @@ def test_plate_with_hole_stress_concentration():
 
 from build123d import IN  # noqa: E402
 
-from cad_assist.examples import LBF, bell_crank  # noqa: E402
-from cad_assist.fem.analysis import analyse, bearing_load, bore_tris, pin_forces  # noqa: E402
-from cad_assist.project import Project  # noqa: E402
+from print_assist.examples import LBF, bell_crank  # noqa: E402
+from print_assist.fem.analysis import analyse, bearing_load, bore_tris, pin_forces  # noqa: E402
+from print_assist.project import Project  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def crank(tmp_path_factory):
     """The bell crank example with a simple machined part: tangent outline, one lightening hole, web pockets."""
-    from cad_assist.features.design import build_design
-    from cad_assist.sketch.solve import solve as solve_sketch
-    from cad_assist.topo.recipe import Recipe, compile_recipe
+    from print_assist.features.design import build_design
+    from print_assist.sketch.solve import solve as solve_sketch
+    from print_assist.topo.recipe import Recipe, compile_recipe
 
     p = Project(tmp_path_factory.mktemp("crank_fem"))
     bell_crank(p)
@@ -138,7 +138,7 @@ def test_statics_bell_crank(crank):
 
 
 def test_bearing_load_resultant_and_side(crank):
-    from cad_assist.fem.mesh import mesh_shape
+    from print_assist.fem.mesh import mesh_shape
 
     _p, b = crank
     mesh = mesh_shape(b.world, size=5.0)
@@ -185,7 +185,7 @@ def test_bell_crank_on_pins_in_contact(crank):
 def test_fem_job_and_contour_field(crank):
     import time
 
-    from cad_assist.fem.job import FemRunner
+    from print_assist.fem.job import FemRunner
 
     p, _b = crank
     runner = FemRunner()
@@ -217,9 +217,9 @@ def test_sizing_keeps_the_lightest_feasible_part_and_reverts(tmp_path):
     import json
     import time
 
-    from cad_assist.fem.job import FemRunner
-    from cad_assist.sketch.solve import solve as solve_sketch
-    from cad_assist.topo.recipe import Recipe, compile_recipe
+    from print_assist.fem.job import FemRunner
+    from print_assist.sketch.solve import solve as solve_sketch
+    from print_assist.topo.recipe import Recipe, compile_recipe
 
     p = Project(tmp_path / "size")
     bell_crank(p)
@@ -252,7 +252,7 @@ def test_sizing_keeps_the_lightest_feasible_part_and_reverts(tmp_path):
 
 
 def test_allowable_overrides():
-    from cad_assist.intent.models import KSI, Rules
+    from print_assist.intent.models import KSI, Rules
 
     r = Rules()
     m = r.material_props()
@@ -269,7 +269,7 @@ def test_allowable_overrides():
 def test_edge_divisions_mapped_face_and_sphere():
     from build123d import GeomType
 
-    from cad_assist.fem.controls import edge_ref, face_ref, mappable
+    from print_assist.fem.controls import edge_ref, face_ref, mappable
 
     plate = Box(60, 30, 4) - Cylinder(5, 4)
     E, F = plate.edges(), plate.faces()
@@ -307,8 +307,8 @@ def test_edge_divisions_mapped_face_and_sphere():
 
 
 def test_rules_proposal_resolve_and_metrics(crank):
-    from cad_assist.fem.analysis import mesh_metrics, mesh_part
-    from cad_assist.fem.controls import propose, resolve
+    from print_assist.fem.analysis import mesh_metrics, mesh_part
+    from print_assist.fem.controls import propose, resolve
 
     p, b = crank
     s = propose(p.data.intent, b.world, "coarse")
@@ -330,7 +330,7 @@ def test_rules_proposal_resolve_and_metrics(crank):
 
 
 def test_solver_reports_convergence(crank):
-    from cad_assist.fem.analysis import analyse
+    from print_assist.fem.analysis import analyse
 
     p, b = crank
     events = []
@@ -347,7 +347,7 @@ def test_mesh_job_then_solve_reuses_the_checked_mesh(tmp_path, crank):
     import shutil
     import time
 
-    from cad_assist.fem.job import FemRunner
+    from print_assist.fem.job import FemRunner
 
     src, _b = crank
     shutil.copytree(src.root, tmp_path / "p", ignore=shutil.ignore_patterns("fem"))
@@ -382,9 +382,9 @@ def test_claude_plans_the_mesh(tmp_path, crank):
     import threading
     from types import SimpleNamespace as NS
 
-    from cad_assist.ai.mesh_plan import run_plan
-    from cad_assist.fem.controls import propose
-    from cad_assist.fem.job import FemJob, FemRunner
+    from print_assist.ai.mesh_plan import run_plan
+    from print_assist.fem.controls import propose
+    from print_assist.fem.job import FemJob, FemRunner
 
     src, _b = crank
     shutil.copytree(src.root, tmp_path / "p", ignore=shutil.ignore_patterns("fem"))
@@ -427,7 +427,7 @@ def test_claude_plans_the_mesh(tmp_path, crank):
 
 
 def _bar_joints(F, clearance=None):
-    from cad_assist.fem.contact import CLEARANCE, Joint
+    from print_assist.fem.contact import CLEARANCE, Joint
 
     z = np.array([0, 0, 1.0])
     c = CLEARANCE if clearance is None else clearance
@@ -438,8 +438,8 @@ def _bar_joints(F, clearance=None):
 def test_pin_contact_on_a_link():
     """A 6 mm link on two steel pins in forks with a 10 mm gap, pulled with 2 kN: equilibrium through contact, no
     penetration to speak of, a bearing arc under 90 deg that narrows with clearance, and the far field at P / A."""
-    from cad_assist.fem.analysis import bore_tris
-    from cad_assist.fem.contact import CLEARANCE, solve_contact
+    from print_assist.fem.analysis import bore_tris
+    from print_assist.fem.contact import CLEARANCE, solve_contact
 
     part = Pos(40, 0, 0) * Box(80, 20, 6) - Pos(10, 0, 0) * Cylinder(4, 10) - Pos(70, 0, 0) * Cylinder(4, 10)
     mesh = mesh_shape(part, size=2.5, curvature=32)
@@ -469,8 +469,8 @@ def test_pin_contact_on_a_link():
 def test_pin_contact_matches_hertz():
     """A steel pin (R 4) in a 10 mm hole in a 1 mm aluminium slab, 1000 N/mm: non-conforming, so Hertz holds. The thin
     slab is in plane stress: b = sqrt(4 P' R* / (pi E*)), p0 = 2 P' / (pi b), E* = 1 / (1/E1 + 1/E2)."""
-    from cad_assist.fem.analysis import bore_tris
-    from cad_assist.fem.contact import PIN_STEEL, Joint, solve_contact
+    from print_assist.fem.analysis import bore_tris
+    from print_assist.fem.contact import PIN_STEEL, Joint, solve_contact
 
     t, Rb, Rp, Pl, h = 1.0, 5.0, 4.0, 1000.0, 0.12
     mesh = mesh_shape(Box(40, 40, t) - Cylinder(Rb, 2 * t), size=2.0, curvature=48, spheres=[{"center": [Rb, 0, 0], "radius": 1.8, "size": h}])
@@ -493,8 +493,8 @@ def test_pin_contact_matches_hertz():
 def test_pin_contact_reacts_the_offset_couple_at_the_forks():
     """The second lug thinned by a top spot face: bearing at different heights leaves a couple the forks react through
     the pins (nothing held but the part's slide along the pins, whose reaction stays ~0)."""
-    from cad_assist.fem.analysis import bore_tris
-    from cad_assist.fem.contact import solve_contact
+    from print_assist.fem.analysis import bore_tris
+    from print_assist.fem.contact import solve_contact
 
     bar = Pos(40, 0, 0) * Box(80, 20, 6) - Pos(70, 0, 2.5) * Box(20, 20, 1)
     part = bar - Pos(10, 0, 0) * Cylinder(4, 10) - Pos(70, 0, 0) * Cylinder(4, 10)
@@ -514,7 +514,7 @@ def test_pin_contact_reacts_the_offset_couple_at_the_forks():
 
 def _plate_run(plate, load):
     """`run` for fem.converge: mesh the solid with a setup, apply `load(mesh) -> (f, fixed)`, von Mises per node."""
-    from cad_assist.fem.analysis import mesh_part
+    from print_assist.fem.analysis import mesh_part
 
     def run(setup, _round=0):
         m = mesh_part(plate, setup)
@@ -525,8 +525,8 @@ def _plate_run(plate, load):
 
 def test_converged_peak_at_a_hole_reaches_kirsch():
     """A coarse plate with a hole under-reads the Kirsch peak; refining at the hot spots converges on Kt 3.04."""
-    from cad_assist.fem.controls import MeshSetup
-    from cad_assist.fem.converge import converge
+    from print_assist.fem.controls import MeshSetup
+    from print_assist.fem.converge import converge
 
     W, D, t, Lx, s = 160.0, 20.0, 5.0, 320.0, 100.0
     plate = Pos(0, 0, t / 2) * Box(Lx, W, t) - Pos(0, 0, t / 2) * Cylinder(D / 2, t)
@@ -556,8 +556,8 @@ def test_converged_peak_at_a_hole_reaches_kirsch():
 def test_converged_peak_flags_a_sharp_inside_corner():
     """An L-shaped cantilever with a sharp inside corner: the peak keeps rising as the mesh refines (stress ~ h^-0.46),
     so the spot is reported as a singularity, not a converged value."""
-    from cad_assist.fem.controls import MeshSetup
-    from cad_assist.fem.converge import converge
+    from print_assist.fem.controls import MeshSetup
+    from print_assist.fem.converge import converge
 
     t = 5.0
     L = Pos(5, 30, t / 2) * Box(10, 60, t) + Pos(35, 5, t / 2) * Box(50, 10, t)  # leg up the y axis, arm along x
@@ -583,7 +583,7 @@ def test_fem_job_converges_the_peaks(crank):
     the summary carries the governing converged peak with its margin."""
     import time
 
-    from cad_assist.fem.job import FemRunner
+    from print_assist.fem.job import FemRunner
 
     p, _b = crank
     runner = FemRunner()

@@ -7,12 +7,12 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from cad_assist.examples import bell_crank
-from cad_assist.project import Project
-from cad_assist.topo import job as topo
-from cad_assist.topo.interpret import Interpreter
-from cad_assist.topo.setup import build_setup
-from cad_assist.topo.simp import Optimizer
+from print_assist.examples import bell_crank
+from print_assist.project import Project
+from print_assist.topo import job as topo
+from print_assist.topo.interpret import Interpreter
+from print_assist.topo.setup import build_setup
+from print_assist.topo.simp import Optimizer
 
 
 @pytest.fixture(scope="module")

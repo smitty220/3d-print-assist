@@ -6,15 +6,15 @@ index 3b809c6..3c72674 100644
  - Pad / sketch_pocket consume sketches; nested closed profiles alternate material and hole. Sketch points tied to an intent object (`ref`, a pin centre) must match it or the feature errors until re-solved.
  
  ## Stress analysis (FEA)
--- `backend/src/cad_assist/fem/`: `element.py` (C3D10, Gmsh node order, 4-point Gauss, stresses extrapolated and averaged; 6-node triangle tractions), `mesh.py` (Gmsh in a spawned child process: its high-order optimiser can abort the process; curved, then optimised, then straight-sided, inverted-element check), `solve.py` (AMG-CG, rigid-body near-nullspace), `analysis.py` (reactions from in-plane statics, cosine bearing with exact resultants, 3-2-1 hold whose reactions must be ~0, regions, margins), `job.py` (background job, results saved to `<project>/fem/`), `sizing.py` (recipe-level sizing for a target margin).
-+- `backend/src/cad_assist/fem/`: `element.py` (C3D10, Gmsh node order, 4-point Gauss, stresses extrapolated and averaged; 6-node triangle tractions), `mesh.py` (Gmsh in a spawned child process: its high-order optimiser can abort the process; curved, then optimised, then straight-sided, inverted-element check), `solve.py` (AMG-CG, rigid-body near-nullspace), `analysis.py` (reactions from in-plane statics, cosine bearing with exact resultants; pins held square by forks (`Bore.tilt`, auto = forked end) react the out-of-plane couple through a stiff spring on each bore's least-squares tilt, applied as a low-rank term with a Woodbury-updated AMG preconditioner; the hold then keeps 4 DOFs and its reactions must be ~0; regions, margins), `job.py` (background job, results saved to `<project>/fem/`), `sizing.py` (recipe-level sizing for a target margin).
+-- `backend/src/print_assist/fem/`: `element.py` (C3D10, Gmsh node order, 4-point Gauss, stresses extrapolated and averaged; 6-node triangle tractions), `mesh.py` (Gmsh in a spawned child process: its high-order optimiser can abort the process; curved, then optimised, then straight-sided, inverted-element check), `solve.py` (AMG-CG, rigid-body near-nullspace), `analysis.py` (reactions from in-plane statics, cosine bearing with exact resultants, 3-2-1 hold whose reactions must be ~0, regions, margins), `job.py` (background job, results saved to `<project>/fem/`), `sizing.py` (recipe-level sizing for a target margin).
++- `backend/src/print_assist/fem/`: `element.py` (C3D10, Gmsh node order, 4-point Gauss, stresses extrapolated and averaged; 6-node triangle tractions), `mesh.py` (Gmsh in a spawned child process: its high-order optimiser can abort the process; curved, then optimised, then straight-sided, inverted-element check), `solve.py` (AMG-CG, rigid-body near-nullspace), `analysis.py` (reactions from in-plane statics, cosine bearing with exact resultants; pins held square by forks (`Bore.tilt`, auto = forked end) react the out-of-plane couple through a stiff spring on each bore's least-squares tilt, applied as a low-rank term with a Woodbury-updated AMG preconditioner; the hold then keeps 4 DOFs and its reactions must be ~0; regions, margins), `job.py` (background job, results saved to `<project>/fem/`), `sizing.py` (recipe-level sizing for a target margin).
  - Mesh controls (`fem/controls.py`, project `mesh`): global size / curvature, edge divisions, mapped faces, spheres of influence. Edges and faces are kept by centre of mass and size (re-found on a rebuilt part and inside Gmsh), not by index. `propose()` is the best-practice rules; `ai/mesh_plan.py` has Claude propose controls, meshing and measuring each (elements around / through each bore, scaled-Jacobian quality, DOF and memory). A checked mesh is reused by the solve when its key (controls + part) matches. The convergence check re-solves with every size x1.5.
  - The solver reports progress (stage, CG residual per iteration against rtol) through `monitor` into `FemJob.progress` for the solve-status window. `FemRunner.job` is the latest job of any kind; `results_job` the latest analysis or sizing.
  - Every new analysis capability gets a closed-form benchmark in `tests/test_fem.py` before it is trusted. Peaks are taken over every node (mid-edge nodes included) so they bound the contour.
-diff --git a/backend/src/cad_assist/app.py b/backend/src/cad_assist/app.py
+diff --git a/backend/src/print_assist/app.py b/backend/src/print_assist/app.py
 index ac9f478..712d752 100644
---- a/backend/src/cad_assist/app.py
-+++ b/backend/src/cad_assist/app.py
+--- a/backend/src/print_assist/app.py
++++ b/backend/src/print_assist/app.py
 @@ -199,6 +199,7 @@ class IntentPatch(BaseModel):
      category: Literal["limit", "ultimate"] | None = None
      factor: float | None = None
@@ -23,10 +23,10 @@ index ac9f478..712d752 100644
  
  
  SUPPORTS = {"planar_mount": {"auto", "free", "normal"}, "bolt_pattern": {"auto", "fixed", "free"}, "bore": {"auto", "fixed", "free", "pin", "link"}}
-diff --git a/backend/src/cad_assist/fem/analysis.py b/backend/src/cad_assist/fem/analysis.py
+diff --git a/backend/src/print_assist/fem/analysis.py b/backend/src/print_assist/fem/analysis.py
 index 432a7c3..83582a5 100644
---- a/backend/src/cad_assist/fem/analysis.py
-+++ b/backend/src/cad_assist/fem/analysis.py
+--- a/backend/src/print_assist/fem/analysis.py
++++ b/backend/src/print_assist/fem/analysis.py
 @@ -3,8 +3,10 @@ supports' reactions from statics), solve, and report stresses by region with mar
  
  Supports and loads act through pins along a common axis (a bell crank, a lever, a fitting on pins). The reactions
@@ -160,10 +160,10 @@ index 432a7c3..83582a5 100644
      return mesh, results, stats
  
  
-diff --git a/backend/src/cad_assist/fem/job.py b/backend/src/cad_assist/fem/job.py
+diff --git a/backend/src/print_assist/fem/job.py b/backend/src/print_assist/fem/job.py
 index 67ea5a0..e99ec11 100644
---- a/backend/src/cad_assist/fem/job.py
-+++ b/backend/src/cad_assist/fem/job.py
+--- a/backend/src/print_assist/fem/job.py
++++ b/backend/src/print_assist/fem/job.py
 @@ -71,7 +71,7 @@ def _case_summary(r: CaseResult, mat) -> dict:
      return {
          "id": r.id, "label": r.label, "category": r.category, "factor": r.factor,
@@ -173,10 +173,10 @@ index 67ea5a0..e99ec11 100644
          "pins": [{"id": p.id, "role": p.role, "force": p.force.round(3).tolist()} for p in r.pins],
          "regions": [{"name": g.name, "vm": g.vm, "p1": g.p1, "at": g.at,
                       "ms_ultimate": mat.ftu / (g.vm * (r.factor if r.category == "limit" else 1.0)) - 1} for g in r.regions],
-diff --git a/backend/src/cad_assist/fem/solve.py b/backend/src/cad_assist/fem/solve.py
+diff --git a/backend/src/print_assist/fem/solve.py b/backend/src/print_assist/fem/solve.py
 index cf58d78..9026282 100644
---- a/backend/src/cad_assist/fem/solve.py
-+++ b/backend/src/cad_assist/fem/solve.py
+--- a/backend/src/print_assist/fem/solve.py
++++ b/backend/src/print_assist/fem/solve.py
 @@ -8,6 +8,7 @@ from dataclasses import dataclass
  
  import numpy as np
@@ -251,10 +251,10 @@ index cf58d78..9026282 100644
 -    return Solution(u, stress, sg, K @ u - f, its[0], {"assemble": t1 - t0, "solve": t2 - t1, "stress": t3 - t2})
 +    return Solution(u, stress, sg, K @ u - f, its[0], {"assemble": t1 - t0, "solve": t2 - t1, "stress": t3 - t2},
 +                    [L @ uf for L, _k in Ls])
-diff --git a/backend/src/cad_assist/intent/models.py b/backend/src/cad_assist/intent/models.py
+diff --git a/backend/src/print_assist/intent/models.py b/backend/src/print_assist/intent/models.py
 index ca43069..489514d 100644
---- a/backend/src/cad_assist/intent/models.py
-+++ b/backend/src/cad_assist/intent/models.py
+--- a/backend/src/print_assist/intent/models.py
++++ b/backend/src/print_assist/intent/models.py
 @@ -88,6 +88,15 @@ class Bore(IntentBase):
      # "link": the pin joins a two-force link (a rod end), so the bore reacts only along the link: the line from the
      # pin to the mating part's centre of mass, square to the pin. "fixed" clamps the bore surface in every direction.
@@ -283,7 +283,7 @@ index cd62649..6555e9f 100644
 +    """A link whose second lug is thinned by a top spot face: equal and opposite pin forces F along x act at bore
 +    mid-heights 5 and 3 mm, a couple F x 2 mm about y. With both pins held square by forks, the forks react exactly
 +    that and the hold reacts nothing; with neither, the hold has to take it."""
-+    from cad_assist.fem.analysis import _hold, bearing_load, bore_tris, tilt_operator
++    from print_assist.fem.analysis import _hold, bearing_load, bore_tris, tilt_operator
 +
 +    bar = Pos(40, 0, 5) * Box(80, 20, 10) - Pos(70, 0, 8) * Box(20, 20, 4)
 +    part = bar - Pos(10, 0, 5) * Cylinder(4, 12) - Pos(70, 0, 5) * Cylinder(4, 12)

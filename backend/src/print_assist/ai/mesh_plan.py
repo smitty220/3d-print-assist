@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from ..fem.analysis import AnalysisError
 from ..fem.controls import EdgeDivision, MappedFace, MeshSetup, Sphere, edge_ref, face_ref, mappable, propose
 
-SYSTEM = """You set up the finite-element mesh for a stress analysis inside CAD Assist.
+SYSTEM = """You set up the finite-element mesh for a stress analysis inside 3D Print Assist.
 
 The engineer is a career aerospace stress engineer. The part is a machined plate on pins (a bell crank, lever or \
 fitting), analysed with quadratic tetrahedra (C3D10): pin forces go on the bores as cosine bearing pressure and the \

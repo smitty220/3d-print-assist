@@ -2,11 +2,11 @@ import numpy as np
 import pytest
 from build123d import IN
 
-from cad_assist.examples import LBF, bell_crank
-from cad_assist.project import Project
-from cad_assist.topo.fe import solve
-from cad_assist.topo.setup import build_setup
-from cad_assist.topo.simp import Optimizer
+from print_assist.examples import LBF, bell_crank
+from print_assist.project import Project
+from print_assist.topo.fe import solve
+from print_assist.topo.setup import build_setup
+from print_assist.topo.simp import Optimizer
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +56,7 @@ def test_pin_and_link_supports_react_like_a_bell_crank(crank):
 
 
 def test_pin_mounted_design_space(crank):
-    from cad_assist.intent.builders import default_design_space
+    from print_assist.intent.builders import default_design_space
 
     it = crank.data.intent.model_copy(deep=True)
     it.objects = [o for o in it.objects if o.kind != "design_space"]
@@ -68,9 +68,9 @@ def test_pin_mounted_design_space(crank):
 
 
 def test_pin_bore_on_a_profile_plate(crank):
-    from cad_assist.features.design import build_design
-    from cad_assist.features.model import Design
-    from cad_assist.features.model import FeatureInstance as FI
+    from print_assist.features.design import build_design
+    from print_assist.features.model import Design
+    from print_assist.features.model import FeatureInstance as FI
 
     sq = [[-20, -20], [20, -20], [20, 20], [-20, 20]]
     d = Design(features=[FI(id="F1", kind="profile_plate", params={"outline": sq, "z_min": -5.0, "z_max": 5.0, "corner_radius": 0.0}),
@@ -84,11 +84,11 @@ def test_pin_bore_on_a_profile_plate(crank):
 
 def test_first_sketches_for_the_bell_crank(crank):
     """The seed drafts sketches that solve cleanly and build a part that clears every fork and keeps full-bearing lugs."""
-    from cad_assist.features.design import build_design
-    from cad_assist.sketch.solve import solve
-    from cad_assist.topo.interpret import Reading
-    from cad_assist.topo.setup import MATE_GAP
-    from cad_assist.topo.sketch_seed import seed_design
+    from print_assist.features.design import build_design
+    from print_assist.sketch.solve import solve
+    from print_assist.topo.interpret import Reading
+    from print_assist.topo.setup import MATE_GAP
+    from print_assist.topo.sketch_seed import seed_design
 
     D = 0.377 * IN
     pins = {"IF-00": (0.0, 0.0, D), "IF-01": (4 * IN, 0.0, D), "IF-02": (0.0, 2.5 * IN, D)}

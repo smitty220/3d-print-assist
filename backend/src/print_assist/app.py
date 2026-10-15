@@ -1,6 +1,6 @@
-"""CAD Assist API.
+"""3D Print Assist API.
 
-Run with:  uv run uvicorn cad_assist.app:app --reload
+Run with:  uv run uvicorn print_assist.app:app --reload
 """
 
 from __future__ import annotations
@@ -39,10 +39,10 @@ from .topo import interpret
 from .topo.machining import MachiningSpec
 from .topo.setup import DEFAULT_BUDGET, TopoSetupError, build_setup
 
-DATA_DIR = Path(os.environ.get("CAD_ASSIST_DATA", Path(__file__).resolve().parents[2] / "data"))
+DATA_DIR = Path(os.environ.get("PRINT_ASSIST_DATA", Path(__file__).resolve().parents[2] / "data"))
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
-app = FastAPI(title="CAD Assist", version="0.6.0")
+app = FastAPI(title="3D Print Assist", version="0.6.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -60,7 +60,7 @@ fem_runner = FemRunner()
 def project() -> Project:
     global _project
     if _project is None:
-        name = os.environ.get("CAD_ASSIST_PROJECT", "default")
+        name = os.environ.get("PRINT_ASSIST_PROJECT", "default")
         _project = Project(DATA_DIR / "projects" / name)
         if name in EXAMPLES and not _project.data.parts:
             EXAMPLES[name](_project)

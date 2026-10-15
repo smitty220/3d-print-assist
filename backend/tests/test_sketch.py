@@ -3,15 +3,15 @@ import math
 import pytest
 from build123d import Face, IN, Vector, Wire
 
-from cad_assist.features.design import build_design
-from cad_assist.features.library import _offset
-from cad_assist.features.model import Design
-from cad_assist.features.model import FeatureInstance as FI
-from cad_assist.intent.models import Intent
-from cad_assist.sketch.from_faces import faces_to_sketch
-from cad_assist.sketch.geometry import SketchGeometryError, regions
-from cad_assist.sketch.model import Sketch
-from cad_assist.sketch.solve import solve
+from print_assist.features.design import build_design
+from print_assist.features.library import _offset
+from print_assist.features.model import Design
+from print_assist.features.model import FeatureInstance as FI
+from print_assist.intent.models import Intent
+from print_assist.sketch.from_faces import faces_to_sketch
+from print_assist.sketch.geometry import SketchGeometryError, regions
+from print_assist.sketch.model import Sketch
+from print_assist.sketch.solve import solve
 
 
 def _pt(i, x, y, **kw):
@@ -67,7 +67,7 @@ def test_pad_and_pocket_from_sketches():
         return Sketch(id=sid, entities=[_pt(f"p{i}", x, y) for i, (x, y) in enumerate(pts)]
                       + [{"id": f"l{i}", "kind": "line", "p1": f"p{i}", "p2": f"p{(i + 1) % 4}"} for i in range(4)])
     it = Intent()
-    from cad_assist.intent.models import DesignSpace, Frame
+    from print_assist.intent.models import DesignSpace, Frame
     it.objects.append(DesignSpace(id="DS-01", frame=Frame(origin=(0, 0, 0), z=(0, 0, 1), x=(1, 0, 0)), min=(-50, -50, -10), max=(50, 50, 10)))
     d = Design(sketches=[rect("S1", 0, 0, 40, 30), rect("S2", 10, 5, 30, 25)], features=[
         FI(id="F1", kind="pad", params={"z_min": -5.0, "z_max": 5.0}, refs={"sketch": "S1"}),
@@ -87,7 +87,7 @@ def test_spline_ends_follow_the_curves_they_join():
         {"id": "arc", "kind": "arc", "c": "c", "start": "a", "end": "b"},
         {"id": "sp", "kind": "spline", "points": ["a", "m", "b"], "tangent_start": True, "tangent_end": True},
     ])
-    from cad_assist.sketch.geometry import edges
+    from print_assist.sketch.geometry import edges
     sp = [e for e in edges(s) if e.geom_type.name == "BEZIER"]
     assert tuple(sp[0].tangent_at(0)) == pytest.approx((0, 1, 0))  # the arc's tangent at (10, 0), heading toward m
     assert tuple(sp[-1].tangent_at(1)) == pytest.approx((-1, 0, 0))  # arriving at (0, 10) along the arc
@@ -95,7 +95,7 @@ def test_spline_ends_follow_the_curves_they_join():
 
 
 def test_offset_pocket_keeps_a_rim_and_clears_the_lugs():
-    from cad_assist.topo.sketch_seed import offset_pocket
+    from print_assist.topo.sketch_seed import offset_pocket
 
     R, rim = 14.0, 3.0
     tri = Face(Wire.make_polygon([Vector(0, 0, 0), Vector(100, 0, 0), Vector(0, 60, 0)], close=True))
@@ -110,7 +110,7 @@ def test_offset_pocket_keeps_a_rim_and_clears_the_lugs():
         c, s0 = pocket.point(a.c), pocket.point(a.start)
         assert math.hypot(s0.x - c.x, s0.y - c.y) == pytest.approx(R, abs=1e-6)
     # The pocket stays the rim inside the outline, and clear of each lug circle.
-    from cad_assist.sketch.geometry import edges
+    from print_assist.sketch.geometry import edges
     outer = regions(profile)[0].outer_wire()
     pts = [e @ (i / 10) for e in edges(pocket) for i in range(11)]
     assert min(outer.distance_to(q) for q in pts) == pytest.approx(rim, abs=1e-3)

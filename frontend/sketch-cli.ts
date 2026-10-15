@@ -1,5 +1,5 @@
 // Backend entry to the sketch solver: one JSON sketch on stdin, {sketch, report} on stdout.
-// Run as `node sketch-cli.ts` (Node runs TypeScript directly). Used by backend/src/cad_assist/sketch/solve.py.
+// Run as `node sketch-cli.ts` (Node runs TypeScript directly). Used by backend/src/print_assist/sketch/solve.py.
 import { solveSketch } from './src/sketch/solve.ts'
 
 let input = ''

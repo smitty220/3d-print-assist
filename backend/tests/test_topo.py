@@ -3,11 +3,11 @@ from types import SimpleNamespace as NS
 import numpy as np
 import pytest
 
-from cad_assist.intent.models import resolved_support
-from cad_assist.topo import job as topo
-from cad_assist.topo.fe import Grid
-from cad_assist.topo.setup import TopoSetupError, build_setup
-from cad_assist.topo.simp import Optimizer, Problem
+from print_assist.intent.models import resolved_support
+from print_assist.topo import job as topo
+from print_assist.topo.fe import Grid
+from print_assist.topo.setup import TopoSetupError, build_setup
+from print_assist.topo.simp import Optimizer, Problem
 from test_validate import SHAPES, _intent
 
 ROLES = {"rib": "mating", "rod": "mating", "fork": "mating", "panel": "mating", "hyd": "keepout"}
@@ -152,8 +152,8 @@ def test_run_fractions():
 
 
 def test_machinable_run_follows_the_raw_one(tmp_path, monkeypatch):
-    from cad_assist.topo.machining import MachiningSpec
-    from cad_assist.topo.prismatic import Prismatic25D, setup_faces
+    from print_assist.topo.machining import MachiningSpec
+    from print_assist.topo.prismatic import Prismatic25D, setup_faces
 
     monkeypatch.setattr(topo, "FIRST_ITERS", 12)
     monkeypatch.setattr(topo, "MACHINING_ITERS", 25)
@@ -181,7 +181,7 @@ def test_machinable_run_follows_the_raw_one(tmp_path, monkeypatch):
 
 
 def test_machining_spec():
-    from cad_assist.topo.machining import MachiningSpec
+    from print_assist.topo.machining import MachiningSpec
 
     m = MachiningSpec()
     assert m.axis_index((37, 37, 47)) == 2 and m.open_end() == 0

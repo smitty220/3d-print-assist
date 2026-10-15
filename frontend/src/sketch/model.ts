@@ -1,4 +1,4 @@
-// The sketch data model, shared with the backend (backend/src/cad_assist/sketch/model.py mirrors it).
+// The sketch data model, shared with the backend (backend/src/print_assist/sketch/model.py mirrors it).
 // Coordinates are mm in the sketch plane (the design frame's XY).
 
 export type Entity =

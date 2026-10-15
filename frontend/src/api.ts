@@ -30,7 +30,7 @@ export interface ShapeMesh {
   edges: EdgePolyline[]
 }
 
-// ---------- intent model (mirrors backend/src/cad_assist/intent/models.py) ----------
+// ---------- intent model (mirrors backend/src/print_assist/intent/models.py) ----------
 
 export interface Frame {
   origin: Vec3
@@ -162,7 +162,7 @@ export type IntentPatch = Partial<
 
 export type Support = 'auto' | 'fixed' | 'free' | 'normal' | 'pin' | 'link'
 
-// ---------- design (feature tree; mirrors backend/src/cad_assist/features) ----------
+// ---------- design (feature tree; mirrors backend/src/print_assist/features) ----------
 
 export type ParamValue = number | string | boolean | number[][] | number[][][]
 
@@ -229,7 +229,7 @@ export interface DesignState {
   ai_draft?: { summary: string; questions: string[] } | null // what Claude said and asked about the current design
 }
 
-// ---------- validation (mirrors backend/src/cad_assist/validate.py) ----------
+// ---------- validation (mirrors backend/src/print_assist/validate.py) ----------
 
 export type Status = 'ok' | 'warn' | 'fail'
 
@@ -252,7 +252,7 @@ export interface ValidationReport {
   preflight_ready: boolean
 }
 
-// ---------- AI generation (mirrors backend/src/cad_assist/ai/generate.py) ----------
+// ---------- AI generation (mirrors backend/src/print_assist/ai/generate.py) ----------
 
 export interface AiStep {
   kind: 'note' | 'build' | 'template' | 'finish' | 'error'
@@ -287,7 +287,7 @@ export interface AiStatus {
   job: AiJob | null
 }
 
-// ---------- topology optimisation (mirrors backend/src/cad_assist/topo) ----------
+// ---------- topology optimisation (mirrors backend/src/print_assist/topo) ----------
 
 export interface TopoSummary {
   grid: [number, number, number]
@@ -395,7 +395,7 @@ export interface InterpretJob {
   error: string | null
 }
 
-// ---------- stress analysis (mirrors backend/src/cad_assist/fem) ----------
+// ---------- stress analysis (mirrors backend/src/print_assist/fem) ----------
 
 export interface FemRegion { name: string; vm: number; p1: number; at: number[]; ms_ultimate: number }
 export interface FemCase {

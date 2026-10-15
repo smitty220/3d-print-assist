@@ -1,7 +1,7 @@
 [project]
-name = "cad-assist"
+name = "print-assist"
 version = "0.1.0"
-description = "CAD Assist backend: intent model, geometry and API"
+description = "3D Print Assist backend: intent model, geometry and API"
 authors = [
     { name = "Ryan Smith", email = "ryanasmith@gmail.com" }
 ]
