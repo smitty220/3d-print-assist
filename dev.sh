@@ -7,7 +7,10 @@ api_port="${PRINT_ASSIST_PORT:-8010}"
 web_port="${PRINT_ASSIST_WEB_PORT:-5183}"
 export PRINT_ASSIST_PORT="$api_port"
 
-(cd "$root/backend" && uv run uvicorn print_assist.app:app --host 127.0.0.1 --port "$api_port" --reload) &
+# A code change reloads the backend; the browser's live-update stream would hold that reload open forever, so give
+# open connections 2 s to close (the page reconnects by itself).
+(cd "$root/backend" && uv run uvicorn print_assist.app:app --host 127.0.0.1 --port "$api_port" --reload \
+  --timeout-graceful-shutdown 2) &
 backend=$!
 trap 'kill $backend 2>/dev/null' EXIT
 

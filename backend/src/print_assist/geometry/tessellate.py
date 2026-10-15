@@ -93,8 +93,11 @@ def _triangulation(face: Face) -> tuple[list[float], list[int]] | None:
 def _mesh_face(face_id: int, face: Face) -> FaceMesh:
     got = _triangulation(face)
     if got is None:
-        verts, tris = face.tessellate(LINEAR_TOL_MM, ANGULAR_TOL_RAD)
-        got = [c for v in verts for c in _vec(v)], [i for tri in tris for i in tri]
+        try:
+            verts, tris = face.tessellate(LINEAR_TOL_MM, ANGULAR_TOL_RAD)
+            got = [c for v in verts for c in _vec(v)], [i for tri in tris for i in tri]
+        except AttributeError:  # a sliver face the mesher cannot triangulate: nothing to draw
+            got = [], []
     positions, indices = got
     return FaceMesh(
         id=face_id,
