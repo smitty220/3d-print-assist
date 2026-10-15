@@ -105,7 +105,9 @@ def test_sketch_put_solves_and_rebuilds(client):
 
 
 def test_export_only_when_up_to_date(client, tmp_path):
-    from build123d import Mesher, import_step
+    from build123d import import_step
+
+    from print_assist.export.bambu import read_project
 
     client.post("/api/features", json={"kind": "plate", "params": {"corner_radius": 0.0}})
     assert client.get("/api/export/3mf").status_code == 409  # not updated yet
@@ -114,10 +116,10 @@ def test_export_only_when_up_to_date(client, tmp_path):
     assert r.status_code == 200
     out = tmp_path / "designs" / "untitled" / "exports" / "untitled.3mf"
     assert out.exists()
-    (shape,) = Mesher().read(str(out))
-    assert shape.volume == pytest.approx(60 * 40 * 5, rel=1e-6)
-    bb = shape.bounding_box()
-    assert bb.min.Z == pytest.approx(0) and (bb.min.X + bb.max.X) / 2 == pytest.approx(128)  # on the A1 plate, centred
+    (part,), _, _ = read_project(out)
+    assert part.volume == pytest.approx(60 * 40 * 5, rel=1e-6) and part.open_edges() == 0
+    lo, hi = part.bounds()
+    assert lo[2] == pytest.approx(0, abs=1e-6) and (lo[0] + hi[0]) / 2 == pytest.approx(128)  # on the A1 plate, centred
     assert client.get("/api/export/step").status_code == 200
     assert import_step(str(out.with_suffix(".step"))).volume == pytest.approx(60 * 40 * 5, rel=1e-6)
     assert client.get("/api/export/stl").status_code == 200

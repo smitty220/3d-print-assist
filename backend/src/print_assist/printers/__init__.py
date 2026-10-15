@@ -19,10 +19,16 @@ class PrinterProfile(BaseModel):
     name: str
     bed: tuple[float, float, float]  # mm, X Y Z
     nozzles: list[Nozzle]
+    # Bambu Studio's project settings for this printer (a project_settings.config saved by Bambu Studio, relative to
+    # this folder); with it, 3MF exports are Bambu Studio projects with the filaments preassigned.
+    bambu_template: str | None = None
 
     @property
     def slots(self) -> int:
         return sum(n.slots for n in self.nozzles)
+
+    def template_path(self) -> Path | None:
+        return HERE / self.bambu_template if self.bambu_template else None
 
 
 def profiles() -> dict[str, PrinterProfile]:

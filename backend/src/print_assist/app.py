@@ -550,7 +550,7 @@ def export_design(fmt: str) -> FileResponse:
     colors = {b.id: w.design.body_color(b) for b in w.design.bodies}
     path = w.project.root / "exports" / filename(w.project.data.name, fmt)
     try:
-        export(good.parts, names, w.project.printer, fmt, path, w.project.data.name, colors)
+        export(good.parts, names, w.project.printer, fmt, path, w.project.data.name, colors, w.design)
     except ExportError as exc:
         raise HTTPException(422, str(exc)) from exc
     w.log(USER, f"Exported {path.name}")
@@ -603,7 +603,7 @@ def export_batch(body: BatchIn) -> Response:
             path = folder / filename(label, body.fmt)
             try:
                 export(result.parts, {b.id: b.name for b in cd.bodies}, w.project.printer, body.fmt, path, label,
-                       {b.id: cd.body_color(b) for b in cd.bodies})
+                       {b.id: cd.body_color(b) for b in cd.bodies}, cd)
             except ExportError as exc:
                 raise HTTPException(422, f"{label}: {exc}") from exc
             z.write(path, path.name)

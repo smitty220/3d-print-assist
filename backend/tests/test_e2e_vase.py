@@ -71,10 +71,10 @@ def test_twisted_hex_vase_end_to_end(tmp_path):
 
     r = c.get("/api/export/3mf")
     assert r.status_code == 200
-    from build123d import Mesher
+    from print_assist.export.bambu import read_project
 
-    (shape,) = Mesher().read(r.headers["x-saved-path"])
-    assert shape.volume == pytest.approx(c.get("/api/part").json()["volume"], rel=0.01)
+    (part,), _, _ = read_project(r.headers["x-saved-path"])  # a Bambu Studio project for the A1
+    assert part.open_edges() == 0 and part.volume == pytest.approx(c.get("/api/part").json()["volume"], rel=0.01)
     png = c.get("/api/render", params={"view": "iso", "size": 320})
     assert png.status_code == 200 and png.content[:4] == b"\x89PNG"
     assert c.get("/api/file").json()["dirty"] is True

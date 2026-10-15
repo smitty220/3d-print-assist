@@ -5,11 +5,11 @@ import io
 import zipfile
 
 import pytest
-from build123d import Mesher
 from fastapi.testclient import TestClient
 
 from print_assist import app as app_module
 from print_assist.build.ops import OpError, apply
+from print_assist.export.bambu import read_project
 from print_assist.features.design import build_design
 from print_assist.features.model import Design
 from print_assist.printers import profiles
@@ -182,12 +182,11 @@ def test_coloured_3mf_and_batch_export_through_the_api():
     checks = {f["title"]: f for f in c.get("/api/checks").json()["part"]}
     assert checks["Filaments fit the printer"]["status"] == "ok"
 
-    r = c.get("/api/export/3mf")
+    r = c.get("/api/export/3mf")  # a Bambu Studio project: one object, a part per body in its filament
     assert r.status_code == 200
-    shapes = Mesher().read(r.headers["X-Saved-Path"])
-    got = sorted((s.label, round(s.volume), str(s.color).split(" near")[0]) for s in shapes)
-    assert [g[:2] for g in got] == [("Band", 4000), ("Body", 12000)]
-    assert all("0.7882" in g[2] for g in got if g[0] == "Band")
+    parts, settings, meta = read_project(r.headers["X-Saved-Path"])
+    assert sorted((p.name, p.filament, round(p.volume)) for p in parts) == [("Band", 2, 4000), ("Body", 1, 12000)]
+    assert settings["filament_colour"] == ["#111111", "#C9A227"] and meta["Title"] == "Band Block"
 
     r = c.post("/api/export/batch", json={"fmt": "3mf"})  # every variant x every colorway
     assert r.status_code == 200, r.text

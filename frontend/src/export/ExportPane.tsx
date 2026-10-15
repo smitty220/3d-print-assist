@@ -160,8 +160,8 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onOps, 
           </button>
         </div>
       )}
-      <p className="note">3MF files open in Bambu Studio on the plate, one coloured object per body. Files are also saved in the
-        design's <code>exports</code> folder. Projects with filament slots preassigned come with the Bambu reference project.</p>
+      <p className="note">3MF files are Bambu Studio projects for the printer: one object on the plate, each body a part in its
+        filament slot, the palette's colours loaded. Files are also saved in the design's <code>exports</code> folder.</p>
     </div>
   )
 }

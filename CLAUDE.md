@@ -44,8 +44,14 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 
 ## Status
 - M1 done (2026-10-14): parameters and formulas, incremental build engine with update states (manual / auto, rollback), ops, Extrude / Revolve / Shell / Text / Fillet / Chamfer, sketch tools with formula dimensions, export (3MF / STL / STEP), renderer, MCP server, API chat, the full UI (tree, toolbars, edit dialogs, AI panel, Color & Export), end-to-end vase test.
-- Next: M2 colours and variants (body colours, Split / Combine, inlay text, filament slots, variants table, Bambu Studio project 3MF from the user's reference file); then M3 the rest of the toolbar and the commander deck box test.
+- M2 done (2026-10-15): filament palette and body filaments, Split / Combine, inlay and separate-body text, variants and colorways, batch export, Color & Export screen, Bambu Studio project 3MF.
+- Next: an X2D template (needs a project saved for the X2D in Bambu Studio); then M3 the rest of the toolbar and the commander deck box test.
 - Known gaps: shell can fail on a body with a through hole (OCC offset); stroke check flags thin glyphs, not hairlines.
+
+## Bambu Studio export
+- A 3MF export is a Bambu Studio project when the printer profile names a `bambu_template` (`printers/bambu/*.project_settings.config`, saved by Bambu Studio for that printer): one object, a part per body with its `extruder` (= palette slot), the template's settings resized to the palette (`export/bambu.py`). Project filament N is palette slot N.
+- Per-filament settings come from the template filament with the same material; a material the template lacks is an export error. To support PETG etc., or to change the default process settings, save a Bambu Studio project for that printer with those filaments and copy its `Metadata/project_settings.config` over the template.
+- The A1 template came from a MakerWorld project the user re-saved for their A1 (its process tweaks: 3 walls, gyroid, no brim, back seam). Bambu Studio is not installed on this Mac, so the format is checked by `tests/test_bambu.py` and by opening exports in Bambu Studio by hand.
 
 ## AI contract
 - Every change is an op (`build/ops.py`) applied by the Workspace. Actors other than "user" are built and checked first; a change that makes a feature fail is refused and the design is untouched. Locked features refuse AI edits. Kept AI changes are git checkpoints ("AI: ..."), revertible.

@@ -152,8 +152,8 @@ def list_fonts() -> str:
 
 @mcp.tool()
 def export(format: str = "3mf") -> str:
-    """Export the design (3mf, stl or step) into the design's exports folder. Only works when the model is up to date
-    and nothing failed. Returns where the file was saved."""
+    """Export the design into its exports folder: 3mf (a Bambu Studio project with the filaments preassigned), stl or
+    step. Only works when the model is up to date and nothing failed. Returns where the file was saved."""
     r = _call("GET", f"/api/export/{format}")
     if isinstance(r, dict):
         return _text(r)

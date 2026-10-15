@@ -1,7 +1,7 @@
 """Exports of a built design: 3MF (one object per body, placed on the printer's bed), STL and STEP.
 
-The Bambu Studio project 3MF (filament slots and colours preassigned) is built in `bambu.py` from a reference project
-saved by Bambu Studio; until that reference is in place the plain 3MF opens in Bambu Studio with colours to assign.
+When the printer has a Bambu Studio template and the design is given, the 3MF is a Bambu Studio project with each
+body's filament and the palette's colours preassigned (`bambu.py`); otherwise it is a plain 3MF with coloured objects.
 """
 
 from __future__ import annotations
@@ -11,7 +11,10 @@ from pathlib import Path
 
 from build123d import Color, Compound, Location, Mesher, Shape, Unit, export_step, export_stl
 
+from ..features.model import Design
 from ..printers import PrinterProfile
+
+from . import bambu
 
 FORMATS = ("3mf", "stl", "step")
 LINEAR = 0.01  # mm, mesh deflection: well under a 0.2 mm layer
@@ -38,8 +41,9 @@ def filename(name: str, fmt: str) -> str:
 
 
 def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfile, fmt: str, path: Path,
-           title: str = "", colors: dict[str, str | None] | None = None) -> Path:
-    """Write the bodies to `path`. A 3MF has one object per body, named and coloured (`colors`: body -> "#rrggbb")."""
+           title: str = "", colors: dict[str, str | None] | None = None, design: Design | None = None) -> Path:
+    """Write the bodies to `path`. A 3MF is a Bambu Studio project when `design` is given and the printer has a
+    template; otherwise it has one object per body, named and coloured (`colors`: body -> "#rrggbb")."""
     if fmt not in FORMATS:
         raise ExportError(f"unknown format {fmt!r}; formats: {', '.join(FORMATS)}")
     if not parts:
@@ -47,6 +51,8 @@ def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfi
     ids = list(parts)
     shapes = on_bed([parts[b] for b in ids], printer)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "3mf" and design is not None and (template := bambu.load_template(printer)) is not None:
+        return _bambu(ids, shapes, design, printer, template, path, title)
     if fmt == "3mf":
         m = Mesher(unit=Unit.MM)
         for bid, shape in zip(ids, shapes):
@@ -67,3 +73,23 @@ def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfi
         if not export_step(whole, str(path)):
             raise ExportError("STEP export failed")
     return path
+
+
+def _bambu(ids: list[str], shapes: list[Shape], design: Design, printer: PrinterProfile, template: dict, path: Path,
+           title: str) -> Path:
+    from ..geometry.render import render
+
+    by_id = {b.id: b for b in design.bodies}
+    colors = {bid: design.body_color(by_id[bid]) if bid in by_id else None for bid in ids}
+    fallback = next((c for c in colors.values() if c), bambu.PLACEHOLDER)
+    filaments = bambu.palette(design.filaments, fallback)
+    parts = [bambu.Part(by_id[bid].name if bid in by_id else bid, shape, by_id[bid].filament if bid in by_id else None)
+             for bid, shape in zip(ids, shapes)]
+    try:
+        thumb = render([(s, colors[b]) for b, s in zip(ids, shapes)], "iso", 512)
+    except Exception:  # a thumbnail is a nicety; never fail the export over it
+        thumb = None
+    try:
+        return bambu.write_project(parts, filaments, printer, template, path, title or "design", thumb)
+    except bambu.BambuError as exc:
+        raise ExportError(str(exc)) from exc
