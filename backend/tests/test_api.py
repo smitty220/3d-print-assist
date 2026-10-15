@@ -136,3 +136,21 @@ def test_export_only_when_up_to_date(client, tmp_path):
     assert client.get("/api/export/obj").status_code == 404
     fonts = {f["name"]: f for f in client.get("/api/fonts").json()}
     assert "Lato" in fonts and fonts["Lato"]["license"].startswith("SIL")
+
+
+def test_render_faces_and_revert_an_ai_change(client):
+    from print_assist.geometry.render import png_size
+
+    client.post("/api/ops", json={"ops": [{"op": "add_feature", "kind": "plate"}]}, headers={"X-Actor": "claude-code"})
+    r = client.get("/api/render", params={"view": "iso", "size": 200})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png" and png_size(r.content) == (200, 200)
+    assert client.get("/api/render", params={"view": "sideways"}).status_code == 422
+    faces = client.get("/api/faces").json()
+    top = max((f for f in faces if f["type"] == "plane"), key=lambda f: f["center"][2])
+    assert top["name"] == "F1.top" and top["normal"] == [0, 0, 1]
+    client.post("/api/ops", json={"ops": [{"op": "edit_feature", "id": "F1", "params": {"thickness": 8.0}}],
+                                  "message": "thicker"}, headers={"X-Actor": "claude-code"})
+    assert client.get("/api/part").json()["volume"] > 60 * 40 * 7
+    body = client.post("/api/revert-ai").json()
+    assert body["reverted"] == "AI: thicker"
+    assert client.get("/api/part").json()["volume"] < 60 * 40 * 6

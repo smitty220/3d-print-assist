@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from .ai import generate as ai
@@ -404,7 +404,31 @@ def export_design(fmt: str) -> FileResponse:
     except ExportError as exc:
         raise HTTPException(422, str(exc)) from exc
     w.log(USER, f"Exported {path.name}")
-    return FileResponse(path, filename=path.name)
+    return FileResponse(path, filename=path.name, headers={"X-Saved-Path": str(path)})
+
+
+@app.get("/api/render")
+def render_view(view: str = "iso", size: int = 640) -> Response:
+    """The last good part as a PNG from a standard view (iso, front, back, left, right, top, bottom)."""
+    try:
+        png = ws().render(view, size)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(png, media_type="image/png")
+
+
+@app.get("/api/faces")
+def list_faces(body: str = "B1") -> list[dict]:
+    return ws().faces(body)
+
+
+@app.post("/api/revert-ai")
+def revert_ai(x_actor: str = Header(USER)) -> dict:
+    try:
+        msg = ws().revert_last_ai(x_actor)
+    except ChangeRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"reverted": msg, "tree": ws().tree()}
 
 
 @app.get("/api/fonts")

@@ -118,6 +118,61 @@ class Workspace:
         p = plan(self.design, self.project.data.rules)
         return [k for k, h in p.hashes().items() if self.built_hashes.get(k) != h]
 
+    def revert_last_ai(self, actor: str = design_ops.USER) -> str:
+        """Put the design back as it was before the last change the AI kept. Returns that change's message."""
+        import subprocess
+
+        from ..features.model import Design
+
+        with self.lock:
+            hist = self.project.history(200)
+            ai = next((h for h in hist if h["message"].startswith("AI:")), None)
+            if ai is None:
+                raise ChangeRefused("there is no AI change to revert")
+            run = subprocess.run(["git", "show", f"{ai['id']}^:project.json"], cwd=self.project.root,
+                                 capture_output=True, text=True, encoding="utf-8")
+            if run.returncode != 0:
+                raise ChangeRefused("could not read the design before that change")
+            import json
+
+            self.project.data.design = Design.model_validate(json.loads(run.stdout)["design"])
+            self.project.save()
+            self.rev += 1
+            self.log(actor, f"Reverted: {ai['message']}")
+            self.update(message=f"Revert {ai['message']}")
+            return ai["message"]
+
+    def render(self, view: str = "iso", size: int = 640) -> bytes:
+        from ..geometry.render import render
+
+        with self.lock:
+            good = self.last_good
+            bodies = []
+            if good is not None:
+                colors = {b.id: b.color for b in self.design.bodies}
+                bodies = [(shape, colors.get(bid)) for bid, shape in good.parts.items()]
+        return render(bodies, view, size)
+
+    def faces(self, body: str = "B1") -> list[dict]:
+        """The shown part's faces, compactly: what the AI needs to pick one (index, name, type, centre, normal, area)."""
+        from build123d import GeomType
+
+        good = self.last_good
+        shape = good.parts.get(body) if good else None
+        if shape is None:
+            return []
+        names = good.body_names.get(body, [])
+        out = []
+        for i, f in enumerate(shape.faces()):
+            c = f.center()
+            item = {"index": i, "name": names[i] if i < len(names) else None, "type": f.geom_type.name.lower(),
+                    "center": [round(c.X, 2), round(c.Y, 2), round(c.Z, 2)], "area": round(f.area, 1)}
+            if f.geom_type == GeomType.PLANE:
+                n = f.normal_at()
+                item["normal"] = [round(n.X, 3), round(n.Y, 3), round(n.Z, 3)]
+            out.append(item)
+        return out
+
     # ---------- what the UI and the AI read ----------
 
     def tree(self) -> dict:
