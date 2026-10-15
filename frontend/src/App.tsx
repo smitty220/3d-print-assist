@@ -1,8 +1,8 @@
 // The app: header (design, mode tabs, update), toolbar, then the specification tree | the view | the AI panel, and the
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type PartState, type Printer, type Project, type Tree } from './api'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { api, type Activity, type AiStatus, type Checks, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { FeatureDialog, ParamDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
@@ -43,6 +43,7 @@ export default function App() {
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const [selected, setSelected] = useState<NodeKey | null>(null)
+  const [preview, setPreview] = useState<string | null>(null) // the colorway shown in the view
   const [dialog, setDialog] = useState<Dialog>(null)
   const [picking, setPicking] = useState<'faces' | 'edges' | null>(null)
   const [sketchId, setSketchId] = useState<string | null>(null)
@@ -112,6 +113,19 @@ export default function App() {
 
   const refreshFile = () => api.file().then(setFile).catch(() => {})
   const changed = (r?: { tree: Tree }) => { if (r) { setTree(r.tree); refreshFile() } }
+  // Colour, palette and variant changes: no rebuild, but the checks read the palette.
+  const onOps = (ops: Op[], message: string) => {
+    run(() => api.ops(ops, message)).then((r) => { changed(r); if (r) api.checks().then(setChecks).catch(() => {}) })
+  }
+
+  // The view shows each body in its filament's colour (from the tree, current without a rebuild), or a colorway's.
+  const cw = preview && mode === 'export' ? tree?.colorways.find((c) => c.id === preview) : undefined
+  const bodyColors = JSON.stringify((tree?.bodies ?? []).map((b) => [b.id, (cw && b.filament != null ? cw.colors[b.filament] : undefined) ?? b.color]))
+  const shownPart = useMemo(() => {
+    if (!part) return part
+    const colors = new Map<string, string | null>(JSON.parse(bodyColors))
+    return { ...part, bodies: part.bodies.map((b) => ({ ...b, color: colors.has(b.id) ? colors.get(b.id)! : b.color })) }
+  }, [part, bodyColors])
 
   // ---------- File menu ----------
 
@@ -180,13 +194,20 @@ export default function App() {
 
   const lastSketch = () => (selected?.startsWith('sketch:') ? selected.slice(7) : tree?.sketches.at(-1)?.id) ?? null
 
+  // New features go into the selected body (or the selected feature's body).
+  const currentBody = () => {
+    if (selected?.startsWith('body:')) return selected.slice(5)
+    if (selected?.startsWith('feature:')) return tree?.features.find((f) => f.id === selected.slice(8))?.body ?? 'B1'
+    return tree?.bodies[0]?.id ?? 'B1'
+  }
+
   async function onTool(t: Tool) {
     if (t.action === 'new-sketch') { setSketchMenu(!sketchMenu); return }
     if (t.action === 'new-parameter') { setDialog({ type: 'param', name: null }); return }
-    if (t.action === 'checks') { setMode('export'); return }
+    if (t.action === 'checks' || t.action === 'color') { setMode('export'); return }
     if (t.action === 'section') { setError('Use Cut X / Y / Z at the top of the view to section the part.'); return }
     if (!t.kind) return
-    const body: Record<string, unknown> = { kind: t.kind }
+    const body: Record<string, unknown> = { kind: t.kind, body: currentBody() }
     if (SKETCH_KINDS.has(t.kind)) {
       const s = lastSketch()
       if (!s) { setError('Draw a sketch first (Sketch tool), then extrude or revolve it.'); return }
@@ -242,6 +263,7 @@ export default function App() {
     if (kind === 'feature') { setDialog({ type: 'feature', id }); setPicking(null) }
     else if (kind === 'param') setDialog({ type: 'param', name: id })
     else if (kind === 'sketch') { setSketchId(id); setMode('sketch') }
+    else if (kind === 'body') setMode('export')
   }
 
   const switchMode = (m: Mode) => {
@@ -343,7 +365,8 @@ export default function App() {
             onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
           {mode === 'sketch' && <div ref={setTreeHost} />}
           {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
-            onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }} />}
+            onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }}
+            onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
           {mode === 'part' && (
             <div className="legend">
               <span><Icon name="bolt" size={12} color="var(--stale)" fill="var(--stale)" /> needs update</span>
@@ -360,7 +383,7 @@ export default function App() {
               onChanged={setTree} onExit={() => { setMode('part'); setSketchId(null) }} />
           </section>
         ) : (
-          <ViewportPane part={part} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
+          <ViewportPane part={shownPart} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
             highlight={highlight} picking={dialog?.type === 'feature' ? picking : null} onPick={onPick} onUpdate={update}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
             {file.recovery && (

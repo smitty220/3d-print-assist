@@ -7,13 +7,16 @@ import { Icon, StatusIcon } from '../ui/icons'
 import { ExprField } from './ExprField'
 
 const UNIT: Partial<Record<ParamSpec['quantity'], string>> = { length: 'mm', angle: '°' }
-const PICKS: Record<string, 'faces' | 'edges'> = { shell: 'faces', text: 'faces', fillet: 'edges', chamfer: 'edges' }
+const PICKS: Record<string, 'faces' | 'edges'> = { shell: 'faces', text: 'faces', split: 'faces', fillet: 'edges', chamfer: 'edges' }
 const PICK_HELP: Record<string, string> = {
   shell: 'Pick the faces to leave open (none: a closed hollow part).',
   text: 'Pick the face the text goes on (none: the text stands on the bed).',
   fillet: 'Pick the edges to round, or give two face groups below.',
   chamfer: 'Pick the edges to bevel, or give two face groups below.',
+  split: 'Optionally pick a flat face to split along (none: the plane below).',
 }
+// Text parameters that name a body; "new" asks for a new body.
+const BODY_PARAMS = new Set(['into', 'tool'])
 
 interface FeatureProps {
   feature: FeatureNode
@@ -53,6 +56,19 @@ export function FeatureDialog({ feature: f, spec, tree, fonts, picking, onPick, 
     }
     if (s.quantity === 'bool') {
       return <label key={s.name} className="check"><input type="checkbox" checked={!!v} onChange={(e) => setParam(s.name, e.target.checked)} />{s.label}</label>
+    }
+    if (s.quantity === 'text' && BODY_PARAMS.has(s.name)) {
+      const others = tree.bodies.filter((b) => b.id !== f.body)
+      return (
+        <div key={s.name} className="xfield"><label htmlFor={id}>{s.label}</label>
+          <select id={id} value={String(v ?? '')} onChange={(e) => setParam(s.name, e.target.value)}>
+            {f.kind === 'text' && <option value="">none (in this body)</option>}
+            {!v && f.kind !== 'text' && <option value="">choose a body</option>}
+            {others.map((b) => <option key={b.id} value={b.id}>{b.id} · {b.name}</option>)}
+            {s.name === 'into' && <option value="new">New body</option>}
+          </select>
+        </div>
+      )
     }
     if (s.quantity === 'text' && s.name === 'font') {
       return (

@@ -25,8 +25,8 @@ export const PART_TOOLS: { group: string; tools: Tool[] }[] = [
     { id: 'shell', label: 'Shell', icon: 'shell', kind: 'shell' },
     { id: 'draft', label: 'Draft', icon: 'draft', later: 'M3' },
     { id: 'press', label: 'Press/pull', icon: 'press', later: 'M3' },
-    { id: 'split', label: 'Split', icon: 'split', later: 'M2' },
-    { id: 'combine', label: 'Combine', icon: 'combine', later: 'M2' },
+    { id: 'split', label: 'Split', icon: 'split', kind: 'split' },
+    { id: 'combine', label: 'Combine', icon: 'combine', kind: 'combine' },
     { id: 'move', label: 'Move', icon: 'move', later: 'M3' },
   ] },
   { group: 'Pattern', tools: [
@@ -42,7 +42,7 @@ export const PART_TOOLS: { group: string; tools: Tool[] }[] = [
   ] },
   { group: 'Design', tools: [
     { id: 'parameter', label: 'Parameter', icon: 'vars', action: 'new-parameter', color: 'var(--accent)' },
-    { id: 'color', label: 'Color', icon: 'color', later: 'M2', color: 'var(--accent)' },
+    { id: 'color', label: 'Color', icon: 'color', action: 'color', color: 'var(--accent)' },
     { id: 'import', label: 'Import', icon: 'importF', later: 'M3', color: 'var(--accent)' },
   ] },
 ]

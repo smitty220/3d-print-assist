@@ -266,3 +266,25 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .start { height: 100%; display: grid; grid-template-rows: auto 1fr; }
 .startbody { padding: 24px 32px; overflow: auto; display: flex; flex-direction: column; gap: 18px; max-width: 1200px; width: 100%; margin: 0 auto; }
 .startbody h1 { margin: 0; font-size: 20px; font-weight: 600; }
+
+/* Color & Export: palette, bodies, variants, colorways */
+.palette { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.palette li { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 6px; background: var(--panel-2); }
+.palette input, .card input:not([type=color]), .palette select, .card select { min-width: 0; padding: 3px 6px; font-size: 12.5px; }
+.palette .grow, .card .grow { flex: 1; }
+.palette .mat { width: 52px; }
+.slot { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: var(--line); color: var(--fg-2); font-size: 11px; font-weight: 600; flex: none; }
+.swatch-in { width: 26px; height: 22px; padding: 0; border: 1px solid #0006; border-radius: 4px; background: none; cursor: pointer; flex: none; }
+.swatch-in::-webkit-color-swatch-wrapper { padding: 0; }
+.swatch-in::-webkit-color-swatch { border: none; border-radius: 3px; }
+.card { display: flex; flex-direction: column; gap: 5px; padding: 6px 8px; border-radius: 6px; background: var(--panel-2); border: 1px solid transparent; }
+.card.shown { border-color: var(--accent); }
+.card .strong { font-weight: 600; }
+.card .ov { gap: 6px; }
+.card .pn { font-family: ui-monospace, monospace; font-size: 12px; color: var(--accent); min-width: 64px; }
+.card .mono { font-family: ui-monospace, monospace; }
+.card .slots { flex-wrap: wrap; gap: 8px; }
+.cw { display: inline-flex; align-items: center; gap: 3px; }
+.cw.same .swatch-in { opacity: 0.45; }
+.chip.slotchip { background: var(--line); color: var(--fg-2); }
+.batch { margin-top: 4px; }

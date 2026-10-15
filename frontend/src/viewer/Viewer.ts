@@ -192,6 +192,10 @@ export class Viewer {
     this.section.addPart(data.name, geo, { ...style.cap, angle })
   }
 
+  partNames(): string[] {
+    return [...this.parts.keys()]
+  }
+
   removePart(name: string) {
     const p = this.parts.get(name)
     if (!p) return

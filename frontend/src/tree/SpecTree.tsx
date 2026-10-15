@@ -86,7 +86,8 @@ export function SpecTree({ tree, selected, onSelect, onEdit, onRollback }: Props
       {folder('bodies', 'Bodies', tree.bodies.length)}
       {open.bodies && tree.bodies.map((b) => row(`body:${b.id}`, 1, <>
         <span className="sw" style={{ background: b.color ?? 'var(--body)' }} />
-        <span className="lb">{b.name}<span className="nm"> · {b.features.length} features</span></span>
+        <span className="lb">{b.name}<span className="nm"> · {b.features.length + b.fed_by.length} features{b.fed_by.length ? ` (from ${b.fed_by.join(', ')})` : ''}</span></span>
+        {b.filament != null && <span className="chip slotchip" title={`Prints in filament slot ${b.filament}`}>{b.filament}</span>}
         <StatusIcon status={b.status} />
       </>))}
       {folder('history', 'History', tree.features.length)}

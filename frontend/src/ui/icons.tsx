@@ -1,5 +1,6 @@
 // Stroke icons (24 × 24) for the toolbars and the tree.
 export const ICONS: Record<string, string> = {
+  eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
   sketch: 'M4 20h16M4 20V4M8 16l8-8M14 6l4 4', plane: 'M3 15l6-8h12l-6 8z',
   extrude: 'M5 18h10v-6H5zM5 12l4-5h10l-4 5M15 18l4-5V7', revolve: 'M12 2v20M7 7a5 2 0 0 0 10 0a5 2 0 0 0-10 0M7 7v10a5 2 0 0 0 10 0V7',
   sweep: 'M4 19c5 0 4-14 9-14h7M2 16h4v6H2z', loft: 'M6 19h12M9 5h6M6 19L9 5M18 19L15 5', rib: 'M4 18h16M4 18V7M20 18V7M12 18V9',

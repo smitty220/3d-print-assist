@@ -42,7 +42,7 @@ export function ViewportPane({ part, stale, failed, highlight, edgeMarks, pickin
     const v = viewer.current
     if (!v || !part) return
     const ids = new Set(part.bodies.map((b) => b.id))
-    for (const id of ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8']) if (!ids.has(id)) v.removePart(id)
+    for (const id of v.partNames()) if (!ids.has(id)) v.removePart(id)
     part.bodies.forEach((b, i) => v.addPart({ ...b.mesh, name: b.id }, { color: hex(b.color, i), cap: { fill: 0xe3c79a, line: 0x6b4d1e } }))
     if (!fitted.current && part.bodies.length) {
       fitted.current = true

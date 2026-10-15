@@ -137,9 +137,27 @@ export interface Tree {
   params: ParamNode[]
   features: FeatureNode[]
   sketches: SketchNode[]
-  bodies: { id: string; name: string; color: string | null; status: Status; features: string[] }[]
+  bodies: BodyNode[]
   errors: Record<string, string>
+  filaments: Filament[]
+  variants: Variant[]
+  colorways: Colorway[]
 }
+
+export interface BodyNode {
+  id: string
+  name: string
+  color: string | null // what it shows in: its filament's colour, else its own
+  own_color: string | null
+  filament: number | null
+  status: Status
+  features: string[]
+  fed_by: string[] // features on other bodies that put shapes into this one (split, inlay text)
+}
+
+export interface Filament { slot: number; name: string; color: string; material: string; nozzle: number }
+export interface Variant { id: string; name: string; overrides: Record<string, string> }
+export interface Colorway { id: string; name: string; colors: Record<string, string>; names: Record<string, string> }
 
 // ---------- catalog ----------
 
@@ -263,9 +281,17 @@ export const api = {
   putSketch: (id: string, s: Partial<Sketch> & { placement?: Placement }) =>
     send<Changed & { sketch: Sketch & { report?: SolveReport | null } }>('PUT', `/sketches/${id}`, s),
   deleteSketch: (id: string) => send<Changed>('DELETE', `/sketches/${id}`),
+  editBody: (id: string, patch: Record<string, unknown>) => send<Changed>('PATCH', `/bodies/${id}`, patch),
+  deleteBody: (id: string) => send<Changed>('DELETE', `/bodies/${id}`),
   rollback: (index: number | null) => send<Changed>('PUT', '/rollback', { index }),
   evalExpr: (expr: string) => send<{ value?: number; error?: string }>('POST', '/expr/eval', { expr }),
   exportUrl: (fmt: '3mf' | 'stl' | 'step') => `/api/export/${fmt}`,
+  exportBatch: async (fmt: '3mf' | 'stl' | 'step', rows: { variant?: string | null; colorway?: string | null }[] = []) => {
+    const r = await fetch('/api/export/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fmt, rows }) })
+    if (!r.ok) await json(r)
+    const name = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') ?? '')?.[1] ?? 'designs.zip'
+    return { blob: await r.blob(), name, saved: r.headers.get('X-Saved-Path') ?? '' }
+  },
   revertAi: () => send<{ reverted: string; tree: Tree }>('POST', '/revert-ai'),
 
   aiStatus: () => get<AiStatus>('/ai/status'),
