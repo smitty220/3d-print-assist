@@ -90,6 +90,36 @@ def _triangulation(face: Face) -> tuple[list[float], list[int]] | None:
     return positions, indices
 
 
+def triangles(shape: Shape, linear: float, angular: float):
+    """The whole shape as one indexed triangle mesh (points (n, 3), triangles (m, 3), wound outward), with the
+    vertices that faces share merged so a closed solid gives a closed mesh. Reads the kernel's triangulation directly:
+    far faster than build123d's tessellate, which converts every vertex in Python."""
+    import numpy as np
+
+    BRepMesh_IncrementalMesh(shape.wrapped, linear, False, angular, True)
+    pts, tris, base = [], [], 0
+    for face in shape.faces():
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(face.wrapped, loc)
+        if tri is None:
+            continue
+        trsf = loc.Transformation()
+        nodes = [tri.Node(i).Transformed(trsf) for i in range(1, tri.NbNodes() + 1)]
+        pts.append(np.array([(q.X(), q.Y(), q.Z()) for q in nodes], dtype=np.float64))
+        t = np.array([tri.Triangle(i).Get() for i in range(1, tri.NbTriangles() + 1)], dtype=np.int64) - 1
+        if face.wrapped.Orientation() == TopAbs_REVERSED:
+            t = t[:, [0, 2, 1]]
+        tris.append(t + base)
+        base += len(nodes)
+    if not pts:
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64)
+    points, faces = np.concatenate(pts), np.concatenate(tris)
+    keys, inverse = np.unique(np.round(points, 6), axis=0, return_inverse=True)
+    faces = inverse.reshape(-1)[faces]
+    keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
+    return keys, faces[keep]
+
+
 def _mesh_face(face_id: int, face: Face) -> FaceMesh:
     got = _triangulation(face)
     if got is None:

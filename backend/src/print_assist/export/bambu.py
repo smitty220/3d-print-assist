@@ -140,22 +140,10 @@ def project_settings(template: dict, filaments: list[Filament], printer: Printer
 
 def mesh(shape: Shape) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]:
     """An indexed triangle mesh of the shape, with the vertices that faces share merged so the mesh is closed."""
-    verts, tris = shape.tessellate(LINEAR, ANGULAR)
-    index: dict[tuple[float, float, float], int] = {}
-    points: list[tuple[float, float, float]] = []
-    remap = []
-    for v in verts:
-        key = (round(v.X, 6), round(v.Y, 6), round(v.Z, 6))
-        if key not in index:
-            index[key] = len(points)
-            points.append(key)
-        remap.append(index[key])
-    faces = []
-    for a, b, c in tris:
-        t = (remap[a], remap[b], remap[c])
-        if len(set(t)) == 3:
-            faces.append(t)
-    return points, faces
+    from ..geometry.tessellate import triangles
+
+    points, faces = triangles(shape, LINEAR, ANGULAR)
+    return [tuple(p) for p in points.tolist()], [tuple(f) for f in faces.tolist()]
 
 
 def _n(x: float) -> str:

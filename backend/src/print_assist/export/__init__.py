@@ -86,7 +86,10 @@ def _bambu(ids: list[str], shapes: list[Shape], design: Design, printer: Printer
     parts = [bambu.Part(by_id[bid].name if bid in by_id else bid, shape, by_id[bid].filament if bid in by_id else None)
              for bid, shape in zip(ids, shapes)]
     try:
-        thumb = render([(s, colors[b]) for b, s in zip(ids, shapes)], "iso", 512)
+        from ..geometry.tessellate import triangles
+
+        meshes = [(*triangles(s, 0.05, 0.3), colors[b]) for b, s in zip(ids, shapes)]  # a picture: coarse is fine
+        thumb = render([], "iso", 512, meshes=meshes)
     except Exception:  # a thumbnail is a nicety; never fail the export over it
         thumb = None
     try:
