@@ -67,6 +67,14 @@ def test_recovery_after_a_crash(c, tmp_path):
     assert not f["recovery"] and f["dirty"] and len(c.get("/api/tree").json()["features"]) == 1
 
 
+def test_opening_the_open_design_keeps_its_live_changes(c):
+    c.post("/api/projects", json={"name": "Live"})
+    plate(c)  # unsaved, e.g. the AI building while the user opens the design to watch
+    c.post("/api/projects/live/open")
+    f = c.get("/api/file").json()
+    assert not f["recovery"] and f["dirty"] and len(c.get("/api/tree").json()["features"]) == 1
+
+
 def test_save_as_rename_versions_close_and_delete(c, tmp_path):
     c.post("/api/projects", json={"name": "Deck Box"})
     plate(c)

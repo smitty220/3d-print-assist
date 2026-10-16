@@ -118,6 +118,10 @@ def create_project(body: NewProject) -> dict:
 
 @app.post("/api/projects/{slug}/open")
 def open_project(slug: str) -> dict:
+    """Open a design. Opening the one already open keeps its live state: reloading it from disk would turn its unsaved
+    changes (for example an AI build in progress) into a "recover or discard" question."""
+    if _ws is not None and _ws.project.slug == slug:
+        return _ws.project.summary()
     try:
         _switch(Workspace(projects().open(slug)))
     except KeyError:
