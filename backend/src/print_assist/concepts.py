@@ -52,6 +52,17 @@ def check_svg(svg: str) -> str:
     return body
 
 
+def picture(svg: str, width: int = 1200) -> bytes:
+    """The drawing as a PNG `width` pixels wide, so the AI can look at what it drew before (or after) proposing it.
+    Links to anything but the drawing itself or inline data are dropped first: a drawing never reads other files."""
+    import resvg_py
+
+    body = check_svg(svg)
+    body = re.sub(r"""(?:xlink:)?href\s*=\s*(["'])(?!#|data:)[^"']*\1""", "", body)
+    width = max(200, min(int(width), 3000))
+    return bytes(resvg_py.svg_to_bytes(svg_string=body, width=width))
+
+
 class Concepts:
     """The concepts of one design, newest last."""
 

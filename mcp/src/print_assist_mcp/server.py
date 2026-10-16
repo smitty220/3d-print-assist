@@ -175,14 +175,30 @@ def export_batch(format: str = "3mf", rows: list[dict[str, str | None]] | None =
 
 
 @mcp.tool()
+def look_at_concept(svg: str = "", id: str = "", width: int = 1200) -> Image | str:
+    """See a concept picture as the user will: pass the svg you are about to propose (a draft) or the id of one you
+    proposed. Look before every propose_concept and fix overlapping or cramped labels, things off the canvas and
+    anything that does not match your numbers."""
+    if id:
+        r = _call("GET", f"/api/concepts/{id}/picture", params={"width": width})
+    else:
+        r = _call("POST", "/api/concepts/picture", json={"svg": svg, "width": width})
+    if isinstance(r, dict):
+        return _text(r)
+    return Image(data=r.content, format="png")
+
+
+@mcp.tool()
 def propose_concept(title: str, svg: str, summary: str = "", assumptions: list[str] | None = None,
                     questions: list[str] | None = None) -> str:
-    """Before building anything for a request, show the user what you understood and wait for their answer. svg: one
-    complete <svg> document you draw for this request, showing the result as the user will use it (assembled, in
-    use), with the overall sizes and the dimensions that matter dimensioned in mm, and any detail views that make the
-    function clear. summary: what you will build, in a few sentences. assumptions: the choices you made that they did
-    not state. questions: what you need them to decide. Then call wait_for_concept with the returned id; your design
-    changes are refused until they answer."""
+    """Before building anything for a request, show the user a picture of the result and wait for their answer;
+    rounds of pictures are much quicker than rounds of 3D, so iterate here until they approve. svg: one complete
+    <svg> document, drawn to scale from the numbers you will build with, showing the finished result as they will see
+    and handle it (an assembly assembled, from every side they look at; something that fits beside what it fits),
+    in its real colours, with hidden features ghosted and the sizes that matter dimensioned in mm. Check it with
+    look_at_concept first. summary: what changed since the last round and what you will build. assumptions: choices
+    they did not state. questions: what they should decide (offer options with numbers where a limit applies). Then
+    call wait_for_concept with the returned id; your design changes are refused until they answer."""
     return _text(_call("POST", "/api/concepts", json={"title": title, "svg": svg, "summary": summary,
                                                      "assumptions": assumptions or [], "questions": questions or []},
                        headers=ACTOR))

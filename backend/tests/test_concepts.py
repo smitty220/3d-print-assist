@@ -74,3 +74,35 @@ def test_mcp_tools_propose_and_wait():
         assert json.loads(server.wait_for_concept("K2", timeout_s=5))["status"] == "pending"  # timed out, still waiting
     finally:
         server.set_client(None)
+
+
+def test_the_ai_can_look_at_a_picture_before_and_after_proposing():
+    from print_assist.concepts import picture
+    from print_assist.geometry.render import png_size
+
+    png = picture(SVG, 400)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n" and png_size(png)[0] == 400
+    sneaky = SVG.replace("</svg>", '<image href="/etc/hosts" width="10" height="10"/></svg>')
+    assert png_size(picture(sneaky, 400))[0] == 400  # other files are never read into the picture
+    c = TestClient(app_module.app)
+    c.post("/api/projects", json={"name": "Concept pictures"})
+    r = c.post("/api/concepts/picture", json={"svg": SVG, "width": 300})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert c.post("/api/concepts/picture", json={"svg": "nope"}).status_code == 422
+    c.post("/api/concepts", json={"title": "A plate", "svg": SVG}, headers=AI)
+    assert c.get("/api/concepts/K1/picture", params={"width": 500}).headers["content-type"] == "image/png"
+
+
+def test_mcp_look_at_concept_returns_an_image():
+    from print_assist_mcp import server
+    from mcp.server.mcpserver import Image
+
+    c = TestClient(app_module.app)
+    server.set_client(c)
+    try:
+        c.post("/api/projects", json={"name": "Concept look"})
+        assert isinstance(server.look_at_concept(svg=SVG, width=300), Image)
+        server.propose_concept("Hook", SVG)
+        assert isinstance(server.look_at_concept(id="K1"), Image)
+    finally:
+        server.set_client(None)

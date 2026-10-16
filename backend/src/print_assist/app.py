@@ -578,6 +578,33 @@ def propose_concept(body: ConceptIn, x_actor: str = Header(default=USER)) -> dic
     return c.model_dump(exclude={"svg"})
 
 
+class PictureIn(BaseModel):
+    svg: str
+    width: int = 1200
+
+
+@app.post("/api/concepts/picture")
+def concept_picture_draft(body: PictureIn) -> Response:
+    """A drawing (not yet proposed) as a PNG: how the AI checks its picture before showing it to the user."""
+    from .concepts import ConceptError, picture
+
+    try:
+        return Response(picture(body.svg, body.width), media_type="image/png")
+    except ConceptError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/concepts/{cid}/picture")
+def concept_picture(cid: str, width: int = 1200) -> Response:
+    """A proposed concept's drawing as a PNG."""
+    from .concepts import picture
+
+    c = ws().concepts.get(cid)
+    if c is None:
+        raise HTTPException(404, f"No concept {cid!r}")
+    return Response(picture(c.svg, width), media_type="image/png")
+
+
 @app.post("/api/concepts/{cid}/answer")
 def answer_concept(cid: str, body: ConceptAnswer) -> dict:
     from .concepts import ConceptError
