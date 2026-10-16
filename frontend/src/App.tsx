@@ -95,28 +95,42 @@ export default function App() {
   useEffect(() => { run(loadAll) }, [run, loadAll])
 
   // Server-sent events: refetch what changed.
+  // When the backend restarts (a code change), the dev proxy answers the stream with an error and the browser gives
+  // up on it for good; so reconnect by hand, and reload everything once it is back (anything may have changed).
   useEffect(() => {
-    const es = new EventSource('/api/events')
-    es.onmessage = (ev) => {
-      const s = JSON.parse(ev.data) as { slug: string | null; rev: number; built_rev: number; activity: number }
-      const k = seen.current
-      if ((k.slug || s.slug) && (s.slug ?? '') !== k.slug) { run(loadAll); return }
-      if (!s.slug) return
-      if (s.rev !== k.rev || s.built_rev !== k.built) {
-        api.tree().then(setTree).catch(() => {})
-        api.file().then(setFile).catch(() => {})
+    let es: EventSource
+    let retry: ReturnType<typeof setTimeout> | undefined
+    let lost = false
+    const connect = () => {
+      es = new EventSource('/api/events')
+      es.onopen = () => { if (lost) { lost = false; run(loadAll) } }
+      es.onerror = () => {
+        if (es.readyState !== EventSource.CLOSED) return // the browser retries by itself
+        lost = true
+        retry = setTimeout(connect, 2000)
       }
-      if (s.built_rev !== k.built) {
-        api.part().then(setPart).catch(() => {})
-        api.checks().then(setChecks).catch(() => {})
+      es.onmessage = (ev) => {
+        const s = JSON.parse(ev.data) as { slug: string | null; rev: number; built_rev: number; activity: number }
+        const k = seen.current
+        if ((k.slug || s.slug) && (s.slug ?? '') !== k.slug) { run(loadAll); return }
+        if (!s.slug) return
+        if (s.rev !== k.rev || s.built_rev !== k.built) {
+          api.tree().then(setTree).catch(() => {})
+          api.file().then(setFile).catch(() => {})
+        }
+        if (s.built_rev !== k.built) {
+          api.part().then(setPart).catch(() => {})
+          api.checks().then(setChecks).catch(() => {})
+        }
+        if (s.activity !== k.activity) {
+          api.activity().then(setActivity).catch(() => {})
+          api.concepts().then(setConcepts).catch(() => {}) // a concept proposed or answered is logged as activity
+        }
+        seen.current = { slug: s.slug ?? '', rev: s.rev, built: s.built_rev, activity: s.activity }
       }
-      if (s.activity !== k.activity) {
-        api.activity().then(setActivity).catch(() => {})
-        api.concepts().then(setConcepts).catch(() => {}) // a concept proposed or answered is logged as activity
-      }
-      seen.current = { slug: s.slug ?? '', rev: s.rev, built: s.built_rev, activity: s.activity }
     }
-    return () => es.close()
+    connect()
+    return () => { clearTimeout(retry); es.close() }
   }, [run, loadAll])
 
   // While the chat works, follow it.
