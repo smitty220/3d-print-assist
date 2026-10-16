@@ -36,6 +36,7 @@ def test_template_resized_to_three_filaments():
     assert len(s["flush_volumes_matrix"]) == 9 and s["flush_volumes_matrix"][0] == "0"
     assert len(s["different_settings_to_system"]) == 5  # process, three filaments, printer
     assert s["filament_map_mode"] == t["filament_map_mode"]  # one nozzle: Bambu Studio maps them
+    assert t["skirt_loops"] == "1" and s["skirt_loops"] == "0"  # the sample's skirt is not inherited
 
 
 def test_flush_volumes_follow_the_colour_change():

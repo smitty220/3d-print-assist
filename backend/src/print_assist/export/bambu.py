@@ -73,6 +73,9 @@ def _luminance(color: str) -> float:
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
+PROCESS_DEFAULTS = {"skirt_loops": "0"}
+
+
 def flush_volume(src: str, dst: str) -> int:
     """mm³ purged changing from colour `src` to `dst`: little going darker, much more going lighter (black to white
     is about 620, white to black 140, as Bambu Studio suggests for those two)."""
@@ -124,6 +127,11 @@ def project_settings(template: dict, filaments: list[Filament], printer: Printer
         out["filament_map"] = [str(f.nozzle + 1) for f in filaments]
         out["filament_map_mode"] = "Manual"
     out["flush_volumes_matrix"] = [str(flush_volume(a, b)) for a in colors for b in colors]
+    # Process settings the template's maker chose that a design should not inherit: a skirt (the one-layer loop
+    # around the parts) is Bambu Studio's default off; the A1 primes the nozzle with its own purge line.
+    for key, value in PROCESS_DEFAULTS.items():
+        if key in out:
+            out[key] = value
     diff = template.get("different_settings_to_system")
     if isinstance(diff, list) and len(diff) == n_t + 2:  # process, one per filament, printer
         out["different_settings_to_system"] = [diff[0], *(diff[1 + i] for i in source), diff[-1]]
