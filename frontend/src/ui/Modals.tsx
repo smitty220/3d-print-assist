@@ -104,3 +104,41 @@ export function HistoryModal({ onRestore, onClose }: { onRestore: (v: Version) =
     </Modal>
   )
 }
+
+const FORMATS = [
+  { id: '3mf', name: 'Bambu Studio project (.3mf)', note: 'For printing: each body a part in its filament slot, the colours loaded.' },
+  { id: 'stl', name: 'STL mesh (.stl)', note: 'One colour, for other slicers or sharing.' },
+  { id: 'step', name: 'STEP solid (.step)', note: 'Exact geometry, for other CAD programs.' },
+] as const
+export type ExportFormat = (typeof FORMATS)[number]['id']
+
+/** File > Export: pick a format; the file downloads and is also kept in the design's exports folder. */
+export function ExportModal({ why, onUpdate, onExport, onMore, onClose }: {
+  why: string | null; onUpdate: () => void; onExport: (f: ExportFormat) => Promise<void>; onMore: () => void; onClose: () => void
+}) {
+  const [fmt, setFmt] = useState<ExportFormat>('3mf')
+  const [busy, setBusy] = useState(false)
+  return (
+    <Modal title="Export" onClose={onClose}>
+      <div className="dbody">
+        <div className="fmts" role="radiogroup" aria-label="Format">
+          {FORMATS.map((f) => (
+            <label key={f.id} className={`fmt${fmt === f.id ? ' on' : ''}`}>
+              <input type="radio" name="fmt" value={f.id} checked={fmt === f.id} onChange={() => setFmt(f.id)} />
+              <span><b>{f.name}</b><span className="nm">{f.note}</span></span>
+            </label>
+          ))}
+        </div>
+        {why && <p className="note wn">{why}</p>}
+        <p className="note">The file downloads and a copy is kept in the design's exports folder. Colours, variants and print checks
+          are on the <button className="link" onClick={onMore}>Colour &amp; Export tab</button>.</p>
+      </div>
+      <div className="dfoot"><span className="spacer" /><button className="btn" onClick={onClose}>Cancel</button>
+        {why === 'Update the model first'
+          ? <button className="btn primary" onClick={onUpdate}>Update</button>
+          : <button className="btn primary" autoFocus disabled={!!why || busy}
+              onClick={() => { setBusy(true); onExport(fmt).finally(() => setBusy(false)) }}>{busy ? 'Exporting…' : 'Export'}</button>}
+      </div>
+    </Modal>
+  )
+}

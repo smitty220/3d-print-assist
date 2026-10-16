@@ -9,7 +9,7 @@ import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
 import type { FileAction } from './layout/FileMenu'
 import { Header, type Mode } from './layout/Header'
-import { ConfirmModal, DesignGrid, HistoryModal, NameModal, OpenModal, UnsavedModal } from './ui/Modals'
+import { ConfirmModal, DesignGrid, ExportModal, HistoryModal, NameModal, OpenModal, UnsavedModal, type ExportFormat } from './ui/Modals'
 import { PartToolbar } from './layout/Toolbar'
 import type { Tool } from './layout/tools'
 import { SketchEditor } from './sketch/SketchEditor'
@@ -23,7 +23,7 @@ type NamePurpose = 'new' | 'save-as' | 'rename' | 'save-version'
 type FileModal =
   | { type: 'name'; purpose: NamePurpose }
   | { type: 'unsaved'; then: () => void }
-  | { type: 'open' } | { type: 'history' } | { type: 'revert' }
+  | { type: 'open' } | { type: 'history' } | { type: 'revert' } | { type: 'export' }
   | { type: 'delete'; design: { slug: string; name: string } }
   | null
 const SKETCH_KINDS = new Set(['extrude', 'revolve'])
@@ -55,6 +55,13 @@ export default function App() {
   const [face, setFace] = useState<ViewPick | null>(null)
   const [updating, setUpdating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [toast, setToast] = useState<{ text: string; n: number } | null>(null) // a short note that something worked
+  const say = useCallback((text: string) => setToast((t) => ({ text, n: (t?.n ?? 0) + 1 })), [])
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 4000)
+    return () => clearTimeout(t)
+  }, [toast])
   const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null)
   const [treeHost, setTreeHost] = useState<HTMLDivElement | null>(null)
   const seen = useRef({ slug: '', rev: -1, built: -1, activity: -1 })
@@ -148,7 +155,20 @@ export default function App() {
     setSelected(null); setDialog(null); setMode('part'); setSketchId(null); setPicking(null)
     await run(loadAll)
   }
-  const doSave = (message = '') => run(() => api.save(message)).then((f) => { if (f) setFile(f) })
+  const doSave = (message = '') => run(() => api.save(message)).then((f) => {
+    if (f) { setFile(f); say(message ? `Saved version “${message}”` : `Saved “${f.name}”`) }
+  })
+  async function doExport(fmt: ExportFormat) {
+    const r = await run(() => api.exportFile(fmt))
+    if (!r) return
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(r.blob)
+    a.download = r.name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000)
+    setFileModal(null)
+    say(`Exported ${r.name} (downloaded, and kept in the design's exports folder)`)
+  }
 
   // Import: the browser's file picker (any folder), then the file is uploaded into the design's references folder.
   // STEP files import as solids (an Import feature); STEP, STL and 3MF files can be references beside the design.
@@ -198,15 +218,15 @@ export default function App() {
     else if (a === 'history') setFileModal({ type: 'history' })
     else if (a === 'close') guard(() => { run(api.close).then(reopen) })
     else if (a === 'delete' && file?.slug) setFileModal({ type: 'delete', design: { slug: file.slug, name: file.name ?? file.slug } })
-    else if (a === 'export') setMode('export')
-    else if (a === 'reveal') run(api.reveal)
+    else if (a === 'export') setFileModal({ type: 'export' })
+    else if (a === 'reveal') run(api.reveal).then((r) => r && say(`Shown in Finder: ${r.path}`))
   }
 
   async function onName(purpose: NamePurpose, name: string) {
     setFileModal(null)
     if (purpose === 'new') { if (await run(() => api.createProject(name))) await reopen() }
-    else if (purpose === 'save-as') { if (await run(() => api.saveAs(name))) await reopen() }
-    else if (purpose === 'rename') { const f = await run(() => api.rename(name)); if (f) { setFile(f); api.tree().then(setTree) } }
+    else if (purpose === 'save-as') { if (await run(() => api.saveAs(name))) { await reopen(); say(`Saved as “${name}”`) } }
+    else if (purpose === 'rename') { const f = await run(() => api.rename(name)); if (f) { setFile(f); api.tree().then(setTree); say(`Renamed to “${f.name}”`) } }
     else await doSave(name)
   }
 
@@ -359,17 +379,23 @@ export default function App() {
       )}
       {fileModal?.type === 'history' && (
         <HistoryModal onClose={() => setFileModal(null)}
-          onRestore={(v) => { setFileModal(null); run(() => api.restoreVersion(v.id)).then(changed) }} />
+          onRestore={(v) => { setFileModal(null); run(() => api.restoreVersion(v.id)).then((r) => { changed(r); if (r) say(`Restored “${v.message}” (unsaved until you save)`) }) }} />
       )}
       {fileModal?.type === 'revert' && (
         <ConfirmModal title="Revert to saved" text="Throw away the changes since the last save? (Undo can bring them back.)" ok="Revert"
-          onClose={() => setFileModal(null)} onOk={() => { setFileModal(null); run(api.revert).then(() => { refreshFile(); api.tree().then(setTree) }) }} />
+          onClose={() => setFileModal(null)} onOk={() => { setFileModal(null); run(api.revert).then((f) => { refreshFile(); api.tree().then(setTree); if (f) say('Reverted to the last save') }) }} />
       )}
       {fileModal?.type === 'delete' && (
         <ConfirmModal title="Move to Trash" text={`Move “${fileModal.design.name}” and its folder to the Trash?`} ok="Move to Trash"
           onClose={() => setFileModal(null)}
           onOk={() => { const d = fileModal.design; setFileModal(null); run(() => api.deleteProject(d.slug)).then(reopen) }} />
       )}
+      {fileModal?.type === 'export' && tree && (
+        <ExportModal why={tree.stale ? 'Update the model first' : tree.failed ? 'A feature failed: fix it first' : null}
+          onUpdate={update} onExport={doExport} onClose={() => setFileModal(null)}
+          onMore={() => { setFileModal(null); setMode('export') }} />
+      )}
+      {toast && <div key={toast.n} className="toast" role="status">{toast.text}</div>}
       {importPicker}
     </>
   )

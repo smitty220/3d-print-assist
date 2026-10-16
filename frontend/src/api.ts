@@ -354,6 +354,12 @@ export const api = {
     return fetch(`/api/import?new_design=${newDesign}`, { method: 'POST', body: form }).then((r) => json<Changed>(r))
   },
   exportUrl: (fmt: '3mf' | 'stl' | 'step') => `/api/export/${fmt}`,
+  exportFile: async (fmt: '3mf' | 'stl' | 'step') => {
+    const r = await fetch(`/api/export/${fmt}`)
+    if (!r.ok) await json(r)
+    const name = /filename="?([^";]+)"?/.exec(r.headers.get('Content-Disposition') ?? '')?.[1] ?? `design.${fmt}`
+    return { blob: await r.blob(), name, saved: r.headers.get('X-Saved-Path') ?? '' }
+  },
   exportBatch: async (fmt: '3mf' | 'stl' | 'step', rows: { variant?: string | null; colorway?: string | null }[] = []) => {
     const r = await fetch('/api/export/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fmt, rows }) })
     if (!r.ok) await json(r)
