@@ -64,6 +64,21 @@ formulas like any parameter), {"op": "delete_variant", "id": "V2"}
 - {"op": "set_colorway", "name": "Gold rim", "colors": {"2": "#c9a227"}, "names": {"2": "Silk Gold"}}  (slots left out \
 keep the palette colour), {"op": "delete_colorway", "id": "C1"}
 
+Print layout: an assembly is modelled assembled, but prints as separate objects laid flat on plates. The layout says \
+how: each item takes the solids of some bodies whose box centre lies inside its "within" box of the assembled model, \
+turns them (degrees about X, then Y, then Z, about the item's centre) and sets the item's box on a plate with its \
+front-left corner at (x, y). An item's bodies print as one object with a part each, so a piece in two colours (a \
+divider and its raised letter) stays together. With a layout, the 3MF export is a Bambu project with those plates; \
+every solid must be in exactly one item.
+- {"op": "set_print_item", "name": "Lid", "bodies": ["B2"], "within": [0, 0, 70, 60, 110, 90], "plate": 2, \
+"rotate": [180, 0, 0], "x": 4, "y": 140, "settings": {"sparse_infill_density": "8%"}}  (id "P3" to change one; \
+settings: the printer's slicer settings for that object only), {"op": "delete_print_item", "id": "P3"}
+- {"op": "set_plate", "plate": 2, "name": "Ivory", "tower": [200, 10]}  (tower: where the purge tower goes, kept clear; \
+null for the printer's default), {"op": "delete_plate", "plate": 4}
+Plan the plates in a picture first: group by colour so big parts print without colour changes, lay parts so they \
+need no supports, and keep a tower's spot clear on plates that change colour. print_layout lists the plates, problems \
+and the solids not yet placed (with centres, to aim "within" at); render_preview "plate1" / "plate1-top" shows a plate.
+
 Sketch entities (2D, mm, in the sketch's own plane): {"id": "p1", "kind": "point", "x": 0, "y": 0}, \
 {"id": "l1", "kind": "line", "p1": "p1", "p2": "p2"}, {"id": "c1", "kind": "circle", "c": "p1", "r": 10}, \
 {"id": "a1", "kind": "arc", "c": "p0", "start": "p1", "end": "p2"} (counter-clockwise), add "construction": true for \

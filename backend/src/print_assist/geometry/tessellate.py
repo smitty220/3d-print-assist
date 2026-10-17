@@ -114,10 +114,28 @@ def triangles(shape: Shape, linear: float, angular: float):
     if not pts:
         return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int64)
     points, faces = np.concatenate(pts), np.concatenate(tris)
-    keys, inverse = np.unique(np.round(points, 6), axis=0, return_inverse=True)
-    faces = inverse.reshape(-1)[faces]
+    keys, inverse = _merge(points)
+    faces = inverse[faces]
     keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
     return keys, faces[keep]
+
+
+def _merge(points, tol: float = 1e-6):
+    """Merge points closer than `tol` (the copies of an edge's nodes on the faces that share it): the merged points
+    and, for each point, its index among them. Rounding alone misses copies that fall either side of a rounding
+    boundary, which a turned part makes likely; this joins every pair within `tol`."""
+    import numpy as np
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    pairs = cKDTree(points).query_pairs(tol, output_type="ndarray")
+    n = len(points)
+    graph = coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(n, n))
+    count, label = connected_components(graph, directed=False)
+    merged = np.zeros((count, 3))
+    merged[label] = points  # any member stands for its group: they are within tol of each other
+    return merged, label
 
 
 def _mesh_face(face_id: int, face: Face) -> FaceMesh:

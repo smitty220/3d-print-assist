@@ -55,6 +55,14 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 
 ## Bambu Studio export
 - A 3MF export is a Bambu Studio project when the printer profile names a `bambu_template` (`printers/bambu/*.project_settings.config`, saved by Bambu Studio for that printer): one object, a part per body with its `extruder` (= palette slot), the template's settings resized to the palette (`export/bambu.py`). Project filament N is palette slot N.
+- **Print layout** (`Design.layout` / `Design.plates`, `export/layout.py`; ops `set_print_item`, `set_plate`; MCP
+  `print_layout`, render views `plateN` / `plateN-top`): items take the solids of some bodies inside a box of the
+  assembled model, turn them and set them on a plate. With a layout the Bambu export is one object per item (a part per
+  body, so multi-colour pieces stay together) on its plate; plate N sits where Bambu Studio puts it (ceil(sqrt(n))
+  columns, 1.2 bed sizes apart, rows toward -Y) and each plate gets its own purge-tower position.
+- **Plates tab** (`frontend/src/plates/PlatesPane.tsx`, `Viewer.setPlateMode` / `setPlate`): the layout is resolved only
+  when the tab asks (`/api/layout`, `/api/layout/plates/{n}/mesh`), cached in the workspace until the part, layout or
+  printer changes. The tab shows and exports the plates; the arrangement is changed through ops (by asking Claude).
 - Per-filament settings come from the template filament with the same material; a material the template lacks is an export error. To support PETG etc., or to change the default process settings, save a Bambu Studio project for that printer with those filaments and copy its `Metadata/project_settings.config` over the template.
 - The A1 template came from a MakerWorld project the user re-saved for their A1 (its process tweaks: 3 walls, gyroid, no brim, back seam). Bambu Studio is not installed on this Mac, so the format is checked by `tests/test_bambu.py` and by opening exports in Bambu Studio by hand.
 

@@ -116,11 +116,19 @@ def update() -> str:
 @mcp.tool()
 def render_preview(view: str = "iso", size: int = 768) -> Image | str:
     """A shaded picture of the last good build. Views: iso, front, back, left, right, top, bottom. Look after every
-    change: it is how you see what you made."""
+    change: it is how you see what you made. A plate of the print layout: "plate1" (iso), "plate1-top"."""
     r = _call("GET", "/api/render", params={"view": view, "size": size})
     if isinstance(r, dict):
         return _text(r)
     return Image(data=r.content, format="png")
+
+
+@mcp.tool()
+def print_layout() -> str:
+    """The print layout as the export would lay it out: each plate's objects (bodies, solid count, box on the plate),
+    problems (overlaps, off the plate, solids on no plate or on two), and the solids no item takes yet with their
+    centres and sizes in the assembled model, to aim an item's `within` box at."""
+    return _text(_call("GET", "/api/layout"))
 
 
 @mcp.tool()

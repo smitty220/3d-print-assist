@@ -888,9 +888,26 @@ def export_batch(body: BatchIn) -> Response:
                     headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Saved-Path": str(folder)})
 
 
+@app.get("/api/layout")
+def print_layout() -> dict:
+    """The print layout as the export would lay it out: plates, their objects' boxes, problems, unplaced solids."""
+    return ws().layout()
+
+
+@app.get("/api/layout/plates/{n}/mesh")
+def plate_mesh(n: int) -> dict:
+    """One plate of the print layout for the view (worked out when first asked, then kept until the part or the
+    layout changes)."""
+    try:
+        return ws().plate_mesh(n)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.get("/api/render")
 def render_view(view: str = "iso", size: int = 640) -> Response:
-    """The last good part as a PNG from a standard view (iso, front, back, left, right, top, bottom)."""
+    """The last good part as a PNG from a standard view (iso, front, back, left, right, top, bottom), or a plate of
+    the print layout ("plate1", "plate1-top")."""
     try:
         png = ws().render(view, size)
     except ValueError as exc:

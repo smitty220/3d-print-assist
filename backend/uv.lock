@@ -1271,6 +1271,7 @@ dependencies = [
     { name = "print-assist-mcp" },
     { name = "python-multipart" },
     { name = "resvg-py" },
+    { name = "scipy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1289,6 +1290,7 @@ requires-dist = [
     { name = "print-assist-mcp", editable = "../mcp" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "resvg-py", specifier = ">=0.5.0" },
+    { name = "scipy", specifier = ">=1.13" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { ShapeMesh } from '../api'
+import type { PlateMesh, ShapeMesh } from '../api'
 import { SectionTool, type CapStyle } from './section'
 
 export type ViewName = 'iso' | 'front' | 'top' | 'right'
@@ -67,6 +67,9 @@ export class Viewer {
   private orbit = { target: new THREE.Vector3(), r: 400, theta: VIEWS.iso[0], phi: VIEWS.iso[1] }
   private parts = new Map<string, PartEntry>()
   private refs = new Map<string, THREE.Group>() // references: see-through, never picked
+  private plateMode = false // the Plates tab: the assembly is hidden and one print plate is shown instead
+  private plateGroup: THREE.Group | null = null
+  private shownBefore = new Map<string, boolean>() // part / reference visibility to restore when leaving plate mode
   private hover: FacePick | null = null
   private selected: FacePick | null = null
   private highlight: { part: string; faces: Set<number> } | null = null
@@ -187,6 +190,7 @@ export class Viewer {
     const entry: PartEntry = { data, group, mesh, edges, base, faceRanges, faceOfVertex: Uint32Array.from(faceIds),
       edgeOfSegment: Uint32Array.from(edgeOfSegment) }
     this.parts.set(data.name, entry)
+    if (this.plateMode) { group.visible = false; this.shownBefore.set(`part:${data.name}`, true) }
     this.applyClipping(entry)
     if (this.highlight?.part === data.name) for (const f of this.highlight.faces) this.paint({ part: data.name, faceId: f })
 
@@ -222,7 +226,8 @@ export class Viewer {
         group.add(lines)
       }
     }
-    group.visible = visible
+    group.visible = visible && !this.plateMode
+    if (this.plateMode) this.shownBefore.set(`ref:${id}`, visible)
     group.userData.reference = id
     this.scene.add(group)
     this.refs.set(id, group)
@@ -230,7 +235,9 @@ export class Viewer {
 
   setReferenceVisible(id: string, visible: boolean) {
     const g = this.refs.get(id)
-    if (g) g.visible = visible
+    if (!g) return
+    if (this.plateMode) this.shownBefore.set(`ref:${id}`, visible)
+    else g.visible = visible
   }
 
   referenceIds(): string[] {
@@ -248,6 +255,76 @@ export class Viewer {
       mat?.dispose()
     })
     this.refs.delete(id)
+  }
+
+  // ---------- print plates ----------
+
+  /** Plate mode hides the assembly (and references) so a print plate can be shown; leaving it restores them. */
+  setPlateMode(on: boolean) {
+    if (on === this.plateMode) return
+    this.plateMode = on
+    if (on) {
+      this.shownBefore.clear()
+      for (const [name, p] of this.parts) { this.shownBefore.set(`part:${name}`, p.group.visible); this.setVisible(name, false) }
+      for (const [id, g] of this.refs) { this.shownBefore.set(`ref:${id}`, g.visible); g.visible = false }
+    } else {
+      this.setPlate(null)
+      for (const [name] of this.parts) this.setVisible(name, this.shownBefore.get(`part:${name}`) ?? true)
+      for (const [id, g] of this.refs) g.visible = this.shownBefore.get(`ref:${id}`) ?? g.visible
+      this.shownBefore.clear()
+    }
+  }
+
+  /** One print plate: the bed (with a 32 mm grid), the purge tower's spot and the plate's parts in their colours;
+   *  nothing on it is picked. */
+  setPlate(plate: PlateMesh | null) {
+    if (this.plateGroup) {
+      this.scene.remove(this.plateGroup)
+      this.plateGroup.traverse((o) => {
+        const m = o as THREE.Mesh
+        m.geometry?.dispose()
+        ;(m.material as THREE.Material | undefined)?.dispose()
+      })
+      this.plateGroup = null
+    }
+    if (!plate) return
+    const group = new THREE.Group()
+    const [w, d] = plate.bed
+    const bed = new THREE.Mesh(new THREE.BoxGeometry(w, d, 1), new THREE.MeshStandardMaterial({ color: 0x5b6470, roughness: 0.9 }))
+    bed.position.set(w / 2, d / 2, -0.5)
+    const grid: number[] = []
+    for (let x = 32; x < w; x += 32) grid.push(x, 0, 0.02, x, d, 0.02)
+    for (let y = 32; y < d; y += 32) grid.push(0, y, 0.02, w, y, 0.02)
+    const gridGeo = new THREE.BufferGeometry()
+    gridGeo.setAttribute('position', new THREE.Float32BufferAttribute(grid, 3))
+    group.add(bed, new THREE.LineSegments(gridGeo, new THREE.LineBasicMaterial({ color: 0x6c7682 })))
+    if (plate.tower) {
+      const [tx, ty] = plate.tower
+      const t = plate.tower_size
+      const ring = new THREE.BufferGeometry()
+      ring.setAttribute('position', new THREE.Float32BufferAttribute([tx, ty, 0.05, tx + t, ty, 0.05, tx + t, ty + t, 0.05, tx, ty + t, 0.05], 3))
+      const outline = new THREE.LineLoop(ring, new THREE.LineDashedMaterial({ color: 0xe0a030, dashSize: 3, gapSize: 2 }))
+      outline.computeLineDistances()
+      group.add(outline)
+    }
+    for (const o of plate.objects) {
+      for (const p of o.parts) {
+        const geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
+        geo.setIndex(new THREE.BufferAttribute(p.indices, 1))
+        geo.computeVertexNormals()
+        const c = new THREE.Color(p.color ?? '#c8c2b4')
+        const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: c, metalness: 0.2, roughness: 0.55,
+          polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }))
+        mesh.raycast = NO_RAYCAST
+        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: 0x2a3138, transparent: true, opacity: 0.8 }))
+        lines.raycast = () => {}
+        group.add(mesh, lines)
+      }
+    }
+    for (const o of group.children) o.raycast = () => {}
+    this.scene.add(group)
+    this.plateGroup = group
   }
 
   partNames(): string[] {
@@ -279,6 +356,7 @@ export class Viewer {
     const box = new THREE.Box3()
     for (const p of this.parts.values()) if (p.group.visible) box.expandByObject(p.group)
     for (const g of this.refs.values()) if (g.visible) box.expandByObject(g)
+    if (this.plateGroup) box.expandByObject(this.plateGroup)
     if (box.isEmpty()) return { center: new THREE.Vector3(), radius: 100 }
     const s = box.getBoundingSphere(new THREE.Sphere())
     return { center: s.center, radius: s.radius }

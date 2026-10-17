@@ -14,7 +14,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from ..features.library import FEATURES
-from ..features.model import Body, Colorway, Design, EdgePick, FeatureInstance, Filament, Reference, Variant
+from ..features.model import (
+    Body, Colorway, Design, EdgePick, FeatureInstance, Filament, PrintItem, PrintPlate, Reference, Variant,
+)
 from ..params.expr import ExprError, is_literal, names
 from ..params.graph import resolve
 from ..params.model import Parameter
@@ -455,6 +457,75 @@ def _delete_colorway(d: Design, op: dict, actor: str):
     return None
 
 
+# ---------------------------------------------------------------- print layout
+
+ITEM_FIELDS = ("name", "bodies", "within", "plate", "rotate", "x", "y", "settings")
+
+
+def _set_print_item(d: Design, op: dict, actor: str):
+    """Add or change an object of the print layout: which bodies' solids it takes (`within` a box of the assembled
+    model), how it is turned and where it sits on which plate."""
+    pid = op.get("id") or _next("P", [p.id for p in d.layout])
+    old = next((p for p in d.layout if p.id == pid), None)
+    data = old.model_dump() if old else {"id": pid, "bodies": []}
+    for k in ITEM_FIELDS:
+        if k in op:
+            data[k] = op[k]
+    try:
+        new = PrintItem.model_validate(data)
+    except ValidationError as exc:
+        raise OpError(f"print item {pid}: {exc.errors()[0]['loc'][-1]}: {exc.errors()[0]['msg']}") from exc
+    known = {b.id for b in d.bodies}
+    if not new.bodies or any(b not in known for b in new.bodies):
+        raise OpError(f"print item {pid}: bodies must be some of {', '.join(sorted(known))}")
+    if new.within is not None and (len(new.within) != 6 or any(new.within[i] > new.within[i + 3] for i in range(3))):
+        raise OpError(f"print item {pid}: within is [xmin, ymin, zmin, xmax, ymax, zmax]")
+    if len(new.rotate) != 3:
+        raise OpError(f"print item {pid}: rotate is [x, y, z] degrees")
+    new.settings = {str(k): str(v) for k, v in new.settings.items() if str(v) != ""}
+    new.name = new.name or pid
+    d.layout = [new if p.id == pid else p for p in d.layout] if old else [*d.layout, new]
+    return pid
+
+
+def _delete_print_item(d: Design, op: dict, actor: str):
+    if not any(p.id == op["id"] for p in d.layout):
+        raise OpError(f"no print item {op['id']!r}")
+    d.layout = [p for p in d.layout if p.id != op["id"]]
+    return None
+
+
+def _set_plate(d: Design, op: dict, actor: str):
+    """Name a plate of the print layout and place its purge tower ("tower": [x, y], or null for the printer's)."""
+    n = int(op["plate"])
+    if n < 1:
+        raise OpError("plates are numbered from 1")
+    while len(d.plates) < n:
+        d.plates.append(PrintPlate())
+    p = d.plates[n - 1]
+    if "name" in op:
+        p.name = str(op["name"])
+    if "tower" in op:
+        t = op["tower"]
+        if t is not None and (len(t) != 2 or not all(isinstance(v, (int, float)) for v in t)):
+            raise OpError("tower is [x, y] in mm on the plate, or null")
+        p.tower = [float(v) for v in t] if t is not None else None
+    return str(n)
+
+
+def _delete_plate(d: Design, op: dict, actor: str):
+    """Remove an empty plate; the plates after it move up one."""
+    n = int(op["plate"])
+    if any(p.plate == n for p in d.layout):
+        raise OpError(f"plate {n} still has objects on it")
+    if n <= len(d.plates):
+        del d.plates[n - 1]
+    for p in d.layout:
+        if p.plate > n:
+            p.plate -= 1
+    return None
+
+
 # ---------------------------------------------------------------- references
 
 REF_FIELDS = ("name", "plate", "visible", "place", "x", "y", "z", "rotate_z", "scale", "color")
@@ -505,5 +576,7 @@ _OPS = {
     "set_variant": _set_variant, "delete_variant": _delete_variant,
     "set_colorway": _set_colorway, "delete_colorway": _delete_colorway,
     "set_reference": _set_reference, "delete_reference": _delete_reference,
+    "set_print_item": _set_print_item, "delete_print_item": _delete_print_item,
+    "set_plate": _set_plate, "delete_plate": _delete_plate,
 }
 OP_NAMES = list(_OPS)

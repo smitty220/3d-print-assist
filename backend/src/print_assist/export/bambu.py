@@ -1,5 +1,6 @@
 """Bambu Studio project 3MF: the design as one object whose parts are its bodies, each part set to its filament, with
-the printer's project settings and the palette's filaments, so it opens in Bambu Studio ready to slice.
+the printer's project settings and the palette's filaments, so it opens in Bambu Studio ready to slice. With a print
+layout (`layout.py`) it is several objects (each a part per body) on several plates, each plate with its purge tower.
 
 The layout follows what Bambu Studio itself saves (checked against a two-colour A1 project):
 - `3D/3dmodel.model` holds one object made of components that point into `3D/Objects/object_1.model`, which holds
@@ -19,7 +20,7 @@ from __future__ import annotations
 import json
 import uuid
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from xml.sax.saxutils import quoteattr
@@ -173,42 +174,92 @@ def _rels(rows: list[tuple[str, str]]) -> str:
     return HEAD + f'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n{items}</Relationships>\n'
 
 
+@dataclass
+class Obj:
+    """One object to write: its name, its parts (shapes in its plate's coordinates) and its 1-based plate."""
+
+    name: str
+    parts: list[Part]
+    plate: int = 1
+    settings: dict[str, str] = field(default_factory=dict)  # per-object overrides of the project's process settings
+
+
+@dataclass
+class PlateInfo:
+    name: str = ""
+    tower: list[float] | None = None  # [x, y] mm on the plate; None: the template's position
+
+
 def write_project(parts: list[Part], filaments: list[Filament], printer: PrinterProfile, template: dict, path: Path,
-                  title: str, thumbnail: bytes | None = None) -> Path:
-    """Write the Bambu Studio project. `parts` are on the bed already; `filaments` are the project filaments
-    (`palette()`), and each part's `filament` is one of their slots."""
-    if not parts:
+                  title: str, thumbnail: bytes | None = None, objects: list[Obj] | None = None,
+                  plates: list[PlateInfo] | None = None) -> Path:
+    """Write the Bambu Studio project. Either `parts` (on the bed already), written as one object on one plate, or
+    `objects`, each with its parts in its plate's coordinates, on as many plates as they use (`plates` names them and
+    places their purge towers). `filaments` are the project filaments (`palette()`); each part's `filament` is one
+    of their slots."""
+    from .layout import plate_origin
+
+    objects = objects if objects is not None else ([Obj(title, parts, 1)] if parts else [])
+    if not objects or not all(o.parts for o in objects):
         raise BambuError("nothing to export")
-    for p in parts:
-        if p.filament is not None and not 1 <= p.filament <= len(filaments):
-            raise BambuError(f"{p.name} prints in filament {p.filament}, the project has {len(filaments)}")
+    for o in objects:
+        unknown = sorted(k for k in o.settings if k not in template)
+        if unknown:
+            raise BambuError(f"{o.name}: {', '.join(unknown)} is not a {printer.name} slicer setting")
+        for p in o.parts:
+            if p.filament is not None and not 1 <= p.filament <= len(filaments):
+                raise BambuError(f"{p.name} prints in filament {p.filament}, the project has {len(filaments)}")
+    plates = list(plates or [])
+    count = max(max(o.plate for o in objects), len(plates), 1)
+    plates += [PlateInfo() for _ in range(count - len(plates))]
+    if count == 1 and not plates[0].name:
+        plates[0].name = title
     settings = project_settings(template, filaments, printer)
+    for key, i in (("wipe_tower_x", 0), ("wipe_tower_y", 1)):
+        base = (settings.get(key) or ["15"])[0]
+        settings[key] = [(_n(p.tower[i]) if p.tower else base) for p in plates]
     version = str(template.get("version") or "02.08.02.61")
+    bed = printer.bed[0], printer.bed[1]
 
-    # The object's origin is the centre of the bodies' bounding box, as Bambu Studio keeps it; the build item puts
-    # it back where the bodies sit on the bed.
-    boxes = [p.shape.bounding_box() for p in parts]
-    lo = [min(getattr(b.min, a) for b in boxes) for a in "XYZ"]
-    hi = [max(getattr(b.max, a) for b in boxes) for a in "XYZ"]
-    c = [(lo[i] + hi[i]) / 2 for i in range(3)]
-
-    meshes = []
-    body_xml = []
-    for i, p in enumerate(parts, 1):
-        points, faces = mesh(p.shape)
-        meshes.append(len(faces))
-        vx = "".join(f'     <vertex x="{_n(x - c[0])}" y="{_n(y - c[1])}" z="{_n(z - c[2])}"/>\n' for x, y, z in points)
-        tx = "".join(f'     <triangle v1="{a}" v2="{b}" v3="{d}"/>\n' for a, b, d in faces)
-        body_xml.append(f'  <object id="{i}" p:UUID="{_uuid(title, "mesh", i)}" type="model">\n   <mesh>\n'
-                        f'    <vertices>\n{vx}    </vertices>\n    <triangles>\n{tx}    </triangles>\n   </mesh>\n  </object>\n')
+    # Each object's origin is the centre of its parts' bounding box, as Bambu Studio keeps it; its build item puts
+    # it back where the parts sit, on its plate (plate n is offset in the project's coordinates, see plate_origin).
+    meshes: list[int] = []
+    mesh_xml: list[str] = []
+    centres: list[list[float]] = []
+    first: list[int] = []  # each object's first mesh id
+    for o in objects:
+        boxes = [p.shape.bounding_box() for p in o.parts]
+        lo = [min(getattr(b.min, a) for b in boxes) for a in "XYZ"]
+        hi = [max(getattr(b.max, a) for b in boxes) for a in "XYZ"]
+        c = [(lo[i] + hi[i]) / 2 for i in range(3)]
+        ox, oy = plate_origin(o.plate, count, bed)
+        centres.append([c[0] + ox, c[1] + oy, c[2]])
+        first.append(len(meshes) + 1)
+        for p in o.parts:
+            i = len(meshes) + 1
+            points, faces = mesh(p.shape)
+            meshes.append(len(faces))
+            vx = "".join(f'     <vertex x="{_n(x - c[0])}" y="{_n(y - c[1])}" z="{_n(z - c[2])}"/>\n'
+                         for x, y, z in points)
+            tx = "".join(f'     <triangle v1="{a}" v2="{b}" v3="{d}"/>\n' for a, b, d in faces)
+            mesh_xml.append(f'  <object id="{i}" p:UUID="{_uuid(title, "mesh", i)}" type="model">\n   <mesh>\n'
+                            f'    <vertices>\n{vx}    </vertices>\n    <triangles>\n{tx}    </triangles>\n'
+                            '   </mesh>\n  </object>\n')
     objects_model = (HEAD + f'<model unit="millimeter" xml:lang="en-US" {NS}>\n'
                      ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n <resources>\n'
-                     + "".join(body_xml) + ' </resources>\n <build/>\n</model>\n')
+                     + "".join(mesh_xml) + ' </resources>\n <build/>\n</model>\n')
 
-    oid = len(parts) + 1
-    comps = "".join(f'    <component p:path="/3D/Objects/object_1.model" objectid="{i}" '
-                    f'p:UUID="{_uuid(title, "component", i)}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n'
-                    for i in range(1, len(parts) + 1))
+    oids = [len(meshes) + k for k in range(1, len(objects) + 1)]
+    res_xml, items_xml = [], []
+    for k, (o, oid) in enumerate(zip(objects, oids)):
+        comps = "".join(f'    <component p:path="/3D/Objects/object_1.model" objectid="{first[k] + j}" '
+                        f'p:UUID="{_uuid(title, "component", first[k] + j)}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>\n'
+                        for j in range(len(o.parts)))
+        res_xml.append(f'  <object id="{oid}" p:UUID="{_uuid(title, "object", k)}" type="model">\n   <components>\n'
+                       f'{comps}   </components>\n  </object>\n')
+        cx, cy, cz = centres[k]
+        items_xml.append(f'  <item objectid="{oid}" p:UUID="{_uuid(title, "item", k)}" '
+                         f'transform="1 0 0 0 1 0 0 0 1 {_n(cx)} {_n(cy)} {_n(cz)}" printable="1"/>\n')
     today = date.today().isoformat()
     meta = {"Application": f"BambuStudio-{version}", "BambuStudio:3mfVersion": "1", "CreationDate": today,
             "ModificationDate": today, "Title": title}
@@ -216,41 +267,46 @@ def write_project(parts: list[Part], filaments: list[Filament], printer: Printer
         meta |= {"Thumbnail_Middle": "/Metadata/plate_1.png", "Thumbnail_Small": "/Metadata/plate_1_small.png"}
     meta_xml = "".join(f' <metadata name="{k}">{_esc(v)}</metadata>\n' for k, v in meta.items())
     main_model = (HEAD + f'<model unit="millimeter" xml:lang="en-US" {NS}>\n' + meta_xml + ' <resources>\n'
-                  f'  <object id="{oid}" p:UUID="{_uuid(title, "object")}" type="model">\n   <components>\n{comps}'
-                  '   </components>\n  </object>\n </resources>\n'
-                  f' <build p:UUID="{_uuid(title, "build")}">\n'
-                  f'  <item objectid="{oid}" p:UUID="{_uuid(title, "item")}" '
-                  f'transform="1 0 0 0 1 0 0 0 1 {_n(c[0])} {_n(c[1])} {_n(c[2])}" printable="1"/>\n'
-                  ' </build>\n</model>\n')
+                  + "".join(res_xml) + ' </resources>\n'
+                  f' <build p:UUID="{_uuid(title, "build")}">\n' + "".join(items_xml) + ' </build>\n</model>\n')
 
-    default = next((p.filament for p in parts if p.filament), 1)
-    part_xml = []
-    for i, (p, nf) in enumerate(zip(parts, meshes), 1):
-        ext = f'      <metadata key="extruder" value="{p.filament}"/>\n' if p.filament else ""
-        part_xml.append(f'    <part id="{i}" subtype="normal_part">\n'
-                        f'      <metadata key="name" value={quoteattr(p.name)}/>\n'
-                        '      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
-                        f'{ext}      <mesh_stat face_count="{nf}" edges_fixed="0" degenerate_facets="0" '
-                        'facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n    </part>\n')
-    thumbs = ('    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>\n' if thumbnail else "")
-    model_settings = (HEAD + '<config>\n'
-                      f'  <object id="{oid}">\n    <metadata key="name" value={quoteattr(title)}/>\n'
-                      f'    <metadata key="extruder" value="{default}"/>\n    <metadata face_count="{sum(meshes)}"/>\n'
-                      + "".join(part_xml) + '  </object>\n'
-                      '  <plate>\n    <metadata key="plater_id" value="1"/>\n'
-                      f'    <metadata key="plater_name" value={quoteattr(title)}/>\n'
-                      '    <metadata key="locked" value="false"/>\n'
-                      f'    <metadata key="filament_map_mode" value={quoteattr(str(settings.get("filament_map_mode", "Auto For Flush")))}/>\n'
-                      + thumbs +
-                      '    <model_instance>\n'
-                      f'      <metadata key="object_id" value="{oid}"/>\n'
-                      '      <metadata key="instance_id" value="0"/>\n'
-                      f'      <metadata key="identify_id" value="{oid * 100}"/>\n'
-                      '    </model_instance>\n  </plate>\n'
-                      '  <assemble>\n'
-                      f'   <assemble_item object_id="{oid}" instance_id="0" '
-                      f'transform="1 0 0 0 1 0 0 0 1 {_n(c[0])} {_n(c[1])} {_n(c[2])}" offset="0 0 0" />\n'
-                      '  </assemble>\n</config>\n')
+    obj_xml = []
+    for k, (o, oid) in enumerate(zip(objects, oids)):
+        default = next((p.filament for p in o.parts if p.filament), 1)
+        part_xml = []
+        for j, p in enumerate(o.parts):
+            nf = meshes[first[k] - 1 + j]
+            ext = f'      <metadata key="extruder" value="{p.filament}"/>\n' if p.filament else ""
+            part_xml.append(f'    <part id="{first[k] + j}" subtype="normal_part">\n'
+                            f'      <metadata key="name" value={quoteattr(p.name)}/>\n'
+                            '      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
+                            f'{ext}      <mesh_stat face_count="{nf}" edges_fixed="0" degenerate_facets="0" '
+                            'facets_removed="0" facets_reversed="0" backwards_edges="0"/>\n    </part>\n')
+        nfaces = sum(meshes[first[k] - 1:first[k] - 1 + len(o.parts)])
+        own = "".join(f'    <metadata key={quoteattr(k)} value={quoteattr(v)}/>\n' for k, v in o.settings.items())
+        obj_xml.append(f'  <object id="{oid}">\n    <metadata key="name" value={quoteattr(o.name)}/>\n'
+                       f'    <metadata key="extruder" value="{default}"/>\n{own}    <metadata face_count="{nfaces}"/>\n'
+                       + "".join(part_xml) + '  </object>\n')
+    map_mode = quoteattr(str(settings.get("filament_map_mode", "Auto For Flush")))
+    plate_xml = []
+    for n, pl in enumerate(plates, 1):
+        thumbs = ('    <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>\n' if thumbnail and n == 1 else "")
+        inst = "".join('    <model_instance>\n'
+                       f'      <metadata key="object_id" value="{oid}"/>\n'
+                       '      <metadata key="instance_id" value="0"/>\n'
+                       f'      <metadata key="identify_id" value="{oid * 100}"/>\n'
+                       '    </model_instance>\n'
+                       for o, oid in zip(objects, oids) if o.plate == n)
+        plate_xml.append('  <plate>\n'
+                         f'    <metadata key="plater_id" value="{n}"/>\n'
+                         f'    <metadata key="plater_name" value={quoteattr(pl.name)}/>\n'
+                         '    <metadata key="locked" value="false"/>\n'
+                         f'    <metadata key="filament_map_mode" value={map_mode}/>\n' + thumbs + inst + '  </plate>\n')
+    assemble = "".join(f'   <assemble_item object_id="{oid}" instance_id="0" '
+                       f'transform="1 0 0 0 1 0 0 0 1 {_n(c[0])} {_n(c[1])} {_n(c[2])}" offset="0 0 0" />\n'
+                       for oid, c in zip(oids, centres))
+    model_settings = (HEAD + '<config>\n' + "".join(obj_xml) + "".join(plate_xml)
+                      + '  <assemble>\n' + assemble + '  </assemble>\n</config>\n')
 
     slice_info = (HEAD + '<config>\n  <header>\n    <header_item key="X-BBL-Client-Type" value="slicer"/>\n'
                   f'    <header_item key="X-BBL-Client-Version" value="{version}"/>\n  </header>\n</config>\n')
@@ -288,6 +344,8 @@ class ReadPart:
     filament: int  # 1-based, the object's when the part sets none
     points: list[tuple[float, float, float]]  # on the bed (the build item's placement applied)
     triangles: list[tuple[int, int, int]]
+    object: str = ""  # the object's name
+    plate: int = 1  # the plate whose model instances list the object
 
     @property
     def volume(self) -> float:
@@ -312,8 +370,8 @@ def _det(a, b, c) -> float:
 
 
 def read_project(path: Path) -> tuple[list[ReadPart], dict, dict[str, str]]:
-    """The parts, project settings and model metadata of a project written by `write_project` (one object whose
-    components point into one objects file, translation-only placements)."""
+    """The parts, project settings and model metadata of a project written by `write_project` (objects whose
+    components point into one objects file, translation-only placements), in project coordinates."""
     import xml.etree.ElementTree as ET
 
     core = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
@@ -323,20 +381,26 @@ def read_project(path: Path) -> tuple[list[ReadPart], dict, dict[str, str]]:
         settings = json.loads(z.read("Metadata/project_settings.config"))
         ms = ET.fromstring(z.read("Metadata/model_settings.config"))
         meta = {m.get("name"): m.text or "" for m in main.findall(f"{core}metadata")}
-        item = main.find(f"{core}build/{core}item")
-        t = [float(x) for x in item.get("transform").split()][9:12]
-        obj = main.find(f"{core}resources/{core}object[@id='{item.get('objectid')}']")
-        conf = ms.find(f"object[@id='{item.get('objectid')}']")
-        default = int(conf.find("metadata[@key='extruder']").get("value"))
+        plate_of = {mi.find("metadata[@key='object_id']").get("value"): n
+                    for n, pl in enumerate(ms.findall("plate"), 1) for mi in pl.findall("model_instance")}
         parts = []
-        for comp, pc in zip(obj.find(f"{core}components"), conf.findall("part")):
-            sub = ET.fromstring(z.read(comp.get(f"{prod}path").lstrip("/")))
-            mo = sub.find(f"{core}resources/{core}object[@id='{comp.get('objectid')}']")
-            ct = [float(x) for x in comp.get("transform").split()][9:12]
-            pts = [tuple(float(v.get(k)) + t[i] + ct[i] for i, k in enumerate("xyz"))
-                   for v in mo.find(f"{core}mesh/{core}vertices")]
-            tris = [(int(x.get("v1")), int(x.get("v2")), int(x.get("v3"))) for x in mo.find(f"{core}mesh/{core}triangles")]
-            ext = pc.find("metadata[@key='extruder']")
-            parts.append(ReadPart(pc.find("metadata[@key='name']").get("value"),
-                                  int(ext.get("value")) if ext is not None else default, pts, tris))
+        for item in main.findall(f"{core}build/{core}item"):
+            oid = item.get("objectid")
+            t = [float(x) for x in item.get("transform").split()][9:12]
+            obj = main.find(f"{core}resources/{core}object[@id='{oid}']")
+            conf = ms.find(f"object[@id='{oid}']")
+            default = int(conf.find("metadata[@key='extruder']").get("value"))
+            oname = conf.find("metadata[@key='name']").get("value")
+            for comp, pc in zip(obj.find(f"{core}components"), conf.findall("part")):
+                sub = ET.fromstring(z.read(comp.get(f"{prod}path").lstrip("/")))
+                mo = sub.find(f"{core}resources/{core}object[@id='{comp.get('objectid')}']")
+                ct = [float(x) for x in comp.get("transform").split()][9:12]
+                pts = [tuple(float(v.get(k)) + t[i] + ct[i] for i, k in enumerate("xyz"))
+                       for v in mo.find(f"{core}mesh/{core}vertices")]
+                tris = [(int(x.get("v1")), int(x.get("v2")), int(x.get("v3")))
+                        for x in mo.find(f"{core}mesh/{core}triangles")]
+                ext = pc.find("metadata[@key='extruder']")
+                parts.append(ReadPart(pc.find("metadata[@key='name']").get("value"),
+                                      int(ext.get("value")) if ext is not None else default, pts, tris,
+                                      oname, plate_of.get(oid, 0)))
     return parts, settings, meta

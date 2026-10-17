@@ -2,6 +2,8 @@
 
 When the printer has a Bambu Studio template and the design is given, the 3MF is a Bambu Studio project with each
 body's filament and the palette's colours preassigned (`bambu.py`); otherwise it is a plain 3MF with coloured objects.
+A design with a print layout (`layout.py`) exports its Bambu project laid out on its plates; the other formats stay
+assembled.
 """
 
 from __future__ import annotations
@@ -49,10 +51,12 @@ def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfi
     if not parts:
         raise ExportError("nothing is built to export")
     ids = list(parts)
-    shapes = on_bed([parts[b] for b in ids], printer)
     path.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "3mf" and design is not None and (template := bambu.load_template(printer)) is not None:
-        return _bambu(ids, shapes, design, printer, template, path, title)
+        if design.layout:
+            return _bambu_layout(parts, design, printer, template, path, title)
+        return _bambu(ids, on_bed([parts[b] for b in ids], printer), design, printer, template, path, title)
+    shapes = on_bed([parts[b] for b in ids], printer)
     if fmt == "3mf":
         m = Mesher(unit=Unit.MM)
         for bid, shape in zip(ids, shapes):
@@ -94,5 +98,35 @@ def _bambu(ids: list[str], shapes: list[Shape], design: Design, printer: Printer
         thumb = None
     try:
         return bambu.write_project(parts, filaments, printer, template, path, title or "design", thumb)
+    except bambu.BambuError as exc:
+        raise ExportError(str(exc)) from exc
+
+
+def _bambu_layout(parts: dict[str, Shape], design: Design, printer: PrinterProfile, template: dict, path: Path,
+                  title: str) -> Path:
+    from ..geometry.render import render
+    from .layout import resolve
+
+    lay = resolve(design, parts, (printer.bed[0], printer.bed[1]))
+    if lay.problems:
+        raise ExportError("the print layout is not ready: " + "; ".join(lay.problems[:6])
+                          + (f" (and {len(lay.problems) - 6} more)" if len(lay.problems) > 6 else ""))
+    by_id = {b.id: b for b in design.bodies}
+    filaments = bambu.palette(design.filaments, next((design.body_color(b) for b in design.bodies
+                                                       if design.body_color(b)), bambu.PLACEHOLDER))
+    objects = [bambu.Obj(p.item.name, [bambu.Part(by_id[b].name if b in by_id else b, s,
+                                                  by_id[b].filament if b in by_id else None) for b, s in p.parts],
+                         p.item.plate, dict(p.item.settings)) for p in lay.placed]
+    plates = [bambu.PlateInfo(pl.name, pl.tower) for pl in design.plates]
+    try:
+        from ..geometry.tessellate import triangles
+
+        first = [(b, s) for p in lay.placed if p.item.plate == 1 for b, s in p.parts]
+        meshes = [(*triangles(s, 0.05, 0.3), design.body_color(by_id[b]) if b in by_id else None) for b, s in first]
+        thumb = render([], "iso", 512, meshes=meshes) if meshes else None
+    except Exception:  # a thumbnail is a nicety; never fail the export over it
+        thumb = None
+    try:
+        return bambu.write_project([], filaments, printer, template, path, title or "design", thumb, objects, plates)
     except bambu.BambuError as exc:
         raise ExportError(str(exc)) from exc

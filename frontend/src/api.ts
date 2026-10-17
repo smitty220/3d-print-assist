@@ -143,6 +143,7 @@ export interface Tree {
   variants: Variant[]
   colorways: Colorway[]
   references: Reference[]
+  print_layout?: { items: number; plates: number } // the print layout's size; worked out only in the Plates tab
 }
 
 /** What the AI understood, shown before it builds: a 2D drawing, summary, assumptions and questions. */
@@ -183,6 +184,21 @@ export interface ReferenceInfo extends Reference {
   part_count?: number
   bounds?: { min: number[]; max: number[]; size: number[] }
   parts?: { name: string; triangles: number; size: number[]; volume: number | null }[]
+}
+
+export interface LayoutObject { id: string; name: string; bodies: string[]; solids: number; box: number[] }
+export interface LayoutReport {
+  bed: [number, number] | null
+  plates: { plate: number; name: string; tower: [number, number] | null; objects: LayoutObject[] }[]
+  problems: string[]
+  unplaced: { body: string; index: number; center: number[]; size: number[] }[]
+}
+export interface PlateMesh {
+  plate: number
+  bed: [number, number]
+  tower: [number, number] | null
+  tower_size: number
+  objects: { id: string; name: string; box: number[]; parts: { body: string; color: string | null; positions: Float32Array; indices: Uint32Array }[] }[]
 }
 
 export interface ReferenceMesh { id: string; color: string; parts: { name: string; positions: Float32Array; indices: Uint32Array }[] }
@@ -347,6 +363,12 @@ export const api = {
   referenceMesh: async (id: string): Promise<ReferenceMesh> => {
     const r = await get<{ id: string; color: string; parts: { name: string; positions: string; indices: string }[] }>(`/references/${id}/mesh`)
     return { ...r, parts: r.parts.map((p) => ({ name: p.name, positions: decode(p.positions, Float32Array), indices: decode(p.indices, Uint32Array) })) }
+  },
+  layout: () => get<LayoutReport>('/layout'),
+  plateMesh: async (n: number): Promise<PlateMesh> => {
+    type Raw = Omit<PlateMesh, 'objects'> & { objects: { id: string; name: string; box: number[]; parts: { body: string; color: string | null; positions: string; indices: string }[] }[] }
+    const r = await get<Raw>(`/layout/plates/${n}/mesh`)
+    return { ...r, objects: r.objects.map((o) => ({ ...o, parts: o.parts.map((p) => ({ ...p, positions: decode(p.positions, Float32Array), indices: decode(p.indices, Uint32Array) })) })) }
   },
   importFile: (file: File, newDesign: boolean) => {
     const form = new FormData()

@@ -13,6 +13,7 @@ design is left as it was, so the AI never leaves the model out of date or broken
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 import time
@@ -73,6 +74,7 @@ class Workspace:
         self._mesh: tuple[int, dict[str, dict]] | None = None
         self._checks: tuple[tuple, dict] | None = None  # the print checks, for one build, palette and printer
         self._checks_lock = threading.Lock()
+        self._layout: tuple[tuple, object, dict] | None = None  # the resolved print layout and plate meshes, for one key
         self.concepts = Concepts(project.root / "concepts")
         self.working: Design = project.data.design.model_copy(deep=True)
         self.saved_json = self.working.model_dump_json()
@@ -300,15 +302,80 @@ class Workspace:
             return self._checks[1] | {"stale": stale}
 
     def render(self, view: str = "iso", size: int = 640) -> bytes:
+        """A picture of the last good part from a standard view, or of one plate of the print layout: "plate2" (iso),
+        "plate2-top" (from above), with the bed under it."""
         from ..geometry.render import render
 
         with self.lock:
             good = self.last_good
             bodies = []
-            if good is not None:
-                colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
+            colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
+            if (m := re.fullmatch(r"plate(\d+)(?:-(\w+))?", view)) is not None:
+                from build123d import Box, Location
+
+                bed = self.project.printer.bed
+                if good is not None:
+                    lay = self._resolved()[1]
+                    bodies = [(s, colors.get(b)) for p in lay.placed if p.item.plate == int(m[1]) for b, s in p.parts]
+                bodies.append((Location((bed[0] / 2, bed[1] / 2, -0.5)) * Box(bed[0], bed[1], 1), "#44484f"))
+                view = m[2] or "iso"
+            elif good is not None:
                 bodies = [(shape, colors.get(bid)) for bid, shape in good.parts.items()]
         return render(bodies, view, size)
+
+    def _resolved(self):
+        """The print layout resolved against the last good part (caller holds the lock and has a good part). Worked out
+        only when something asks for it, then kept until the part, the layout or the printer changes."""
+        from ..export.layout import resolve
+
+        bed = self.project.printer.bed
+        key = (id(self.last_good), json.dumps([p.model_dump() for p in self.design.layout]),
+               json.dumps([p.model_dump() for p in self.design.plates]), tuple(bed))
+        if self._layout is None or self._layout[0] != key:
+            self._layout = (key, resolve(self.design, self.last_good.parts, (bed[0], bed[1])), {})
+        return self._layout
+
+    def layout(self) -> dict:
+        """The print layout as it would be exported: each plate's objects and their boxes, problems, and the solids
+        of the last good part that no item takes yet (with their centres in the assembled model)."""
+        from ..export.layout import report
+
+        with self.lock:
+            if self.last_good is None:
+                return {"plates": [], "problems": ["nothing is built"], "unplaced": [], "bed": None}
+            bed = self.project.printer.bed
+            return report(self._resolved()[1], self.design) | {"bed": [bed[0], bed[1]]}
+
+    def plate_mesh(self, n: int) -> dict:
+        """One plate's objects for the view: per part its body, colour and triangles (base64 little-endian float32
+        positions and uint32 indices) in plate coordinates, with the bed size and the plate's tower spot."""
+        import base64
+
+        from ..export.layout import TOWER
+        from ..geometry.tessellate import triangles
+
+        with self.lock:
+            if self.last_good is None:
+                raise ValueError("nothing is built")
+            _, lay, meshes = self._resolved()
+            colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
+            if n not in meshes:
+                b64 = lambda a: base64.b64encode(a.tobytes()).decode()  # noqa: E731
+                objs = []
+                for p in lay.placed:
+                    if p.item.plate != n:
+                        continue
+                    parts = []
+                    for bid, shape in p.parts:
+                        pts, tris = triangles(shape, 0.05, 0.3)
+                        parts.append({"body": bid, "positions": b64(pts.astype("<f4")), "indices": b64(tris.astype("<u4"))})
+                    objs.append({"id": p.item.id, "name": p.item.name, "box": list(p.box), "parts": parts})
+                meshes[n] = objs
+            bed = self.project.printer.bed
+            pl = self.design.plates[n - 1] if n <= len(self.design.plates) else None
+            return {"plate": n, "bed": [bed[0], bed[1]], "tower": pl.tower if pl else None, "tower_size": TOWER,
+                    "objects": [{**o, "parts": [{**q, "color": colors.get(q["body"])} for q in o["parts"]]}
+                                for o in meshes[n]]}
 
     def faces(self, body: str = "B1") -> list[dict]:
         """The shown part's faces, compactly: what the AI needs to pick one (index, name, type, centre, normal, area)."""
@@ -402,6 +469,8 @@ class Workspace:
                 "errors": r.errors, "filaments": [f.model_dump() for f in d.filaments],
                 "variants": [v.model_dump() for v in d.variants], "colorways": [c.model_dump() for c in d.colorways],
                 "references": [x.model_dump() for x in d.references],
+                "print_layout": {"items": len(d.layout),
+                                 "plates": max([len(d.plates), *(p.plate for p in d.layout)]) if d.layout else 0},
             }
 
     def part(self) -> dict:
