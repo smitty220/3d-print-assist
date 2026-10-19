@@ -41,6 +41,7 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - Tests: `cd backend && uv run pytest`; `cd frontend && npm run build && npm run lint && npm test`.
 - Designs live in `PRINT_ASSIST_DATA` (default `~/Projects/3DPrinting/designs`).
 - AI API key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` in `backend/.env` (git-ignored).
+- Image generation: `GEMINI_API_KEY` in `backend/.env` (pay-per-image, with a spend cap set in AI Studio).
 
 ## Status
 - M1 done (2026-10-14): parameters and formulas, incremental build engine with update states (manual / auto, rollback), ops, Extrude / Revolve / Shell / Text / Fillet / Chamfer, sketch tools with formula dimensions, export (3MF / STL / STEP), renderer, MCP server, API chat, the full UI (tree, toolbars, edit dialogs, AI panel, Color & Export), end-to-end vase test.
@@ -52,6 +53,13 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - **References** (`Design.references`, `references.py`, `geometry/meshio.py`): STEP / STL / 3MF files in the design's `references/` folder shown as see-through ghosts beside the design, never built or exported. They exist so the user can point the AI at "the hinge from this file": the AI measures them (`list_references`), looks (`look_at_reference`, with `region` zoom and `with_design` overlay) and slices them (`section_reference`: outlines with areas and fitted circles), then rebuilds the feature with our own sketches and features. Meshes stay triangles (no sewing), so size is not limited; 3MF keeps part names, placement and Bambu plates (plate 1 by default).
 - **Import** (the `import` feature) is STEP only: an exact solid in a body of its own.
 - Big meshes must stay fast: the renderer rasterises small triangles in vectorised batches and draws edges in one pass; `attribute()` names untouched faces by hash; `mesh_shape` meshes the whole shape once and reads each face's triangulation.
+
+## Generated images
+- `images.py`, `/api/images`, MCP `generate_image` / `list_images` / `look_at_image`: a prompt (and earlier images to
+  vary) goes to Google's Gemini image models (Interactions API; quality draft / standard / best picks the model); the
+  picture and a JSON record of its prompt are kept in the design's `images/` folder as I1, I2, ... A concept SVG shows
+  one with `<image href="images/I3.png">`, inlined as a data URI when the concept is served or rendered.
+- Tests never call Gemini (`conftest.py` replaces `images._post` and stops `backend/.env` being read).
 
 ## Bambu Studio export
 - A 3MF export is a Bambu Studio project when the printer profile names a `bambu_template` (`printers/bambu/*.project_settings.config`, saved by Bambu Studio for that printer): one object, a part per body with its `extruder` (= palette slot), the template's settings resized to the palette (`export/bambu.py`). Project filament N is palette slot N.

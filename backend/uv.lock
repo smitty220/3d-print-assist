@@ -1267,6 +1267,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "build123d" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "numpy" },
     { name = "print-assist-mcp" },
     { name = "python-multipart" },
@@ -1277,7 +1278,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
 ]
 
@@ -1286,6 +1286,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=1.11.0" },
     { name = "build123d", specifier = ">=0.13.0" },
     { name = "fastapi", specifier = ">=0.142.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "print-assist-mcp", editable = "../mcp" },
     { name = "python-multipart", specifier = ">=0.0.32" },
@@ -1295,10 +1296,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "pytest", specifier = ">=9.1.1" },
-]
+dev = [{ name = "pytest", specifier = ">=9.1.1" }]
 
 [[package]]
 name = "print-assist-mcp"

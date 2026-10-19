@@ -549,9 +549,13 @@ class ConceptAnswer(BaseModel):
 @app.get("/api/concepts")
 def list_concepts(drawings: bool = True) -> list[dict]:
     """The design's concepts, newest first; `drawings=false` leaves out the SVGs."""
+    from .images import inline
+
     out = [c.model_dump() for c in reversed(ws().concepts.items)]
-    if not drawings:
-        for c in out:
+    for c in out:
+        if drawings:
+            c["svg"] = inline(c["svg"], ws().images)
+        else:
             c.pop("svg")
     return out
 
@@ -561,7 +565,9 @@ def get_concept(cid: str) -> dict:
     c = ws().concepts.get(cid)
     if c is None:
         raise HTTPException(404, f"No concept {cid!r}")
-    return c.model_dump()
+    from .images import inline
+
+    return c.model_dump() | {"svg": inline(c.svg, ws().images)}
 
 
 @app.post("/api/concepts")
@@ -587,9 +593,10 @@ class PictureIn(BaseModel):
 def concept_picture_draft(body: PictureIn) -> Response:
     """A drawing (not yet proposed) as a PNG: how the AI checks its picture before showing it to the user."""
     from .concepts import ConceptError, picture
+    from .images import inline
 
     try:
-        return Response(picture(body.svg, body.width), media_type="image/png")
+        return Response(picture(inline(body.svg, ws().images), body.width), media_type="image/png")
     except ConceptError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -602,7 +609,9 @@ def concept_picture(cid: str, width: int = 1200) -> Response:
     c = ws().concepts.get(cid)
     if c is None:
         raise HTTPException(404, f"No concept {cid!r}")
-    return Response(picture(c.svg, width), media_type="image/png")
+    from .images import inline
+
+    return Response(picture(inline(c.svg, ws().images), width), media_type="image/png")
 
 
 @app.post("/api/concepts/{cid}/answer")
@@ -614,6 +623,45 @@ def answer_concept(cid: str, body: ConceptAnswer) -> dict:
     except ConceptError as exc:
         raise HTTPException(422, str(exc)) from exc
     return c.model_dump(exclude={"svg"})
+
+
+# ---------------------------------------------------------------- generated images
+
+
+class ImageIn(BaseModel):
+    prompt: str
+    quality: Literal["draft", "standard", "best"] = "standard"
+    aspect: str = "1:1"
+    size: Literal["1K", "2K", "4K"] = "1K"
+    from_images: list[str] = []
+
+
+@app.get("/api/images")
+def list_images() -> list[dict]:
+    """The design's generated images (how each was made), newest first."""
+    return [i.model_dump() for i in reversed(ws().images.items)]
+
+
+@app.post("/api/images")
+def generate_image(body: ImageIn, x_actor: str = Header(default=USER)) -> dict:
+    """Make a picture from a prompt (and earlier images to start from) and keep it in the design's images folder."""
+    from .images import ImageError
+
+    try:
+        return ws().generate_image(x_actor, prompt=body.prompt, quality=body.quality, aspect=body.aspect,
+                                   size=body.size, from_images=body.from_images).model_dump()
+    except ImageError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/api/images/{iid}")
+def image_file(iid: str) -> FileResponse:
+    from .images import ImageError
+
+    try:
+        return FileResponse(ws().images.path(iid))
+    except ImageError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 # ---------------------------------------------------------------- import and references

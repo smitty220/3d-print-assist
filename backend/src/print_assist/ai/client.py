@@ -24,7 +24,7 @@ ENV_FILE = Path(__file__).resolve().parents[3] / ".env"  # backend/.env
 
 
 def load_env_key(env: Path = ENV_FILE) -> None:
-    """Read ANTHROPIC_API_KEY (and PRINT_ASSIST_MODEL, ANTHROPIC_WORKSPACE_ID) from backend/.env unless the shell set them.
+    """Read ANTHROPIC_API_KEY (and PRINT_ASSIST_MODEL, ANTHROPIC_WORKSPACE_ID, GEMINI_API_KEY for images) from backend/.env unless the shell set them.
 
     Called before every AI request, so a key added to the file works without restarting the backend.
     """
@@ -37,7 +37,7 @@ def load_env_key(env: Path = ENV_FILE) -> None:
             os.environ[k] = v.strip().strip('"').strip("'")
 
 
-ENV_KEYS = ("ANTHROPIC_API_KEY", "PRINT_ASSIST_MODEL", "ANTHROPIC_WORKSPACE_ID")
+ENV_KEYS = ("ANTHROPIC_API_KEY", "PRINT_ASSIST_MODEL", "ANTHROPIC_WORKSPACE_ID", "GEMINI_API_KEY")
 _SHELL_ENV = {k for k in ENV_KEYS if os.environ.get(k)}
 
 

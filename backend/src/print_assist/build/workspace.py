@@ -24,6 +24,7 @@ from ..features.design import BuildResult
 from ..features.library import FEATURES
 from ..features.model import Design
 from ..geometry.tessellate import mesh_shape
+from ..images import GeneratedImage, Images
 from ..project import Project
 from . import ops as design_ops
 from .engine import Engine, plan
@@ -76,6 +77,7 @@ class Workspace:
         self._checks_lock = threading.Lock()
         self._layout: tuple[tuple, object, dict] | None = None  # the resolved print layout and plate meshes, for one key
         self.concepts = Concepts(project.root / "concepts")
+        self.images = Images(project.root / "images")
         self.working: Design = project.data.design.model_copy(deep=True)
         self.saved_json = self.working.model_dump_json()
         self.undo_stack: list[Step] = []
@@ -278,6 +280,12 @@ class Workspace:
             self.log(actor, f"Concept {c.id}: {c.title} (waiting for your answer)")
             return c
 
+    def generate_image(self, actor: str, **kw) -> GeneratedImage:
+        # Not under the lock: a picture takes seconds to come back, and the design can change meanwhile.
+        img = self.images.generate(actor=actor, **kw)
+        self.log(actor, f"Image {img.id}: {img.prompt[:80]} (~${img.cost_usd:.2f})")
+        return img
+
     def answer_concept(self, cid: str, decision: str, note: str = "") -> Concept:
         with self.lock:
             c = self.concepts.respond(cid, decision, note)  # type: ignore[arg-type]
@@ -303,7 +311,8 @@ class Workspace:
 
     def render(self, view: str = "iso", size: int = 640) -> bytes:
         """A picture of the last good part from a standard view, or of one plate of the print layout: "plate2" (iso),
-        "plate2-top" (from above), with the bed under it."""
+        "plate2-top" (from above), with the bed under it; "plate2-bottom" (from below, without the bed) shows the faces
+        that print on the bed."""
         from ..geometry.render import render
 
         with self.lock:
@@ -317,8 +326,9 @@ class Workspace:
                 if good is not None:
                     lay = self._resolved()[1]
                     bodies = [(s, colors.get(b)) for p in lay.placed if p.item.plate == int(m[1]) for b, s in p.parts]
-                bodies.append((Location((bed[0] / 2, bed[1] / 2, -0.5)) * Box(bed[0], bed[1], 1), "#44484f"))
                 view = m[2] or "iso"
+                if view != "bottom":  # from below, the bed would hide the faces that print on it
+                    bodies.append((Location((bed[0] / 2, bed[1] / 2, -0.5)) * Box(bed[0], bed[1], 1), "#44484f"))
             elif good is not None:
                 bodies = [(shape, colors.get(bid)) for bid, shape in good.parts.items()]
         return render(bodies, view, size)

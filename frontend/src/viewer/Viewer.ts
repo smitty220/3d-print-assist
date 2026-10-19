@@ -275,7 +275,7 @@ export class Viewer {
     }
   }
 
-  /** One print plate: the bed (with a 32 mm grid), the purge tower's spot and the plate's parts in their colours;
+  /** One print plate: the bed (see-through, with a 32 mm grid), the purge tower's spot and the plate's parts in their colours;
    *  nothing on it is picked. */
   setPlate(plate: PlateMesh | null) {
     if (this.plateGroup) {
@@ -290,8 +290,11 @@ export class Viewer {
     if (!plate) return
     const group = new THREE.Group()
     const [w, d] = plate.bed
-    const bed = new THREE.Mesh(new THREE.BoxGeometry(w, d, 1), new THREE.MeshStandardMaterial({ color: 0x5b6470, roughness: 0.9 }))
-    bed.position.set(w / 2, d / 2, -0.5)
+    // See-through, so orbiting underneath shows the faces that print on the bed (a lid's top, an inlay). Its top sits
+    // just below Z = 0 so it never fights with those faces.
+    const bed = new THREE.Mesh(new THREE.BoxGeometry(w, d, 1), new THREE.MeshStandardMaterial({ color: 0x5b6470,
+      roughness: 0.9, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide }))
+    bed.position.set(w / 2, d / 2, -0.55)
     const grid: number[] = []
     for (let x = 32; x < w; x += 32) grid.push(x, 0, 0.02, x, d, 0.02)
     for (let y = 32; y < d; y += 32) grid.push(0, y, 0.02, w, y, 0.02)
