@@ -27,7 +27,7 @@ export const PART_TOOLS: { group: string; tools: Tool[] }[] = [
     { id: 'press', label: 'Press/pull', icon: 'press', later: 'M3' },
     { id: 'split', label: 'Split', icon: 'split', kind: 'split' },
     { id: 'combine', label: 'Combine', icon: 'combine', kind: 'combine' },
-    { id: 'move', label: 'Move', icon: 'move', later: 'M3' },
+    { id: 'move', label: 'Move', icon: 'move', kind: 'move' },
   ] },
   { group: 'Pattern', tools: [
     { id: 'linear', label: 'Linear', icon: 'linear', later: 'M3' },

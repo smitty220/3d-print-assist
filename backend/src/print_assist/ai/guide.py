@@ -50,6 +50,9 @@ length, angle, ratio, count, bool, text; expr may be a formula of other paramete
 - {"op": "add_body", "name": "Rim band"}, {"op": "edit_body", "id": "B2", "name": "...", "filament": 2}, \
 {"op": "delete_body", "id": "B3"}
 Feature kinds and their parameters: get_feature_catalog.
+To turn or move a finished body, add a move feature at its end (turn about any axis: a point on it and a direction, \
+then move along X, Y, Z) rather than rewriting its sketches: a hinged part modelled shut and printed part-open is one \
+move about the hinge axis. With "into" a body, the body stays and the moved copy goes there.
 
 Colours: a part in several colours is several bodies, each assigned a filament from the design's palette (numbered \
 like the printer's slots: AMS slot 1 to 4 on an A1 + AMS lite). Make the bodies with features: split (cut a body along \
