@@ -962,8 +962,13 @@ def chat():
 @app.get("/api/ai/status")
 def ai_status() -> dict:
     model = ai.model_name()  # also re-reads backend/.env
-    return {"model": model, "key": bool(os.environ.get("ANTHROPIC_API_KEY")), "mode": project().data.settings.ai_mode,
-            "chat": chat().to_dict()}
+    return {
+        "model": model,
+        "provider": ai.provider(),
+        "key": ai.has_api_key(),
+        "mode": project().data.settings.ai_mode,
+        "chat": chat().to_dict(),
+    }
 
 
 class ChatIn(BaseModel):

@@ -251,7 +251,7 @@ export interface Activity { actor: string; text: string; at: number; ok: boolean
 
 export interface ChatEntry { role: 'user' | 'assistant' | 'tool' | 'error'; text: string; tool: string | null; ok: boolean; at: number }
 
-export interface AiStatus { model: string; key: boolean; mode: 'mcp' | 'api'; chat: { running: boolean; log: ChatEntry[]; tokens: Record<string, number> } }
+export interface AiStatus { model: string; key: boolean; mode: 'mcp' | 'api'; provider?: string; chat: { running: boolean; log: ChatEntry[]; tokens: Record<string, number> } }
 
 export interface FontInfo { name: string; styles: string[]; license: string; source: string }
 

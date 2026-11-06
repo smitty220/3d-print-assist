@@ -10,6 +10,7 @@ dependencies = [
     "anthropic>=1.11.0",
     "build123d>=0.13.0",
     "fastapi>=0.142.2",
+    "google-genai>=2.30.1",
     "numpy>=2.0",
     "print-assist-mcp",
     "python-multipart>=0.0.32",

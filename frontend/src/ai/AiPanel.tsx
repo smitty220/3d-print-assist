@@ -85,8 +85,12 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
           <div className="log">
             {!status?.key && (
               <div className="intro">
-                <p>No Claude API key yet. Put <code>ANTHROPIC_API_KEY=…</code> in <code>backend/.env</code>; it is read on the
-                  next message, no restart needed. Model: {status?.model ?? '…'}.</p>
+                <p>
+                  No {status?.provider === 'gemini' ? 'Gemini' : 'Claude'} API key yet. Put{' '}
+                  <code>{status?.provider === 'gemini' ? 'GEMINI_API_KEY=…' : 'ANTHROPIC_API_KEY=…'}</code> (or{' '}
+                  <code>{status?.provider === 'gemini' ? 'ANTHROPIC_API_KEY=…' : 'GEMINI_API_KEY=…'}</code>) in{' '}
+                  <code>backend/.env</code>; it is read on the next message, no restart needed. Model: {status?.model ?? '…'}.
+                </p>
               </div>
             )}
             {chat?.log.map((e, i) => (
@@ -109,6 +113,7 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
             </div>
             <div className="row nm">
               {chat ? `${Math.round(((chat.tokens.input ?? 0) + (chat.tokens.output ?? 0)) / 1000)}k tokens` : ''}
+              {status?.model ? <span className="dim" style={{ marginLeft: 6, fontSize: '0.85em', opacity: 0.7 }}>({status.model})</span> : null}
               <span className="spacer" />
               <button className="link" onClick={onRevert}>Revert last AI change</button>
               <button className="link" onClick={onReset} disabled={chat?.running}>New conversation</button>

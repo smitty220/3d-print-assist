@@ -32,7 +32,7 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - Backend: Python 3.12, uv, FastAPI, pytest. Frontend: React + TypeScript + plain three.js (no react-three-fiber); `erasableSyntaxOnly` is on, so no constructor parameter properties or enums.
 - Mouse: left-drag orbits, right/middle-drag pans, wheel zooms toward the cursor.
 - Every geometry function gets a test with a hand-checked number (volume, area, position), the formula in the test.
-- Tests never call the real Anthropic API (`tests/conftest.py` blocks it) and never touch the user's designs folder (`PRINT_ASSIST_DATA` points at a temp dir).
+- Tests never call the real Anthropic or Gemini APIs (`tests/conftest.py` blocks them) and never touch the user's designs folder (`PRINT_ASSIST_DATA` points at a temp dir).
 - Always pass `encoding="utf-8"` to `read_text` / `write_text` / `subprocess.run(text=True)`: OpenCascade's font loader (the Text feature) switches the process locale to ASCII.
 - The backend sketch model (`sketch/model.py`) mirrors `frontend/src/sketch/model.ts`; keep them in step.
 
@@ -40,7 +40,7 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - `./dev.sh` starts the backend (:8010) and frontend (:5183); cad-assist uses 8000 / 5173, so both can run.
 - Tests: `cd backend && uv run pytest`; `cd frontend && npm run build && npm run lint && npm test`.
 - Designs live in `PRINT_ASSIST_DATA` (default `~/Projects/3DPrinting/designs`).
-- AI API key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` in `backend/.env` (git-ignored).
+- AI API key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` in `backend/.env` (git-ignored). Provider can be selected via `PRINT_ASSIST_AI_PROVIDER=gemini|anthropic` or auto-detected from available keys; default models are `claude-opus-5-5` and `gemini-3.8-flash`.
 
 ## Status
 - M1 done (2026-10-14): parameters and formulas, incremental build engine with update states (manual / auto, rollback), ops, Extrude / Revolve / Shell / Text / Fillet / Chamfer, sketch tools with formula dimensions, export (3MF / STL / STEP), renderer, MCP server, API chat, the full UI (tree, toolbars, edit dialogs, AI panel, Color & Export), end-to-end vase test.
