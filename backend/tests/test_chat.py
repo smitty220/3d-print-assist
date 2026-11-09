@@ -171,6 +171,7 @@ def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("PRINT_ASSIST_AI_PROVIDER", raising=False)
     monkeypatch.delenv("PRINT_ASSIST_MODEL", raising=False)
+    monkeypatch.setattr(ai_client.load_env_key, "__defaults__", (tmp_path / "no.env",))
     monkeypatch.setattr(ai_client, "_SHELL_ENV", set())
 
     # Neither key -> default anthropic
@@ -193,3 +194,14 @@ def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
     env.write_text("GEMINI_API_KEY=gm-test-1\nANTHROPIC_API_KEY=sk-test-1\nPRINT_ASSIST_AI_PROVIDER=anthropic\n", encoding="utf-8")
     ai_client.load_env_key(env)
     assert ai_client.provider() == "anthropic"
+
+    # Gemini 4 model alias resolution
+    monkeypatch.delenv("PRINT_ASSIST_AI_PROVIDER", raising=False)
+    env.write_text("GEMINI_API_KEY=gm-test-1\nPRINT_ASSIST_MODEL=gemini-4.0\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.model_name() == "gemini-4-argon"
+    assert ai_client.provider() == "gemini"
+
+    env.write_text("GEMINI_API_KEY=gm-test-1\nPRINT_ASSIST_MODEL=gemini-4-argon\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.model_name() == "gemini-4-argon"

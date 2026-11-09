@@ -15,6 +15,14 @@ DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
 
+GEMINI_MODEL_ALIASES = {
+    "gemini-4": "gemini-4-argon",
+    "gemini-4.0": "gemini-4-argon",
+    "gemini-4-pro": "gemini-4-argon",
+    "4": "gemini-4-argon",
+    "4.0": "gemini-4-argon",
+}
+
 
 class MessagesClient(Protocol):
     """The slice of anthropic.Anthropic().messages the loop uses (tests pass a scripted fake)."""
@@ -63,6 +71,10 @@ def provider() -> str:
     if p in ("anthropic", "claude"):
         return "anthropic"
 
+    model = (os.environ.get("PRINT_ASSIST_MODEL") or "").lower()
+    if model.startswith("gemini") or model in GEMINI_MODEL_ALIASES:
+        return "gemini"
+
     has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
     has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
     if has_gemini and not has_anthropic:
@@ -70,17 +82,14 @@ def provider() -> str:
     if has_anthropic and not has_gemini:
         return "anthropic"
 
-    model = (os.environ.get("PRINT_ASSIST_MODEL") or "").lower()
-    if model.startswith("gemini"):
-        return "gemini"
     return "anthropic"
 
 
 def model_name() -> str:
     load_env_key()
-    custom = os.environ.get("PRINT_ASSIST_MODEL")
+    custom = (os.environ.get("PRINT_ASSIST_MODEL") or "").strip()
     if custom:
-        return custom
+        return GEMINI_MODEL_ALIASES.get(custom.lower(), custom)
     return DEFAULT_GEMINI_MODEL if provider() == "gemini" else DEFAULT_ANTHROPIC_MODEL
 
 
