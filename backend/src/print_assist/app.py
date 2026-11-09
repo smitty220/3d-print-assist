@@ -290,6 +290,8 @@ class SettingsPatch(BaseModel):
     update_mode: Literal["manual", "auto"] | None = None
     printer: str | None = None
     ai_mode: Literal["mcp", "api"] | None = None
+    ai_provider: Literal["auto", "gemini", "anthropic"] | None = None
+    ai_model: str | None = None
 
 
 @app.put("/api/settings")
@@ -302,6 +304,10 @@ def put_settings(body: SettingsPatch) -> dict:
         s.printer = body.printer
     if body.ai_mode is not None:
         s.ai_mode = body.ai_mode
+    if body.ai_provider is not None:
+        s.ai_provider = body.ai_provider
+    if body.ai_model is not None:
+        s.ai_model = body.ai_model
     w.project.save()
     if body.update_mode is not None:
         w.set_mode(body.update_mode)
@@ -959,14 +965,35 @@ def chat():
     return w.chat
 
 
+AVAILABLE_MODELS = {
+    "gemini": [
+        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (Fast)"},
+        {"id": "gemini-4-argon", "label": "Gemini 4.0 Argon (Reasoning)"},
+        {"id": "gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash Lite"},
+    ],
+    "anthropic": [
+        {"id": "claude-opus-5-5", "label": "Claude Opus 5.5"},
+        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
+        {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+    ],
+}
+
+
 @app.get("/api/ai/status")
 def ai_status() -> dict:
-    model = ai.model_name()  # also re-reads backend/.env
+    s = project().data.settings
+    chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
+    active_provider = ai.provider(chosen_provider)
+    model = ai.model_name(s.ai_model or None, provider_override=active_provider)
+    has_key = ai.has_api_key(active_provider)
     return {
         "model": model,
-        "provider": ai.provider(),
-        "key": ai.has_api_key(),
-        "mode": project().data.settings.ai_mode,
+        "provider": active_provider,
+        "key": has_key,
+        "mode": s.ai_mode,
+        "settings_provider": s.ai_provider,
+        "settings_model": s.ai_model,
+        "available_models": AVAILABLE_MODELS,
         "chat": chat().to_dict(),
     }
 
@@ -979,12 +1006,16 @@ class ChatIn(BaseModel):
 def ai_chat(body: ChatIn) -> dict:
     if not body.message.strip():
         raise HTTPException(422, "Say what you want changed")
+    s = project().data.settings
+    chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
+    active_provider = ai.provider(chosen_provider)
+    model = ai.model_name(s.ai_model or None, provider_override=active_provider)
     try:
-        client = ai.make_client()
+        client = ai.make_client(active_provider)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
     try:
-        chat().send(body.message.strip(), client)
+        chat().send(body.message.strip(), client, model=model)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return chat().to_dict()

@@ -11,6 +11,7 @@ interface Props {
   concept: Concept | null // the newest
   onOpenConcept: (id: string) => void
   onMode: (m: 'mcp' | 'api') => void
+  onSettings?: (patch: { ai_provider?: 'auto' | 'gemini' | 'anthropic'; ai_model?: string }) => void
   onSend: (text: string) => void
   onCancel: () => void
   onReset: () => void
@@ -19,7 +20,7 @@ interface Props {
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-export function AiPanel({ status, activity, context, concept, onOpenConcept, onMode, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, context, concept, onOpenConcept, onMode, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
@@ -82,6 +83,34 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
         </>
       ) : (
         <>
+          <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 2 }}>
+              <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
+              <select
+                id="ai-provider-select"
+                value={status?.settings_provider || 'auto'}
+                onChange={(e) => onSettings?.({ ai_provider: e.target.value as 'auto' | 'gemini' | 'anthropic', ai_model: '' })}
+                style={{ fontSize: 12, padding: '3px 6px' }}
+              >
+                <option value="auto">Auto ({status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="anthropic">Anthropic Claude</option>
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
+              <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
+              <select
+                id="ai-model-select"
+                value={status?.settings_model || status?.model || ''}
+                onChange={(e) => onSettings?.({ ai_model: e.target.value })}
+                style={{ fontSize: 12, padding: '3px 6px' }}
+              >
+                {(status?.available_models?.[status?.provider || 'gemini'] || []).map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
           <div className="log">
             {!status?.key && (
               <div className="intro">

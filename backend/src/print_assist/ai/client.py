@@ -57,15 +57,15 @@ ENV_KEYS = (
 _SHELL_ENV = {k for k in ENV_KEYS if os.environ.get(k)}
 
 
-def provider() -> str:
+def provider(override: str | None = None) -> str:
     """Return active provider: 'gemini' or 'anthropic'.
 
-    Can be explicitly set with PRINT_ASSIST_AI_PROVIDER ('gemini' or 'anthropic').
+    Can be explicitly set with override, PRINT_ASSIST_AI_PROVIDER ('gemini' or 'anthropic').
     Otherwise auto-detects based on available API keys and model name, defaulting
     to 'anthropic' for backwards compatibility.
     """
     load_env_key()
-    p = os.environ.get("PRINT_ASSIST_AI_PROVIDER", "").strip().lower()
+    p = (override or os.environ.get("PRINT_ASSIST_AI_PROVIDER") or "").strip().lower()
     if p in ("gemini", "google"):
         return "gemini"
     if p in ("anthropic", "claude"):
@@ -85,17 +85,20 @@ def provider() -> str:
     return "anthropic"
 
 
-def model_name() -> str:
+def model_name(model_override: str | None = None, provider_override: str | None = None) -> str:
     load_env_key()
-    custom = (os.environ.get("PRINT_ASSIST_MODEL") or "").strip()
+    p = provider_override or provider()
+    custom = (model_override or os.environ.get("PRINT_ASSIST_MODEL") or "").strip()
     if custom:
-        return GEMINI_MODEL_ALIASES.get(custom.lower(), custom)
-    return DEFAULT_GEMINI_MODEL if provider() == "gemini" else DEFAULT_ANTHROPIC_MODEL
+        if p == "gemini":
+            return GEMINI_MODEL_ALIASES.get(custom.lower(), custom)
+        return custom
+    return DEFAULT_GEMINI_MODEL if p == "gemini" else DEFAULT_ANTHROPIC_MODEL
 
 
-def has_api_key() -> bool:
+def has_api_key(provider_override: str | None = None) -> bool:
     load_env_key()
-    p = provider()
+    p = provider_override or provider()
     if p == "gemini":
         return bool(os.environ.get("GEMINI_API_KEY"))
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -123,9 +126,9 @@ def make_gemini_client() -> Any:
     return genai.Client(api_key=key)
 
 
-def make_client() -> Any:
+def make_client(provider_override: str | None = None) -> Any:
     load_env_key()
-    p = provider()
+    p = provider_override or provider()
     if p == "gemini":
         return make_gemini_client()
     return make_anthropic_client()
