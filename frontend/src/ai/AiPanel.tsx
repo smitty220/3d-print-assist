@@ -41,8 +41,42 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
         <h2>AI assistant</h2>
         <span className="spacer" />
         <div className="seg sm" role="group" aria-label="AI mode">
-          <button aria-pressed={mode === 'mcp'} onClick={() => onMode('mcp')} title="Claude Code drives the app">Claude Code</button>
-          <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="Chat here, using the Claude API">API chat</button>
+          <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
+          <button aria-pressed={mode === 'mcp'} onClick={() => onMode('mcp')} title="Claude Code or MCP agent connects from terminal">MCP Agent</button>
+        </div>
+      </div>
+      <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 2 }}>
+          <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
+          <select
+            id="ai-provider-select"
+            value={status?.settings_provider || 'auto'}
+            onChange={(e) => {
+              onSettings?.({ ai_provider: e.target.value as 'auto' | 'gemini' | 'anthropic', ai_model: '' })
+              if (mode === 'mcp') onMode('api')
+            }}
+            style={{ fontSize: 12, padding: '3px 6px' }}
+          >
+            <option value="auto">Auto ({status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="anthropic">Anthropic Claude</option>
+          </select>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
+          <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
+          <select
+            id="ai-model-select"
+            value={status?.settings_model || status?.model || ''}
+            onChange={(e) => {
+              onSettings?.({ ai_model: e.target.value })
+              if (mode === 'mcp') onMode('api')
+            }}
+            style={{ fontSize: 12, padding: '3px 6px' }}
+          >
+            {(status?.available_models?.[status?.provider || 'gemini'] || []).map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
         </div>
       </div>
       {context && <div className="ctx">Context: {context}</div>}
@@ -63,10 +97,10 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
           <div className="log">
             {ai.length === 0 && (
               <div className="intro">
-                <p>Run Claude Code in the <code>3d-print-assist</code> folder while this app is open. It connects through
+                <p>Run Claude Code or your MCP client in the <code>3d-print-assist</code> folder while this app is open. It connects through
                   the <code>3d-print-assist</code> MCP server and designs with the same tools you have; you watch each change
                   land here and in the tree, and can edit alongside it.</p>
-                <p>Its changes are built and checked before they are kept, and it cannot touch a feature you locked.</p>
+                <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : 'Claude'}</b> in this window, switch to <b>In-App Chat</b> above.</p>
               </div>
             )}
             {ai.map((a, i) => (
@@ -83,34 +117,6 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
         </>
       ) : (
         <>
-          <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 2 }}>
-              <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
-              <select
-                id="ai-provider-select"
-                value={status?.settings_provider || 'auto'}
-                onChange={(e) => onSettings?.({ ai_provider: e.target.value as 'auto' | 'gemini' | 'anthropic', ai_model: '' })}
-                style={{ fontSize: 12, padding: '3px 6px' }}
-              >
-                <option value="auto">Auto ({status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
-                <option value="gemini">Google Gemini</option>
-                <option value="anthropic">Anthropic Claude</option>
-              </select>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
-              <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
-              <select
-                id="ai-model-select"
-                value={status?.settings_model || status?.model || ''}
-                onChange={(e) => onSettings?.({ ai_model: e.target.value })}
-                style={{ fontSize: 12, padding: '3px 6px' }}
-              >
-                {(status?.available_models?.[status?.provider || 'gemini'] || []).map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
           <div className="log">
             {!status?.key && (
               <div className="intro">
