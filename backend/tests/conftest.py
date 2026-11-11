@@ -1,4 +1,4 @@
-"""Shared test setup. No test may call the real Anthropic or Gemini API, and no test touches the user's designs folder."""
+"""Shared test setup. No test may call the real Anthropic or Gemini APIs, and no test touches the user's designs folder."""
 
 import pytest
 
@@ -17,6 +17,16 @@ def _no_real_api(monkeypatch):
 
     monkeypatch.setattr("print_assist.images._post", refuse_gemini)
     monkeypatch.setattr("print_assist.images.load_env_key", lambda: None)  # never read the user's backend/.env key
+
+    try:
+        from google import genai
+
+        def refuse_genai(*a, **k):
+            raise AssertionError("tests must not call the real Gemini API; pass a scripted client")
+
+        monkeypatch.setattr(genai, "Client", refuse_genai)
+    except ImportError:
+        pass
 
 
 @pytest.fixture(autouse=True)
