@@ -92,6 +92,7 @@ class Chat:
         self.running = False
         self.cancel = threading.Event()
         self.tokens = {"input": 0, "output": 0, "cache_read": 0}
+        self.gemini_interaction_id: str | None = None
         self._thread: threading.Thread | None = None
 
     def to_dict(self) -> dict:
@@ -101,6 +102,7 @@ class Chat:
         if self.running:
             raise RuntimeError("the AI is still working; stop it first")
         self.messages, self.log = [], []
+        self.gemini_interaction_id = None
 
     def send(self, text: str, client: Any, model: str | None = None, wait: bool = False) -> None:
         if self.running:
@@ -201,18 +203,27 @@ class Chat:
                 user_prompt = m["content"]
                 break
 
-        interaction = client.interactions.create(
-            model=model,
-            system_instruction=system_text,
-            input=user_prompt,
-            tools=interaction_tools,
-            timeout=45,
-        )
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "input": user_prompt,
+            "tools": interaction_tools,
+            "system_instruction": system_text,
+            "timeout": 45,
+        }
+        if self.gemini_interaction_id:
+            create_kwargs["previous_interaction_id"] = self.gemini_interaction_id
+
+        interaction = client.interactions.create(**create_kwargs)
+        if getattr(interaction, "id", None):
+            self.gemini_interaction_id = interaction.id
 
         for _ in range(MAX_TURNS):
             if self.cancel.is_set():
                 self.log.append(Entry("error", "Stopped."))
                 return
+
+            if getattr(interaction, "id", None):
+                self.gemini_interaction_id = interaction.id
 
             u = getattr(interaction, "usage", None)
             if u is not None:
@@ -264,15 +275,15 @@ class Chat:
 
                 if isinstance(content, list) and content and isinstance(content[0], dict) and content[0].get("type") == "image":
                     src = content[0].get("source", {})
-                    subcontent = [{"type": "image", "data": src.get("data", ""), "mime_type": src.get("media_type", "image/png")}]
+                    fn_result = [{"type": "image", "data": src.get("data", ""), "mime_type": src.get("media_type", "image/png")}]
                 else:
-                    subcontent = [{"type": "text", "text": str(content)}]
+                    fn_result = content if isinstance(content, str) else json.dumps(content)
 
                 results.append({
                     "type": "function_result",
                     "call_id": fc_id,
                     "name": fc_name,
-                    "result": subcontent,
+                    "result": fn_result,
                 })
 
             interaction = client.interactions.create(
@@ -283,5 +294,7 @@ class Chat:
                 system_instruction=system_text,
                 timeout=45,
             )
+            if getattr(interaction, "id", None):
+                self.gemini_interaction_id = interaction.id
 
         self.log.append(Entry("error", "Stopped: too many steps in one turn.", ok=False))
