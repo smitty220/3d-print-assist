@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
 
 GEMINI_MODEL_ALIASES = {
@@ -123,7 +123,16 @@ def make_gemini_client() -> Any:
         raise RuntimeError("No Gemini API key: set GEMINI_API_KEY in your shell or in backend/.env, then restart the backend")
     from google import genai
 
-    return genai.Client(api_key=key)
+    client = genai.Client(api_key=key)
+    try:
+        from google.genai._gaos.utils import RetryConfig
+
+        if hasattr(client, "interactions") and hasattr(client.interactions, "sdk_configuration"):
+            # Disable automatic long backoff sleeps on 429 so errors report immediately to the UI
+            client.interactions.sdk_configuration.retry_config = RetryConfig("none", None, False)
+    except Exception:
+        pass
+    return client
 
 
 def make_client(provider_override: str | None = None) -> Any:

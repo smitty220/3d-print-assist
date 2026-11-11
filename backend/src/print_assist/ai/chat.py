@@ -121,7 +121,14 @@ class Chat:
             else:
                 self._run_claude(client, model)
         except Exception as exc:  # noqa: BLE001 - API or unexpected failure: report it in the panel
-            self.log.append(Entry("error", f"{type(exc).__name__}: {exc}", ok=False))
+            msg = str(exc)
+            if "limit: 0" in msg or "too_many_requests" in msg:
+                msg = (
+                    f"Rate limit for {model}: this model is restricted or has a 0 token/min limit on the Free Tier. "
+                    "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
+                    "or upgrade your Google AI Studio tier."
+                )
+            self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
         finally:
             self.running = False
 
@@ -199,6 +206,7 @@ class Chat:
             system_instruction=system_text,
             input=user_prompt,
             tools=interaction_tools,
+            timeout=45,
         )
 
         for _ in range(MAX_TURNS):
@@ -273,6 +281,7 @@ class Chat:
                 input=results,
                 tools=interaction_tools,
                 system_instruction=system_text,
+                timeout=45,
             )
 
         self.log.append(Entry("error", "Stopped: too many steps in one turn.", ok=False))

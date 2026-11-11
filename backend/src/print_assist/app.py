@@ -967,9 +967,11 @@ def chat():
 
 AVAILABLE_MODELS = {
     "gemini": [
-        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash (Fast)"},
-        {"id": "gemini-4-argon", "label": "Gemini 4.0 Argon (Reasoning)"},
-        {"id": "gemini-3.5-flash-lite", "label": "Gemini 3.5 Flash Lite"},
+        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (Fast, Free Tier)"},
+        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Free Tier)"},
+        {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
+        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+        {"id": "gemini-4-argon", "label": "Gemini 4.0 Argon (Reasoning, Paid Tier)"},
     ],
     "anthropic": [
         {"id": "claude-opus-5-5", "label": "Claude Opus 5.5"},

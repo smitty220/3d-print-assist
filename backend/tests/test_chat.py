@@ -183,7 +183,7 @@ def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
     env.write_text("GEMINI_API_KEY=gm-test-1\n", encoding="utf-8")
     ai_client.load_env_key(env)
     assert ai_client.provider() == "gemini"
-    assert ai_client.model_name() == "gemini-3.8-flash"
+    assert ai_client.model_name() == "gemini-2.5-flash"
     assert ai_client.has_api_key() is True
 
     # Explicit PRINT_ASSIST_AI_PROVIDER override
