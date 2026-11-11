@@ -267,7 +267,18 @@ export interface Activity { actor: string; text: string; at: number; ok: boolean
 
 export interface ChatEntry { role: 'user' | 'assistant' | 'tool' | 'error'; text: string; tool: string | null; ok: boolean; at: number }
 
-export interface AiStatus { model: string; key: boolean; mode: 'mcp' | 'api'; chat: { running: boolean; log: ChatEntry[]; tokens: Record<string, number> } }
+export interface ModelOption { id: string; label: string }
+
+export interface AiStatus {
+  model: string
+  key: boolean
+  mode: 'mcp' | 'api'
+  provider?: string
+  settings_provider?: string
+  settings_model?: string
+  available_models?: Record<string, ModelOption[]>
+  chat: { running: boolean; log: ChatEntry[]; tokens: Record<string, number> }
+}
 
 export interface FontInfo { name: string; styles: string[]; license: string; source: string }
 
@@ -276,7 +287,13 @@ export interface Printer { id: string; name: string; bed: Vec3; nozzles: { dia: 
 export interface Project {
   slug: string
   name: string
-  settings: { update_mode: 'manual' | 'auto'; printer: string; ai_mode: 'mcp' | 'api' }
+  settings: {
+    update_mode: 'manual' | 'auto'
+    printer: string
+    ai_mode: 'mcp' | 'api'
+    ai_provider?: 'auto' | 'gemini' | 'anthropic'
+    ai_model?: string
+  }
   design: { sketches: (Sketch & { report?: SolveReport | null })[] }
 }
 

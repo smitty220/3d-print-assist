@@ -107,3 +107,118 @@ def test_env_file_key(tmp_path, monkeypatch):
     env.write_text("ANTHROPIC_API_KEY=sk-test-2\n", encoding="utf-8")  # edited file wins without a restart
     ai_client.load_env_key(env)
     assert ai_client.os.environ["ANTHROPIC_API_KEY"] == "sk-test-2"
+
+
+class ScriptedGemini:
+    """Mock for Gemini interactions client."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.calls = []
+        self.interactions = self
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        step_fn = self.script.pop(0)
+        steps, status = step_fn(kw.get("input"))
+        return NS(
+            id=f"int_{len(self.calls)}",
+            status=status,
+            steps=steps,
+            output_text=None,
+            usage=NS(total_input_tokens=1000, total_output_tokens=200, total_cached_tokens=800),
+        )
+
+
+def test_gemini_chat_designs_through_the_shared_tools_and_sees_the_result(client):
+    client.get("/api/project")  # open a design
+
+    def build(inp):
+        return [
+            NS(type="model_output", content=[NS(type="text", text="Adding a plate.")]),
+            NS(type="function_call", id="fc1", name="apply_changes", arguments={"ops": [{"op": "add_feature", "kind": "plate"}], "message": "plate"}),
+        ], "requires_action"
+
+    def look(inp):
+        assert any(r.get("call_id") == "fc1" for r in inp)
+        return [
+            NS(type="function_call", id="fc2", name="render_preview", arguments={"view": "iso", "size": 128}),
+        ], "requires_action"
+
+    def done(inp):
+        assert any(r.get("call_id") == "fc2" for r in inp)
+        return [
+            NS(type="model_output", content=[NS(type="text", text="A 60 × 40 × 5 mm plate.")]),
+        ], "completed"
+
+    chat = Chat()
+    gemini = ScriptedGemini([build, look, done])
+    chat.send("make a plate with gemini", gemini, model="gemini-3.8-flash", wait=True)
+    roles = [(e.role, e.tool) for e in chat.log]
+    assert roles == [("user", None), ("assistant", None), ("tool", "apply_changes"), ("tool", "render_preview"), ("assistant", None)]
+    assert not chat.running and chat.tokens == {"input": 3000, "output": 600, "cache_read": 2400}
+    first = gemini.calls[0]
+    assert "get_guide" not in {t["name"] for t in first["tools"]}
+    assert first["model"] == "gemini-3.8-flash"
+    acts = client.get("/api/activity").json()
+    assert acts[-1]["actor"] == "gemini" and client.get("/api/tree").json()["features"][0]["status"] == "ok"
+
+
+def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
+    from print_assist.ai import client as ai_client
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("PRINT_ASSIST_AI_PROVIDER", raising=False)
+    monkeypatch.delenv("PRINT_ASSIST_MODEL", raising=False)
+    monkeypatch.setattr(ai_client.load_env_key, "__defaults__", (tmp_path / "no.env",))
+    monkeypatch.setattr(ai_client, "_SHELL_ENV", set())
+
+    # Neither key -> default anthropic
+    assert ai_client.provider() == "anthropic"
+    assert ai_client.model_name() == "claude-opus-5-5"
+
+    # Only GEMINI_API_KEY set -> auto-detects gemini
+    env = tmp_path / ".env"
+    env.write_text("GEMINI_API_KEY=gm-test-1\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.provider() == "gemini"
+    assert ai_client.model_name() == "gemini-2.5-flash"
+    assert ai_client.has_api_key() is True
+
+    # Explicit PRINT_ASSIST_AI_PROVIDER override
+    env.write_text("GEMINI_API_KEY=gm-test-1\nANTHROPIC_API_KEY=sk-test-1\nPRINT_ASSIST_AI_PROVIDER=gemini\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.provider() == "gemini"
+
+    env.write_text("GEMINI_API_KEY=gm-test-1\nANTHROPIC_API_KEY=sk-test-1\nPRINT_ASSIST_AI_PROVIDER=anthropic\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.provider() == "anthropic"
+
+    # Gemini 4 model alias resolution
+    monkeypatch.delenv("PRINT_ASSIST_AI_PROVIDER", raising=False)
+    env.write_text("GEMINI_API_KEY=gm-test-1\nPRINT_ASSIST_MODEL=gemini-4.0\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.model_name() == "gemini-4-argon"
+    assert ai_client.provider() == "gemini"
+
+    env.write_text("GEMINI_API_KEY=gm-test-1\nPRINT_ASSIST_MODEL=gemini-4-argon\n", encoding="utf-8")
+    ai_client.load_env_key(env)
+    assert ai_client.model_name() == "gemini-4-argon"
+
+
+def test_gemini_follow_up_message_continues_the_conversation(client):
+    client.get("/api/project")
+
+    def reply(inp):
+        return [NS(type="model_output", content=[NS(type="text", text="ok")])], "completed"
+
+    chat = Chat()
+    gemini = ScriptedGemini([reply, reply, reply])
+    chat.send("first", gemini, model="gemini-2.5-flash", wait=True)
+    chat.send("second", gemini, model="gemini-2.5-flash", wait=True)
+    assert gemini.calls[0]["previous_interaction_id"] is None
+    assert gemini.calls[1]["previous_interaction_id"] == "int_1"  # the follow-up sees the first exchange
+    chat.reset()
+    chat.send("fresh", gemini, model="gemini-2.5-flash", wait=True)
+    assert gemini.calls[2]["previous_interaction_id"] is None

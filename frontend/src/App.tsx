@@ -540,6 +540,7 @@ export default function App() {
         <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onMode={(m) => { run(() => api.settings({ ai_mode: m })).then(() => api.aiStatus().then(setAi)) }}
+          onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
           onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
           onCancel={() => { run(api.chatCancel) }} onReset={() => { run(api.chatReset).then(() => api.aiStatus().then(setAi)) }}
           onRevert={() => { run(api.revertAi).then((r) => { if (r) setTree(r.tree) }) }} />
