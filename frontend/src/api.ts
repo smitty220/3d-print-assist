@@ -186,7 +186,7 @@ export interface ReferenceInfo extends Reference {
   parts?: { name: string; triangles: number; size: number[]; volume: number | null }[]
 }
 
-export interface LayoutObject { id: string; name: string; bodies: string[]; solids: number; box: number[] }
+export interface LayoutObject { id: string; name: string; bodies: string[]; solids: number; box: number[]; copy?: number }
 export interface LayoutReport {
   bed: [number, number] | null
   plates: { plate: number; name: string; tower: [number, number] | null; objects: LayoutObject[] }[]
@@ -198,7 +198,7 @@ export interface PlateMesh {
   bed: [number, number]
   tower: [number, number] | null
   tower_size: number
-  objects: { id: string; name: string; box: number[]; parts: { body: string; color: string | null; positions: Float32Array; indices: Uint32Array }[] }[]
+  objects: { id: string; name: string; copy: number; box: number[]; parts: { body: string; color: string | null; positions: Float32Array; indices: Uint32Array }[] }[]
 }
 
 export interface ReferenceMesh { id: string; color: string; parts: { name: string; positions: Float32Array; indices: Uint32Array }[] }
@@ -366,7 +366,7 @@ export const api = {
   },
   layout: () => get<LayoutReport>('/layout'),
   plateMesh: async (n: number): Promise<PlateMesh> => {
-    type Raw = Omit<PlateMesh, 'objects'> & { objects: { id: string; name: string; box: number[]; parts: { body: string; color: string | null; positions: string; indices: string }[] }[] }
+    type Raw = Omit<PlateMesh, 'objects'> & { objects: { id: string; name: string; copy: number; box: number[]; parts: { body: string; color: string | null; positions: string; indices: string }[] }[] }
     const r = await get<Raw>(`/layout/plates/${n}/mesh`)
     return { ...r, objects: r.objects.map((o) => ({ ...o, parts: o.parts.map((p) => ({ ...p, positions: decode(p.positions, Float32Array), indices: decode(p.indices, Uint32Array) })) })) }
   },

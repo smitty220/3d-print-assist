@@ -5,6 +5,8 @@ An item takes the solids of some bodies whose bounding-box centre lies inside it
 (all of them without one). Its solids keep their places relative to each other, so a piece in several colours stays
 together; they are turned about the item's centre (X, then Y, then Z) and moved so the item's bounding box sits on
 the bed with its front-left corner at (x, y) of its plate. Every solid of the model must be in exactly one item.
+An item with `copies` prints that many of itself, in rows of `columns` from (x, y) toward +X, rows toward +Y,
+`spacing` apart; each copy is an object of its own.
 """
 
 from __future__ import annotations
@@ -27,6 +29,11 @@ class Placed:
     item: PrintItem
     parts: list[tuple[str, Shape]]
     box: tuple[float, float, float, float, float, float]  # xmin, ymin, zmin, xmax, ymax, zmax on the plate
+    copy: int = 1  # which copy of the item this is, from 1
+
+    @property
+    def label(self) -> str:
+        return f"{self.item.id} {self.item.name}" + (f" (copy {self.copy})" if self.item.copies > 1 else "")
 
 
 @dataclass
@@ -85,14 +92,19 @@ def resolve(design: Design, parts: dict[str, Shape], bed: tuple[float, float]) -
                 if deg:
                     s = s.rotate(Axis(centre, axis), deg)
             turned.append((bid, s))
-        x0, y0, z0, *_ = _box([s for _, s in turned])
-        move = Location((item.x - x0, item.y - y0, -z0))
-        moved = [(bid, s.moved(move)) for bid, s in turned]
-        box = tuple(_r(v) for v in _box([s for _, s in moved]))
-        out.placed.append(Placed(item, moved, box))
-        if box[0] < -0.01 or box[1] < -0.01 or box[3] > bed[0] + 0.01 or box[4] > bed[1] + 0.01:
-            out.problems.append(f"{item.id} {item.name}: off plate {item.plate} (spans x {box[0]}..{box[3]}, "
-                                f"y {box[1]}..{box[4]} on a {bed[0]:g} x {bed[1]:g} bed)")
+        x0, y0, z0, x1, y1, _ = _box([s for _, s in turned])
+        cols = item.columns or item.copies
+        for k in range(item.copies):
+            row, col = divmod(k, cols)
+            move = Location((item.x + col * (x1 - x0 + item.spacing) - x0,
+                             item.y + row * (y1 - y0 + item.spacing) - y0, -z0))
+            moved = [(bid, s.moved(move)) for bid, s in turned]
+            box = tuple(_r(v) for v in _box([s for _, s in moved]))
+            placed = Placed(item, moved, box, k + 1)
+            out.placed.append(placed)
+            if box[0] < -0.01 or box[1] < -0.01 or box[3] > bed[0] + 0.01 or box[4] > bed[1] + 0.01:
+                out.problems.append(f"{placed.label}: off plate {item.plate} (spans x {box[0]}..{box[3]}, "
+                                    f"y {box[1]}..{box[4]} on a {bed[0]:g} x {bed[1]:g} bed)")
     for bid, ss in by_body.items():
         for i, s in enumerate(ss):
             if (bid, i) not in taken:
@@ -114,11 +126,11 @@ def _overlaps(placed: list[Placed], design: Design) -> list[str]:
     for i, a in enumerate(placed):
         for b in placed[i + 1:]:
             if a.item.plate == b.item.plate and _hit(a.box, b.box):
-                out.append(f"{a.item.id} {a.item.name} and {b.item.id} {b.item.name} overlap on plate {a.item.plate}")
+                out.append(f"{a.label} and {b.label} overlap on plate {a.item.plate}")
         n = a.item.plate
         tower = design.plates[n - 1].tower if n <= len(design.plates) else None
         if tower and _hit(a.box, (tower[0], tower[1], 0, tower[0] + TOWER, tower[1] + TOWER, 0)):
-            out.append(f"{a.item.id} {a.item.name} is where plate {n}'s purge tower goes")
+            out.append(f"{a.label} is where plate {n}'s purge tower goes")
     return out
 
 
@@ -142,7 +154,8 @@ def report(layout: Layout, design: Design) -> dict:
         pl = design.plates[n - 1] if n <= len(design.plates) else None
         plates.append({"plate": n, "name": (pl.name if pl else "") or f"Plate {n}", "tower": pl.tower if pl else None,
                        "objects": [{"id": p.item.id, "name": p.item.name, "bodies": sorted({b for b, _ in p.parts}),
-                                    "solids": len(p.parts), "box": list(p.box)}
+                                    "solids": len(p.parts), "box": list(p.box),
+                                    **({"copy": p.copy} if p.item.copies > 1 else {})}
                                    for p in layout.placed if p.item.plate == n]})
     return {"plates": plates, "problems": layout.problems, "unplaced": layout.unplaced[:60],
             "more_unplaced": max(0, len(layout.unplaced) - 60)}

@@ -72,8 +72,8 @@ export function PlatesPane({ tree, plate, onPlate, onError }: Props) {
           <h2>On plate {shown.plate}</h2>
           <ul className="plate-objs">
             {shown.objects.map((o) => (
-              <li key={o.id}>
-                <b>{o.name}</b>
+              <li key={`${o.id}.${o.copy ?? 1}`}>
+                <b>{o.name}{o.copy ? ` #${o.copy}` : ''}</b>
                 <span className="nm">{(o.box[3] - o.box[0]).toFixed(0)} × {(o.box[4] - o.box[1]).toFixed(0)} × {(o.box[5] - o.box[2]).toFixed(1)} mm</span>
               </li>
             ))}

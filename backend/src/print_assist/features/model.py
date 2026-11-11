@@ -118,6 +118,9 @@ class PrintItem(BaseModel):
     rotate: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])  # degrees about X, then Y, then Z
     x: float = 0.0  # where the item's box's front-left corner sits on the plate, mm
     y: float = 0.0
+    copies: int = Field(default=1, ge=1, le=500)  # how many to print, laid out in rows from (x, y) toward +X then +Y
+    columns: int | None = Field(default=None, ge=1)  # copies per row; None: all in one row
+    spacing: float = Field(default=2.0, ge=0)  # mm between neighbouring copies
     settings: dict[str, str] = Field(default_factory=dict)  # slicer settings for this object only ("sparse_infill_density": "8%")
 
 

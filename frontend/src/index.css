@@ -322,6 +322,7 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .concept .cbody { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 0; }
 .concept .cdraw { background: #f7f7f4; display: flex; align-items: center; justify-content: center; padding: 12px; min-height: 0; overflow: auto; }
 .concept .cdraw img { width: 100%; height: 100%; object-fit: contain; }
+.concept .cdraw:fullscreen { padding: 0; background: #f7f7f4; }
 .concept .ctext { padding: 12px 14px; overflow: auto; border-left: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 8px; }
 .concept .ctext h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 6px 0 0; }
 .concept .ctext ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.45; }

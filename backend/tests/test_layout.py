@@ -163,3 +163,34 @@ def test_objects_carry_their_own_slicer_settings(tmp_path):
     with pytest.raises(BambuError, match="infill_densty is not a"):
         write_project([], fs, A1, t, tmp_path / "x.3mf", "X", None,
                       [Obj("Typo", [Part("T", box(0, 0, 0, 5, 5, 5), 1)], 1, {"infill_densty": "8%"})])
+
+
+def test_copies_lay_out_in_rows_each_its_own_object():
+    d, parts = model()
+    d.layout = [PrintItem(id="P1", name="Block", bodies=["B1", "B2"], x=5, y=5, copies=5, columns=2, spacing=3),
+                PrintItem(id="P2", name="Cube", bodies=["B3"], within=[40, -1, -1, 80, 10, 10], plate=2)]
+    lay = resolve(d, parts, BED)
+    blocks = [p for p in lay.placed if p.item.id == "P1"]
+    # The block is 10 x 20 (x 0..10, y 0..20); copy k sits at column k % 2, row k // 2: x 5 + col * (10 + 3),
+    # y 5 + row * (20 + 3).
+    assert [p.box[:2] for p in blocks] == [(5, 5), (18, 5), (5, 28), (18, 28), (5, 51)]
+    assert [p.copy for p in blocks] == [1, 2, 3, 4, 5] and all(len(p.parts) == 2 for p in blocks)
+    assert not lay.problems
+
+
+def test_copies_that_run_off_the_plate_are_problems():
+    d, parts = model()
+    d.layout = [PrintItem(id="P1", name="Block", bodies=["B1", "B2"], x=230, y=0, copies=3, spacing=0.5),
+                PrintItem(id="P2", name="Cube", bodies=["B3"], plate=2)]
+    lay = resolve(d, parts, BED)
+    # Copies at x 230, 240.5, 251: the third spans 251..261 on a 256 bed. They are 0.5 apart, under the 1 mm gap.
+    assert any("P1 Block (copy 3): off plate 1" in t for t in lay.problems)
+    assert any("P1 Block (copy 1) and P1 Block (copy 2) overlap" in t for t in lay.problems)
+
+
+def test_set_print_item_takes_copies():
+    d, _ = model()
+    apply(d, {"op": "set_print_item", "bodies": ["B1"], "copies": 3, "columns": 2, "spacing": 4}, "ai")
+    assert (d.layout[0].copies, d.layout[0].columns, d.layout[0].spacing) == (3, 2, 4)
+    with pytest.raises(OpError):
+        apply(d, {"op": "set_print_item", "id": "P1", "copies": 0}, "ai")

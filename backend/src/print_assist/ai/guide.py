@@ -74,8 +74,10 @@ front-left corner at (x, y). An item's bodies print as one object with a part ea
 divider and its raised letter) stays together. With a layout, the 3MF export is a Bambu project with those plates; \
 every solid must be in exactly one item.
 - {"op": "set_print_item", "name": "Lid", "bodies": ["B2"], "within": [0, 0, 70, 60, 110, 90], "plate": 2, \
-"rotate": [180, 0, 0], "x": 4, "y": 140, "settings": {"sparse_infill_density": "8%"}}  (id "P3" to change one; \
-settings: the printer's slicer settings for that object only), {"op": "delete_print_item", "id": "P3"}
+"rotate": [180, 0, 0], "x": 4, "y": 140, "copies": 4, "columns": 2, "spacing": 3, "settings": \
+{"sparse_infill_density": "8%"}}  (id "P3" to change one; copies: how many of it print, in rows of columns (default \
+all in one row) from (x, y) toward +X, rows toward +Y, spacing mm apart, each its own object; settings: the \
+printer's slicer settings for that object only), {"op": "delete_print_item", "id": "P3"}
 - {"op": "set_plate", "plate": 2, "name": "Ivory", "tower": [200, 10]}  (tower: where the purge tower goes, kept clear; \
 null for the printer's default), {"op": "delete_plate", "plate": 4}
 Plan the plates in a picture first: group by colour so big parts print without colour changes, lay parts so they \

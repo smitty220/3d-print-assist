@@ -379,7 +379,8 @@ class Workspace:
                     for bid, shape in p.parts:
                         pts, tris = triangles(shape, 0.05, 0.3)
                         parts.append({"body": bid, "positions": b64(pts.astype("<f4")), "indices": b64(tris.astype("<u4"))})
-                    objs.append({"id": p.item.id, "name": p.item.name, "box": list(p.box), "parts": parts})
+                    objs.append({"id": p.item.id, "name": p.item.name, "copy": p.copy, "box": list(p.box),
+                                 "parts": parts})
                 meshes[n] = objs
             bed = self.project.printer.bed
             pl = self.design.plates[n - 1] if n <= len(self.design.plates) else None

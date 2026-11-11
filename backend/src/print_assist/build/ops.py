@@ -459,12 +459,12 @@ def _delete_colorway(d: Design, op: dict, actor: str):
 
 # ---------------------------------------------------------------- print layout
 
-ITEM_FIELDS = ("name", "bodies", "within", "plate", "rotate", "x", "y", "settings")
+ITEM_FIELDS = ("name", "bodies", "within", "plate", "rotate", "x", "y", "copies", "columns", "spacing", "settings")
 
 
 def _set_print_item(d: Design, op: dict, actor: str):
     """Add or change an object of the print layout: which bodies' solids it takes (`within` a box of the assembled
-    model), how it is turned and where it sits on which plate."""
+    model), how it is turned, where it sits on which plate and how many copies print."""
     pid = op.get("id") or _next("P", [p.id for p in d.layout])
     old = next((p for p in d.layout if p.id == pid), None)
     data = old.model_dump() if old else {"id": pid, "bodies": []}
