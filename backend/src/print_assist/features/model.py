@@ -98,6 +98,32 @@ class Colorway(BaseModel):
     names: dict[int, str] = Field(default_factory=dict)  # slot -> filament name ("Galaxy Black")
 
 
+class PrintPlate(BaseModel):
+    """A plate of the print layout (Bambu Studio plate N is the Nth in the list)."""
+
+    name: str = ""
+    tower: list[float] | None = None  # [x, y] of the purge tower on the plate, mm; None: the printer template's
+
+
+class PrintItem(BaseModel):
+    """One object of the print layout: the solids of some bodies that lie inside a box of the assembled model,
+    turned to lie on the bed and set down on a plate. It prints as one object with a part per body, so a piece in
+    several colours (a divider and its raised letter) stays together."""
+
+    id: str  # "P1"
+    name: str = ""
+    bodies: list[str]
+    within: list[float] | None = None  # [xmin, ymin, zmin, xmax, ymax, zmax]: solids whose box centre is inside
+    plate: int = Field(default=1, ge=1)
+    rotate: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])  # degrees about X, then Y, then Z
+    x: float = 0.0  # where the item's box's front-left corner sits on the plate, mm
+    y: float = 0.0
+    copies: int = Field(default=1, ge=1, le=500)  # how many to print, laid out in rows from (x, y) toward +X then +Y
+    columns: int | None = Field(default=None, ge=1)  # copies per row; None: all in one row
+    spacing: float = Field(default=2.0, ge=0)  # mm between neighbouring copies
+    settings: dict[str, str] = Field(default_factory=dict)  # slicer settings for this object only ("sparse_infill_density": "8%")
+
+
 def _default_bodies() -> list[Body]:
     return [Body(id="B1", name="Body")]
 
@@ -112,6 +138,8 @@ class Design(BaseModel):
     variants: list[Variant] = Field(default_factory=list)
     colorways: list[Colorway] = Field(default_factory=list)
     references: list[Reference] = Field(default_factory=list)
+    plates: list[PrintPlate] = Field(default_factory=list)  # names and towers; the layout may use more plates
+    layout: list[PrintItem] = Field(default_factory=list)  # empty: the model is exported as assembled
 
     def filament(self, slot: int | None) -> Filament | None:
         return next((f for f in self.filaments if f.slot == slot), None)

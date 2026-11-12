@@ -144,3 +144,31 @@ def test_render_faces_and_revert_an_ai_change(client):
     body = client.post("/api/revert-ai").json()
     assert body["reverted"] == "AI: thicker"
     assert client.get("/api/part").json()["volume"] < 60 * 40 * 6
+
+
+def test_print_layout_is_worked_out_on_request(client):
+    import base64
+
+    import numpy as np
+
+    client.post("/api/features", json={"kind": "plate", "params": {"length": 60, "width": 40, "thickness": 10,
+                                                                    "corner_radius": 0.0}})
+    tree = client.post("/api/update").json()
+    assert tree["print_layout"] == {"items": 0, "plates": 0}
+    rep = client.get("/api/layout").json()
+    assert rep["plates"] == [] and rep["unplaced"][0]["size"] == [60, 40, 10]
+    r = client.post("/api/ops", json={"ops": [
+        {"op": "set_plate", "plate": 2, "name": "Second", "tower": [200, 200]},
+        {"op": "set_print_item", "name": "Plate on its side", "bodies": ["B1"], "plate": 2, "rotate": [90, 0, 0],
+         "x": 10, "y": 20}]})
+    assert r.json()["tree"]["print_layout"] == {"items": 1, "plates": 2}
+    rep = client.get("/api/layout").json()
+    assert [p["name"] for p in rep["plates"]] == ["Plate 1", "Second"] and rep["problems"] == []
+    # 90 degrees about X stands the 60 x 40 x 10 plate on its long edge: 60 x 10 x 40, corner at (10, 20).
+    assert rep["plates"][1]["objects"][0]["box"] == [10, 20, 0, 70, 30, 40]
+    m = client.get("/api/layout/plates/2/mesh").json()
+    assert m["bed"] == [256, 256] and m["tower"] == [200, 200] and m["tower_size"] == 35
+    (part,) = m["objects"][0]["parts"]
+    pts = np.frombuffer(base64.b64decode(part["positions"]), dtype="<f4").reshape(-1, 3)
+    assert pts.min(0) == pytest.approx([10, 20, 0], abs=1e-4) and pts.max(0) == pytest.approx([70, 30, 40], abs=1e-4)
+    assert client.get("/api/layout/plates/1/mesh").json()["objects"] == []

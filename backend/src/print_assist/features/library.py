@@ -709,6 +709,62 @@ class Combine(Feature):
         return FeatureOutput("replace", result, bodies={} if p["keep_tool"] else {tool: None}, new_role="combined")
 
 
+class Move(Feature):
+    kind = "move"
+    label = "Move / rotate"
+    group = "Bodies"
+    summary = ("Turn the body about any axis (a point on it and its direction, or a picked straight edge or circular "
+               "edge's centre line), then move it along X, Y and Z. With a body in 'Copy into' this body stays and the "
+               "moved copy goes there (\"new\" makes one). The moved faces are named moved.")
+    params = (
+        P("angle", "Angle", "angle", 0.0, -360.0, 360.0, help="degrees about the axis, right-handed"),
+        P("axis_x", "Axis point X", "length", 0.0, -2000.0, 2000.0, help="a point the axis passes through"),
+        P("axis_y", "Axis point Y", "length", 0.0, -2000.0, 2000.0),
+        P("axis_z", "Axis point Z", "length", 0.0, -2000.0, 2000.0),
+        P("dir_x", "Axis direction X", "length", 0.0, -1000.0, 1000.0, help="the way the axis points; any length"),
+        P("dir_y", "Axis direction Y", "length", 0.0, -1000.0, 1000.0),
+        P("dir_z", "Axis direction Z", "length", 1.0, -1000.0, 1000.0),
+        P("move_x", "Move X", "length", 0.0, -2000.0, 2000.0, help="after the turn"),
+        P("move_y", "Move Y", "length", 0.0, -2000.0, 2000.0),
+        P("move_z", "Move Z", "length", 0.0, -2000.0, 2000.0),
+        P("into", "Copy into", "text", "", help="empty: move this body; a body: leave this one and put the copy there"),
+    )
+
+    def _axis(self, ctx, p) -> Axis:
+        if ctx.edge_picks:
+            from .design import attribute, find_picked_edges
+
+            edges = find_picked_edges(ctx.part, attribute(ctx.part, ctx.outputs), ctx.edge_picks[:1])
+            if not edges:
+                raise FeatureError("the picked axis edge is no longer on the part")
+            e = edges[0]
+            if e.geom_type == GeomType.LINE:
+                return Axis(e.position_at(0), e.tangent_at(0))
+            if e.geom_type == GeomType.CIRCLE:
+                return Axis(e.arc_center, e.normal())
+            raise FeatureError("pick a straight edge or a circular edge for the axis")
+        d = Vector(p["dir_x"], p["dir_y"], p["dir_z"])
+        if d.length < 1e-9:
+            raise FeatureError("the axis direction is zero; give it a direction such as 0, 0, 1")
+        return Axis((p["axis_x"], p["axis_y"], p["axis_z"]), (d.X, d.Y, d.Z))
+
+    def build(self, ctx, p, refs):
+        if ctx.part is None:
+            raise FeatureError("this body has nothing in it yet")
+        moved = ctx.part
+        if p["angle"]:
+            moved = moved.rotate(self._axis(ctx, p), p["angle"])
+        if p["move_x"] or p["move_y"] or p["move_z"]:
+            moved = moved.translate((p["move_x"], p["move_y"], p["move_z"]))
+        info = {"angle": p["angle"]}
+        if not p["into"]:
+            return FeatureOutput("replace", moved, info=info, new_role="moved")
+        into = ctx.other_body(p["into"], "the copy")
+        held = ctx.parts.get(into)
+        return FeatureOutput("none", None, info=info, bodies={into: moved if held is None else held + moved},
+                             new_role="moved")
+
+
 # ---------------------------------------------------------------- modify
 
 
@@ -812,7 +868,7 @@ class Chamfer(_EdgeOp):
 
 FEATURES: dict[str, Feature] = {
     cls.kind: cls()
-    for cls in (Extrude, Revolve, Import, TextFeature, Shell, Fillet, Chamfer, Split, Combine, Plate, ProfilePlate, ProfileCut, Pad,
+    for cls in (Extrude, Revolve, Import, TextFeature, Shell, Fillet, Chamfer, Split, Combine, Move, Plate, ProfilePlate, ProfileCut, Pad,
                 SketchPocket)
 }
 

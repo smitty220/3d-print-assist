@@ -40,7 +40,8 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - `./dev.sh` starts the backend (:8010) and frontend (:5183); cad-assist uses 8000 / 5173, so both can run.
 - Tests: `cd backend && uv run pytest`; `cd frontend && npm run build && npm run lint && npm test`.
 - Designs live in `PRINT_ASSIST_DATA` (default `~/Projects/3DPrinting/designs`).
-- AI API key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` in `backend/.env` (git-ignored). Provider can be selected via `PRINT_ASSIST_AI_PROVIDER=gemini|anthropic` or auto-detected from available keys; default models are `claude-opus-5-5` and `gemini-3.8-flash`.
+- AI chat key (optional; Claude Code over MCP is the preferred mode): `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` in `backend/.env` (git-ignored). The provider and model are picked in the AI panel, or set with `PRINT_ASSIST_AI_PROVIDER=gemini|anthropic` / `PRINT_ASSIST_MODEL`; otherwise auto-detected from the keys (Claude if both). Defaults: `claude-opus-5-5`, `gemini-2.5-flash`.
+- Image generation: `GEMINI_API_KEY` in `backend/.env` (pay-per-image, with a spend cap set in AI Studio).
 
 ## Status
 - M1 done (2026-10-14): parameters and formulas, incremental build engine with update states (manual / auto, rollback), ops, Extrude / Revolve / Shell / Text / Fillet / Chamfer, sketch tools with formula dimensions, export (3MF / STL / STEP), renderer, MCP server, API chat, the full UI (tree, toolbars, edit dialogs, AI panel, Color & Export), end-to-end vase test.
@@ -53,8 +54,23 @@ A general-purpose parametric CAD app for 3D printing that the user and the AI ed
 - **Import** (the `import` feature) is STEP only: an exact solid in a body of its own.
 - Big meshes must stay fast: the renderer rasterises small triangles in vectorised batches and draws edges in one pass; `attribute()` names untouched faces by hash; `mesh_shape` meshes the whole shape once and reads each face's triangulation.
 
+## Generated images
+- `images.py`, `/api/images`, MCP `generate_image` / `list_images` / `look_at_image`: a prompt (and earlier images to
+  vary) goes to Google's Gemini image models (Interactions API; quality draft / standard / best picks the model); the
+  picture and a JSON record of its prompt are kept in the design's `images/` folder as I1, I2, ... A concept SVG shows
+  one with `<image href="images/I3.png">`, inlined as a data URI when the concept is served or rendered.
+- Tests never call Gemini (`conftest.py` replaces `images._post` and stops `backend/.env` being read).
+
 ## Bambu Studio export
 - A 3MF export is a Bambu Studio project when the printer profile names a `bambu_template` (`printers/bambu/*.project_settings.config`, saved by Bambu Studio for that printer): one object, a part per body with its `extruder` (= palette slot), the template's settings resized to the palette (`export/bambu.py`). Project filament N is palette slot N.
+- **Print layout** (`Design.layout` / `Design.plates`, `export/layout.py`; ops `set_print_item`, `set_plate`; MCP
+  `print_layout`, render views `plateN` / `plateN-top`): items take the solids of some bodies inside a box of the
+  assembled model, turn them and set them on a plate. With a layout the Bambu export is one object per item (a part per
+  body, so multi-colour pieces stay together) on its plate; plate N sits where Bambu Studio puts it (ceil(sqrt(n))
+  columns, 1.2 bed sizes apart, rows toward -Y) and each plate gets its own purge-tower position.
+- **Plates tab** (`frontend/src/plates/PlatesPane.tsx`, `Viewer.setPlateMode` / `setPlate`): the layout is resolved only
+  when the tab asks (`/api/layout`, `/api/layout/plates/{n}/mesh`), cached in the workspace until the part, layout or
+  printer changes. The tab shows and exports the plates; the arrangement is changed through ops (by asking Claude).
 - Per-filament settings come from the template filament with the same material; a material the template lacks is an export error. To support PETG etc., or to change the default process settings, save a Bambu Studio project for that printer with those filaments and copy its `Metadata/project_settings.config` over the template.
 - The A1 template came from a MakerWorld project the user re-saved for their A1 (its process tweaks: 3 walls, gyroid, no brim, back seam). Bambu Studio is not installed on this Mac, so the format is checked by `tests/test_bambu.py` and by opening exports in Bambu Studio by hand.
 

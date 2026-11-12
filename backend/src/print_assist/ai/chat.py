@@ -109,8 +109,8 @@ class Chat:
         self.running = False
         self.cancel = threading.Event()
         self.tokens = {"input": 0, "output": 0, "cache_read": 0}
-        self.gemini_interaction_id: str | None = None
         self._thread: threading.Thread | None = None
+        self._gemini_last: str | None = None  # Gemini keeps the conversation server side; continue from here
 
     def to_dict(self) -> dict:
         return {"running": self.running, "log": [asdict(e) for e in self.log], "tokens": dict(self.tokens)}
@@ -119,7 +119,7 @@ class Chat:
         if self.running:
             raise RuntimeError("the AI is still working; stop it first")
         self.messages, self.log = [], []
-        self.gemini_interaction_id = None
+        self._gemini_last = None
 
     def send(self, text: str, client: Any, model: str | None = None, wait: bool = False) -> None:
         if self.running:
@@ -141,7 +141,7 @@ class Chat:
                 self._run_claude(client, model)
         except Exception as exc:  # noqa: BLE001 - API or unexpected failure: report it in the panel
             msg = str(exc)
-            if "limit: 0" in msg or "too_many_requests" in msg:
+            if hasattr(client, "interactions") and ("limit: 0" in msg or "too_many_requests" in msg):
                 msg = (
                     f"Rate limit for {model}: this model is restricted or has a 0 token/min limit on the Free Tier. "
                     "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
@@ -252,26 +252,22 @@ class Chat:
 
         create_kwargs: dict[str, Any] = {
             "model": model,
+            "previous_interaction_id": self._gemini_last,
             "input": user_prompt,
             "tools": interaction_tools,
             "system_instruction": system_text,
             "timeout": 45,
         }
-        if self.gemini_interaction_id:
-            create_kwargs["previous_interaction_id"] = self.gemini_interaction_id
 
         interaction = _safe_create(**create_kwargs)
-        if getattr(interaction, "id", None):
-            self.gemini_interaction_id = interaction.id
+        self._gemini_last = getattr(interaction, "id", None) or self._gemini_last
 
         for _ in range(MAX_TURNS):
             if self.cancel.is_set():
                 self.log.append(Entry("error", "Stopped."))
                 return
 
-            if getattr(interaction, "id", None):
-                self.gemini_interaction_id = interaction.id
-
+            self._gemini_last = getattr(interaction, "id", None) or self._gemini_last
             u = getattr(interaction, "usage", None)
             if u is not None:
                 self.tokens["input"] += getattr(u, "total_input_tokens", 0) or 0
@@ -349,7 +345,6 @@ class Chat:
                 system_instruction=system_text,
                 timeout=45,
             )
-            if getattr(interaction, "id", None):
-                self.gemini_interaction_id = interaction.id
+            self._gemini_last = getattr(interaction, "id", None) or self._gemini_last
 
         self.log.append(Entry("error", "Stopped: too many steps in one turn.", ok=False))

@@ -7,13 +7,14 @@ import { Icon, StatusIcon } from '../ui/icons'
 import { ExprField } from './ExprField'
 
 const UNIT: Partial<Record<ParamSpec['quantity'], string>> = { length: 'mm', angle: '°' }
-const PICKS: Record<string, 'faces' | 'edges'> = { shell: 'faces', text: 'faces', split: 'faces', fillet: 'edges', chamfer: 'edges' }
+const PICKS: Record<string, 'faces' | 'edges'> = { shell: 'faces', text: 'faces', split: 'faces', fillet: 'edges', chamfer: 'edges', move: 'edges' }
 const PICK_HELP: Record<string, string> = {
   shell: 'Pick the faces to leave open (none: a closed hollow part).',
   text: 'Pick the face the text goes on (none: the text stands on the bed).',
   fillet: 'Pick the edges to round, or give two face groups below.',
   chamfer: 'Pick the edges to bevel, or give two face groups below.',
   split: 'Optionally pick a flat face to split along (none: the plane below).',
+  move: 'Optionally pick a straight or circular edge as the turning axis (none: the axis point and direction below).',
 }
 // Text parameters that name a body; "new" asks for a new body.
 const BODY_PARAMS = new Set(['into', 'tool'])

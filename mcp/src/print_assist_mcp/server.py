@@ -116,11 +116,20 @@ def update() -> str:
 @mcp.tool()
 def render_preview(view: str = "iso", size: int = 768) -> Image | str:
     """A shaded picture of the last good build. Views: iso, front, back, left, right, top, bottom. Look after every
-    change: it is how you see what you made."""
+    change: it is how you see what you made. A plate of the print layout: "plate1" (iso), "plate1-top", "plate1-bottom"
+    (from below, without the bed: the faces that print on the bed)."""
     r = _call("GET", "/api/render", params={"view": view, "size": size})
     if isinstance(r, dict):
         return _text(r)
     return Image(data=r.content, format="png")
+
+
+@mcp.tool()
+def print_layout() -> str:
+    """The print layout as the export would lay it out: each plate's objects (bodies, solid count, box on the plate),
+    problems (overlaps, off the plate, solids on no plate or on two), and the solids no item takes yet with their
+    centres and sizes in the assembled model, to aim an item's `within` box at."""
+    return _text(_call("GET", "/api/layout"))
 
 
 @mcp.tool()
@@ -221,6 +230,42 @@ def wait_for_concept(id: str, timeout_s: int = 600) -> str:
         if c["status"] != "pending" or time.time() >= deadline:
             return _text({k: c[k] for k in ("id", "title", "status", "note")})
         time.sleep(2)
+
+
+@mcp.tool()
+def generate_image(prompt: str, quality: str = "standard", aspect: str = "1:1", size: str = "1K",
+                   from_images: list[str] | None = None) -> list[Image | str] | str:
+    """Make a picture from a prompt (Google Gemini, billed per image: draft or standard ~$0.03 at 1K, best ~$0.13)
+    and keep it in the design's images folder as I1, I2, ... with its prompt. from_images: ids of earlier images to
+    start from ("the same dragon, wings folded"). aspect: 1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9; size
+    1K, 2K or 4K (best and standard only). Returns the record and the picture. Show it to the user in a concept with
+    <image href="images/I3.png" .../> in the SVG."""
+    r = _call("POST", "/api/images", json={"prompt": prompt, "quality": quality, "aspect": aspect, "size": size,
+                                          "from_images": from_images or []}, headers=ACTOR, timeout=240)
+    if not isinstance(r, dict) or "error" in r:
+        return _text(r)
+    pic = _call("GET", f"/api/images/{r['id']}")
+    if isinstance(pic, dict):
+        return _text(r | {"picture_error": pic.get("error")})
+    fmt = "jpeg" if r["file"].endswith(".jpg") else r["file"].rsplit(".", 1)[-1]
+    return [_text(r), Image(data=pic.content, format=fmt)]
+
+
+@mcp.tool()
+def list_images() -> str:
+    """The design's generated images, newest first: id, file, prompt, quality, aspect, size, what each started from
+    and its list price."""
+    return _text(_call("GET", "/api/images"))
+
+
+@mcp.tool()
+def look_at_image(id: str) -> Image | str:
+    """See generated image `id` again."""
+    r = _call("GET", f"/api/images/{id}")
+    if isinstance(r, dict):
+        return _text(r)
+    fmt = r.headers.get("content-type", "image/png").split("/")[-1]
+    return Image(data=r.content, format="jpeg" if fmt == "jpg" else fmt)
 
 
 @mcp.tool()

@@ -2,7 +2,7 @@ import type { FileState, Tree } from '../api'
 import { Icon } from '../ui/icons'
 import { FileMenu, type FileAction } from './FileMenu'
 
-export type Mode = 'part' | 'sketch' | 'export'
+export type Mode = 'part' | 'sketch' | 'export' | 'plates'
 
 interface Props {
   tree: Tree | null
@@ -32,9 +32,9 @@ export function Header({ tree, mode, onMode, onUpdate, onUpdateMode, updating, f
         </span>
       </div>
       <nav className="tabs" aria-label="Mode">
-        {(['part', 'sketch', 'export'] as Mode[]).map((m) => (
+        {(['part', 'sketch', 'export', 'plates'] as Mode[]).map((m) => (
           <button key={m} aria-current={mode === m ? 'page' : undefined} className={`tab ${m}`} onClick={() => onMode(m)}>
-            {m === 'part' ? 'Part' : m === 'sketch' ? 'Sketch' : 'Color & Export'}
+            {m === 'part' ? 'Part' : m === 'sketch' ? 'Sketch' : m === 'export' ? 'Color & Export' : 'Plates'}
           </button>
         ))}
       </nav>

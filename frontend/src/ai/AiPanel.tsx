@@ -41,11 +41,11 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
         <h2>AI assistant</h2>
         <span className="spacer" />
         <div className="seg sm" role="group" aria-label="AI mode">
-          <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
           <button aria-pressed={mode === 'mcp'} onClick={() => onMode('mcp')} title="Claude Code or MCP agent connects from terminal">MCP Agent</button>
+          <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
         </div>
       </div>
-      <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
+      {mode === 'api' && <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 2 }}>
           <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
           <select
@@ -53,7 +53,6 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
             value={status?.settings_provider || 'auto'}
             onChange={(e) => {
               onSettings?.({ ai_provider: e.target.value as 'auto' | 'gemini' | 'anthropic', ai_model: '' })
-              if (mode === 'mcp') onMode('api')
             }}
             style={{ fontSize: 12, padding: '3px 6px' }}
           >
@@ -69,7 +68,6 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
             value={status?.settings_model || status?.model || ''}
             onChange={(e) => {
               onSettings?.({ ai_model: e.target.value })
-              if (mode === 'mcp') onMode('api')
             }}
             style={{ fontSize: 12, padding: '3px 6px' }}
           >
@@ -78,7 +76,7 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
             ))}
           </select>
         </div>
-      </div>
+      </div>}
       {context && <div className="ctx">Context: {context}</div>}
       {concept && (
         <div className="ccard">

@@ -50,6 +50,9 @@ length, angle, ratio, count, bool, text; expr may be a formula of other paramete
 - {"op": "add_body", "name": "Rim band"}, {"op": "edit_body", "id": "B2", "name": "...", "filament": 2}, \
 {"op": "delete_body", "id": "B3"}
 Feature kinds and their parameters: get_feature_catalog.
+To turn or move a finished body, add a move feature at its end (turn about any axis: a point on it and a direction, \
+then move along X, Y, Z) rather than rewriting its sketches: a hinged part modelled shut and printed part-open is one \
+move about the hinge axis. With "into" a body, the body stays and the moved copy goes there.
 
 Colours: a part in several colours is several bodies, each assigned a filament from the design's palette (numbered \
 like the printer's slots: AMS slot 1 to 4 on an A1 + AMS lite). Make the bodies with features: split (cut a body along \
@@ -64,6 +67,23 @@ formulas like any parameter), {"op": "delete_variant", "id": "V2"}
 - {"op": "set_colorway", "name": "Gold rim", "colors": {"2": "#c9a227"}, "names": {"2": "Silk Gold"}}  (slots left out \
 keep the palette colour), {"op": "delete_colorway", "id": "C1"}
 
+Print layout: an assembly is modelled assembled, but prints as separate objects laid flat on plates. The layout says \
+how: each item takes the solids of some bodies whose box centre lies inside its "within" box of the assembled model, \
+turns them (degrees about X, then Y, then Z, about the item's centre) and sets the item's box on a plate with its \
+front-left corner at (x, y). An item's bodies print as one object with a part each, so a piece in two colours (a \
+divider and its raised letter) stays together. With a layout, the 3MF export is a Bambu project with those plates; \
+every solid must be in exactly one item.
+- {"op": "set_print_item", "name": "Lid", "bodies": ["B2"], "within": [0, 0, 70, 60, 110, 90], "plate": 2, \
+"rotate": [180, 0, 0], "x": 4, "y": 140, "copies": 4, "columns": 2, "spacing": 3, "settings": \
+{"sparse_infill_density": "8%"}}  (id "P3" to change one; copies: how many of it print, in rows of columns (default \
+all in one row) from (x, y) toward +X, rows toward +Y, spacing mm apart, each its own object; settings: the \
+printer's slicer settings for that object only), {"op": "delete_print_item", "id": "P3"}
+- {"op": "set_plate", "plate": 2, "name": "Ivory", "tower": [200, 10]}  (tower: where the purge tower goes, kept clear; \
+null for the printer's default), {"op": "delete_plate", "plate": 4}
+Plan the plates in a picture first: group by colour so big parts print without colour changes, lay parts so they \
+need no supports, and keep a tower's spot clear on plates that change colour. print_layout lists the plates, problems \
+and the solids not yet placed (with centres, to aim "within" at); render_preview "plate1" / "plate1-top" shows a plate.
+
 Sketch entities (2D, mm, in the sketch's own plane): {"id": "p1", "kind": "point", "x": 0, "y": 0}, \
 {"id": "l1", "kind": "line", "p1": "p1", "p2": "p2"}, {"id": "c1", "kind": "circle", "c": "p1", "r": 10}, \
 {"id": "a1", "kind": "arc", "c": "p0", "start": "p1", "end": "p2"} (counter-clockwise), add "construction": true for \
@@ -73,6 +93,15 @@ Constraints: {"id": "k1", "kind": "distance" | "radius" | "diameter" | "angle", 
 parallel, perpendicular, tangent, concentric, equal, point_on, fix. Sketches are solved when you add or edit them.
 
 References: files the user keeps beside the design (references R1, R2, ...: STEP, STL or 3MF, often someone else's model) to look at and copy features from: "the hinge from R1", "the lid lip from R2". They are never built, printed or exported, and you never copy their triangles: you rebuild the feature with sketches and features, sized from measurements. list_references gives each one's parts with bounding boxes; look_at_reference shows a reference or one part (zoom with region, compare with with_design); section_reference cuts it with a plane and returns the outlines (points, area, circles with centre and radius) to trace into a sketch. Measure from sections, not from pictures. add_reference adds a file from the user's computer; {"op": "set_reference", "id": "R1", "x": 80, "visible": false, "plate": 2, "rotate_z": 90, "scale": 1, "place": "on_bed" | "as_in_file"} moves, hides or re-plates one, {"op": "delete_reference", "id": "R1"} removes it. A reference sits on the bed centred on the origin unless moved, so it overlaps the design: move it aside (x) when it is in the way. Exact solids from STEP files come in with the import feature instead.
+
+Images: generate_image makes a picture from a prompt (artwork for an inlay or relief, a creature to model from) and \
+keeps it in the design as I1, I2, ... with its prompt; each one costs money (cents), so write the prompt carefully \
+and make one at a time unless the user asks for options. Say in the prompt what the picture is for and the printer's \
+limits: for an inlay, flat colour shapes in at most as many colours as palette slots, no lines under ~1 mm at the \
+printed size, a plain background; for a relief, one subject with clear light and dark. To vary one, pass it in \
+from_images and say what to change. Show images to the user inside a concept (<image href="images/I3.png" x=.. \
+y=.. width=.. height=../> in the SVG), drawn at the size they will be printed on the part. Artwork must be original: \
+never prompt for a trademarked character, logo or another artist's style.
 
 Picking faces (shell openings, text targets, sketches on faces): list_faces gives each face's index, name ("F1.end", \
 "F1.side"), type, centre and normal; pick_face(body, index) returns the pick record to put in a feature's "faces" \

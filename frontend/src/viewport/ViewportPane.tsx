@@ -2,7 +2,7 @@
 // says so. Clicks select faces, or pick faces / edges for the feature being edited.
 import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
-import { api, type PartState, type Reference } from '../api'
+import { api, type PartState, type PlateMesh, type Reference } from '../api'
 import { Icon } from '../ui/icons'
 import { Viewer, type FacePick, type ViewName } from '../viewer/Viewer'
 
@@ -19,10 +19,12 @@ interface Props {
   picking: 'faces' | 'edges' | null
   onPick: (pick: FacePick | null) => void
   onUpdate: () => void
+  plateMode?: boolean // the Plates tab: show a print plate instead of the assembly
+  plate?: PlateMesh | null // the plate to show (null while it loads)
   children?: React.ReactNode // dialogs float over the view
 }
 
-export function ViewportPane({ part, references, stale, failed, highlight, edgeMarks, picking, onPick, onUpdate, children }: Props) {
+export function ViewportPane({ part, references, stale, failed, highlight, edgeMarks, picking, onPick, onUpdate, plateMode = false, plate = null, children }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const viewer = useRef<Viewer | null>(null)
   const fitted = useRef(false)
@@ -81,6 +83,21 @@ export function ViewportPane({ part, references, stale, failed, highlight, edgeM
     }
   }, [highlight, part])
 
+  // Plates tab: the assembly steps aside for one print plate; the view frames each plate when it first shows.
+  const plateShown = useRef<number | null>(null)
+  useEffect(() => {
+    const v = viewer.current
+    if (!v) return
+    v.setPlateMode(plateMode)
+    if (!plateMode) { plateShown.current = null; v.fit() }
+  }, [plateMode])
+  useEffect(() => {
+    const v = viewer.current
+    if (!v || !plateMode) return
+    v.setPlate(plate)
+    if (plate && plateShown.current !== plate.plate) { plateShown.current = plate.plate; v.setView('iso'); v.fit() }
+  }, [plate, plateMode])
+
   useEffect(() => { viewer.current?.setEdgeMarks(edgeMarks) }, [edgeMarks])
   useEffect(() => { if (viewer.current) viewer.current.pickMode = picking === 'edges' ? 'edge' : 'face' }, [picking])
   useEffect(() => { viewer.current?.setOrtho(ortho) }, [ortho])
@@ -121,9 +138,10 @@ export function ViewportPane({ part, references, stale, failed, highlight, edgeM
         </div>
       )}
       {picking && <div className="pickhint">Picking {picking}: click on the part</div>}
-      {part && !part.bodies.length && !references.length && <div className="empty">Nothing built yet: start with a sketch, then extrude it — or ask the AI.</div>}
+      {!plateMode && part && !part.bodies.length && !references.length && <div className="empty">Nothing built yet: start with a sketch, then extrude it — or ask the AI.</div>}
       {children}
-      <div className="vinfo">{part ? `${(part.volume / 1000).toFixed(1)} cm³ · ${(part.mass * 1000).toFixed(0)} g` : ''}</div>
+      <div className="vinfo">{plateMode ? (plate ? `Plate ${plate.plate} · ${plate.objects.length} object${plate.objects.length === 1 ? '' : 's'}` : 'Laying out…')
+        : part ? `${(part.volume / 1000).toFixed(1)} cm³ · ${(part.mass * 1000).toFixed(0)} g` : ''}</div>
     </section>
   )
 }

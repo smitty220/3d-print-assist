@@ -143,6 +143,9 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onOps, 
 
       <h2>Export</h2>
       {why && <p className="dmsg stale">{why}</p>}
+      {!!tree.print_layout?.items && (
+        <p className="note">3MF exports the {tree.print_layout.plates} print plates (see the Plates tab); STL and STEP stay assembled.</p>
+      )}
       <div className="exports">
         {(['3mf', 'stl', 'step'] as const).map((f) => (
           why ? <button key={f} className="btn" disabled>{f.toUpperCase()}</button>

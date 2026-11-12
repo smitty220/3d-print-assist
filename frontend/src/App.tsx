@@ -2,7 +2,7 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type Printer, type Project, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
@@ -11,6 +11,7 @@ import type { FileAction } from './layout/FileMenu'
 import { Header, type Mode } from './layout/Header'
 import { ConfirmModal, DesignGrid, ExportModal, HistoryModal, NameModal, OpenModal, UnsavedModal, type ExportFormat } from './ui/Modals'
 import { PartToolbar } from './layout/Toolbar'
+import { PlatesPane } from './plates/PlatesPane'
 import type { Tool } from './layout/tools'
 import { SketchEditor } from './sketch/SketchEditor'
 import { SpecTree, type NodeKey } from './tree/SpecTree'
@@ -46,6 +47,8 @@ export default function App() {
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
+  const [plateNo, setPlateNo] = useState(1) // the plate shown in the Plates tab
+  const [plateMesh, setPlateMesh] = useState<PlateMesh | null>(null)
   const [selected, setSelected] = useState<NodeKey | null>(null)
   const [preview, setPreview] = useState<string | null>(null) // the colorway shown in the view
   const [dialog, setDialog] = useState<Dialog>(null)
@@ -353,6 +356,16 @@ export default function App() {
     else if (kind === 'body') setMode('export')
   }
 
+  // The Plates tab lays the parts out only while it is open: the shown plate is fetched when the tab opens, another
+  // plate is picked, or a new build or layout arrives (the backend keeps the result until one of those changes).
+  const layoutKey = JSON.stringify([tree?.print_layout, part?.rev])
+  useEffect(() => {
+    if (mode !== 'plates' || !tree?.print_layout?.items) return
+    let live = true
+    api.plateMesh(plateNo).then((m) => { if (live) setPlateMesh(m) }).catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    return () => { live = false }
+  }, [mode, plateNo, layoutKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const switchMode = (m: Mode) => {
     if (m === 'sketch' && !sketchId) {
       const s = lastSketch()
@@ -441,7 +454,7 @@ export default function App() {
       <Header tree={tree} mode={mode} onMode={switchMode} onUpdate={update} updating={updating} file={file} onFile={onFile} onUndo={undo} onRedo={redo}
         onUpdateMode={(m) => { run(() => api.settings({ update_mode: m })).then(() => api.tree().then(setTree)) }} />
 
-      {mode === 'sketch' ? <div ref={setToolbarHost} className="toolbar-host" /> : (
+      {mode === 'sketch' ? <div ref={setToolbarHost} className="toolbar-host" /> : mode === 'plates' ? <div className="toolbar-wrap" /> : (
         <div className="toolbar-wrap">
           <PartToolbar onTool={onTool} active={sketchMenu ? 'sketch' : null} />
           {sketchMenu && (
@@ -457,11 +470,12 @@ export default function App() {
       )}
 
       <main className="main">
-        <aside className="side left" aria-label={mode === 'export' ? 'Print and export' : 'Specification tree'}>
+        <aside className="side left" aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}>
           {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
             onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
             onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
           {mode === 'sketch' && <div ref={setTreeHost} />}
+          {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
           {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
             onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }}
             onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
@@ -482,7 +496,8 @@ export default function App() {
           </section>
         ) : (
           <ViewportPane part={shownPart} references={tree.references} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
-            highlight={highlight} picking={dialog?.type === 'feature' ? picking : null} onPick={onPick} onUpdate={update}
+            highlight={highlight} picking={dialog?.type === 'feature' && mode !== 'plates' ? picking : null} onPick={onPick} onUpdate={update}
+            plateMode={mode === 'plates'} plate={tree.print_layout?.items && plateMesh?.plate === plateNo ? plateMesh : null}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
             {file.recovery && (
               <div className="recovery" role="alert">

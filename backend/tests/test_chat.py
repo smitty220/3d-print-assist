@@ -207,6 +207,23 @@ def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
     assert ai_client.model_name() == "gemini-4-argon"
 
 
+def test_gemini_follow_up_message_continues_the_conversation(client):
+    client.get("/api/project")
+
+    def reply(inp):
+        return [NS(type="model_output", content=[NS(type="text", text="ok")])], "completed"
+
+    chat = Chat()
+    gemini = ScriptedGemini([reply, reply, reply])
+    chat.send("first", gemini, model="gemini-3.8-flash", wait=True)
+    chat.send("second", gemini, model="gemini-3.8-flash", wait=True)
+    assert gemini.calls[0]["previous_interaction_id"] is None
+    assert gemini.calls[1]["previous_interaction_id"] == "int_1"  # the follow-up sees the first exchange
+    chat.reset()
+    chat.send("fresh", gemini, model="gemini-3.8-flash", wait=True)
+    assert gemini.calls[2]["previous_interaction_id"] is None
+
+
 def test_wait_for_concept_cancellation(client):
     import threading
     import time
