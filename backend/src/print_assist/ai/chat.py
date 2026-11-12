@@ -18,6 +18,7 @@ from .client import MessagesClient, model_name
 from .guide import GUIDE
 
 MAX_TURNS = 40
+GEMINI_TIMEOUT = 180  # seconds
 SKIP_TOOLS = {"get_guide"}  # the guide is the system prompt
 
 
@@ -147,6 +148,11 @@ class Chat:
                     "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
                     "or upgrade your Google AI Studio tier."
                 )
+            elif "timed out" in msg.lower() or "timeout" in msg.lower():
+                msg = (
+                    f"Request timed out for {model}. Google's servers took longer than {GEMINI_TIMEOUT}s to respond. "
+                    "Please try sending your message again, or switch models in the dropdown."
+                )
             self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
         finally:
             self.running = False
@@ -233,6 +239,7 @@ class Chat:
                 except Exception as exc:
                     err_str = str(exc).lower()
                     is_rate_limit = "rate limit" in err_str or "too_many_requests" in err_str or "429" in err_str
+                    is_timeout = "timeout" in err_str or "timed out" in err_str
                     if is_rate_limit and model != "gemini-3-flash-preview":
                         fallback_model = "gemini-3-flash-preview"
                         self.log.append(Entry("assistant", f"Rate limit reached on {model}. Seamlessly continuing with {fallback_model}..."))
@@ -241,6 +248,10 @@ class Chat:
                         return client.interactions.create(**kwargs)
                     if is_rate_limit and attempt < 2:
                         time.sleep(2 * (attempt + 1))
+                        continue
+                    if is_timeout and attempt < 2:
+                        self.log.append(Entry("assistant", f"Gemini response timed out; retrying (attempt {attempt + 2}/3)..."))
+                        time.sleep(1)
                         continue
                     raise
 
@@ -256,7 +267,7 @@ class Chat:
             "input": user_prompt,
             "tools": interaction_tools,
             "system_instruction": system_text,
-            "timeout": 45,
+            "timeout": GEMINI_TIMEOUT,
         }
 
         interaction = _safe_create(**create_kwargs)
@@ -343,7 +354,7 @@ class Chat:
                 input=results,
                 tools=interaction_tools,
                 system_instruction=system_text,
-                timeout=45,
+                timeout=GEMINI_TIMEOUT,
             )
             self._gemini_last = getattr(interaction, "id", None) or self._gemini_last
 

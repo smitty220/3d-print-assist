@@ -123,7 +123,7 @@ def make_gemini_client() -> Any:
         raise RuntimeError("No Gemini API key: set GEMINI_API_KEY in your shell or in backend/.env, then restart the backend")
     from google import genai
 
-    client = genai.Client(api_key=key)
+    client = genai.Client(api_key=key, http_options={"timeout": 180000})
     try:
         from google.genai._gaos.utils import RetryConfig
 

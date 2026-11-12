@@ -300,3 +300,32 @@ def test_gemini_fallback_on_rate_limit(client):
     assert gemini.calls[0]["model"] == "gemini-2.5-flash"
     assert gemini.calls[1]["model"] == "gemini-3-flash-preview"
     assert any("Fallback succeeded" in e.text for e in chat.log)
+
+
+def test_gemini_timeout_retry_and_recovery(client):
+    client.get("/api/project")
+
+    class TimingOutGemini:
+        def __init__(self):
+            self.calls = []
+            self.interactions = self
+
+        def create(self, **kw):
+            self.calls.append(kw)
+            if len(self.calls) == 1:
+                raise RuntimeError("APITimeoutError: Request timed out. This is a client-side timeout.")
+            return NS(
+                id="int_recovered",
+                status="completed",
+                steps=[NS(type="model_output", content=[NS(type="text", text="Recovered after timeout")])],
+                output_text="Recovered after timeout",
+                usage=NS(total_input_tokens=500, total_output_tokens=100, total_cached_tokens=0),
+            )
+
+    chat = Chat()
+    gemini = TimingOutGemini()
+    chat.send("test timeout", gemini, model="gemini-3-flash-preview", wait=True)
+    assert not chat.running
+    assert len(gemini.calls) == 2
+    assert any("retrying" in e.text for e in chat.log)
+    assert any("Recovered after timeout" in e.text for e in chat.log)
