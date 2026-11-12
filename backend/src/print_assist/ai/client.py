@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
 
 GEMINI_MODEL_ALIASES = {

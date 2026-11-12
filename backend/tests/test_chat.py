@@ -183,7 +183,7 @@ def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
     env.write_text("GEMINI_API_KEY=gm-test-1\n", encoding="utf-8")
     ai_client.load_env_key(env)
     assert ai_client.provider() == "gemini"
-    assert ai_client.model_name() == "gemini-2.5-flash"
+    assert ai_client.model_name() == "gemini-3-flash-preview"
     assert ai_client.has_api_key() is True
 
     # Explicit PRINT_ASSIST_AI_PROVIDER override
@@ -205,3 +205,81 @@ def test_gemini_env_key_and_provider_selection(tmp_path, monkeypatch):
     env.write_text("GEMINI_API_KEY=gm-test-1\nPRINT_ASSIST_MODEL=gemini-4-argon\n", encoding="utf-8")
     ai_client.load_env_key(env)
     assert ai_client.model_name() == "gemini-4-argon"
+
+
+def test_wait_for_concept_cancellation(client):
+    import threading
+    import time
+    from print_assist.ai.chat import _call
+
+    client.get("/api/project")
+    r = client.post("/api/concepts", json={
+        "title": "Pending Concept",
+        "svg": "<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>",
+        "summary": "pending",
+    }, headers={"X-Actor": "gemini"})
+    cid = r.json()["id"]
+
+    cancel = threading.Event()
+    # Cancel after 0.1s while wait_for_concept is polling
+    threading.Timer(0.1, cancel.set).start()
+    t0 = time.time()
+    res, ok = _call("wait_for_concept", {"id": cid, "timeout_s": 600}, cancel=cancel)
+    t1 = time.time()
+    assert ok is False
+    assert "Cancelled" in res
+    assert t1 - t0 < 2.0  # Must return immediately, never waiting 600s
+
+
+def test_ai_chat_cancel_and_reset_dismisses_pending_concepts(client):
+    client.get("/api/project")
+    # Propose a concept to leave it pending
+    r = client.post("/api/concepts", json={
+        "title": "Test Concept",
+        "svg": "<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>",
+        "summary": "draft",
+    }, headers={"X-Actor": "gemini"})
+    assert r.status_code == 200
+    cid = r.json()["id"]
+
+    # Verify concept is pending
+    concepts = client.get("/api/concepts").json()
+    assert any(c["id"] == cid and c["status"] == "pending" for c in concepts)
+
+    # Cancel chat -> dismisses pending concept
+    client.post("/api/ai/chat/cancel")
+    concepts_after = client.get("/api/concepts").json()
+    assert not any(c["id"] == cid and c["status"] == "pending" for c in concepts_after)
+    cancelled_c = next(c for c in concepts_after if c["id"] == cid)
+    assert cancelled_c["status"] == "revise"
+    assert "cancelled" in cancelled_c["note"]
+
+
+def test_gemini_fallback_on_rate_limit(client):
+    client.get("/api/project")
+
+    class RateLimitedGemini:
+        def __init__(self):
+            self.calls = []
+            self.interactions = self
+
+        def create(self, **kw):
+            self.calls.append(kw)
+            if kw.get("model") == "gemini-2.5-flash":
+                raise RuntimeError("Rate limit exceeded for model gemini-2.5-flash: 429 too_many_requests")
+            return NS(
+                id="int_fallback",
+                status="completed",
+                steps=[NS(type="model_output", content=[NS(type="text", text="Fallback succeeded")])],
+                output_text="Fallback succeeded",
+                usage=NS(total_input_tokens=500, total_output_tokens=100, total_cached_tokens=0),
+            )
+
+    chat = Chat()
+    gemini = RateLimitedGemini()
+    chat.send("test fallback", gemini, model="gemini-2.5-flash", wait=True)
+    assert not chat.running
+    assert len(gemini.calls) == 2
+    assert gemini.calls[0]["model"] == "gemini-2.5-flash"
+    assert gemini.calls[1]["model"] == "gemini-3-flash-preview"
+    assert any("Fallback succeeded" in e.text for e in chat.log)

@@ -967,8 +967,8 @@ def chat():
 
 AVAILABLE_MODELS = {
     "gemini": [
-        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (Fast, Free Tier)"},
-        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Free Tier)"},
+        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Recommended, Free Tier)"},
+        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (Free Tier)"},
         {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
         {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
         {"id": "gemini-4-argon", "label": "Gemini 4.0 Argon (Reasoning, Paid Tier)"},
@@ -1026,6 +1026,7 @@ def ai_chat(body: ChatIn) -> dict:
 @app.post("/api/ai/chat/cancel")
 def ai_chat_cancel() -> dict:
     chat().cancel.set()
+    ws().concepts.dismiss_pending("cancelled by user")
     return chat().to_dict()
 
 
@@ -1033,6 +1034,7 @@ def ai_chat_cancel() -> dict:
 def ai_chat_reset() -> dict:
     try:
         chat().reset()
+        ws().concepts.dismiss_pending("superseded by new conversation")
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return chat().to_dict()

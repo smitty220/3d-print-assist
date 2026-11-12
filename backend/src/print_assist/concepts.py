@@ -86,6 +86,12 @@ class Concepts:
     def pending(self) -> Concept | None:
         return next((c for c in reversed(self.items) if c.status == "pending"), None)
 
+    def dismiss_pending(self, note: str = "cancelled") -> None:
+        for c in self.items:
+            if c.status == "pending":
+                c.status, c.note, c.answered = "revise", note, time.time()
+                self._save(c)
+
     def propose(self, title: str, svg: str, summary: str = "", assumptions: list[str] | None = None,
                 questions: list[str] | None = None, actor: str = "claude-code") -> Concept:
         if not title.strip():

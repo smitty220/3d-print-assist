@@ -50,10 +50,27 @@ def _wire_tools(actor: str = "claude") -> None:
     server.set_client(TestClient(app))
 
 
-def _call(name: str, args: dict) -> tuple[list[dict] | str, bool]:
+def _call(name: str, args: dict, cancel: threading.Event | None = None) -> tuple[list[dict] | str, bool]:
     from mcp.server.mcpserver import Image
 
     from print_assist_mcp import server
+
+    if name == "wait_for_concept":
+        cid = args.get("id")
+        timeout_s = args.get("timeout_s", 600)
+        deadline = time.time() + max(5, min(int(timeout_s), 3600))
+        while True:
+            if cancel is not None and cancel.is_set():
+                return "Cancelled by user.", False
+            r = server._call("GET", "/api/concepts", params={"drawings": False})
+            if isinstance(r, dict):
+                return server._text(r), True
+            c = next((x for x in r if x["id"] == cid), None)
+            if c is None:
+                return server._text({"error": f"no concept {cid!r}"}), False
+            if c["status"] != "pending" or time.time() >= deadline:
+                return server._text({k: c[k] for k in ("id", "title", "status", "note")}), True
+            time.sleep(0.5)
 
     fn = getattr(server, name, None)
     if fn is None or name in SKIP_TOOLS or not callable(fn):
@@ -172,7 +189,7 @@ class Chat:
                 return
             results = []
             for b in uses:
-                content, ok = _call(b.name, b.input or {})
+                content, ok = _call(b.name, b.input or {}, cancel=self.cancel)
                 summary = content if isinstance(content, str) else "(image)"
                 self.log.append(Entry("tool", summary[:600], tool=b.name, ok=ok))
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": content, "is_error": not ok})
@@ -185,7 +202,18 @@ class Chat:
         from ..features.library import FEATURES
 
         catalog = json.dumps([f.describe() for f in FEATURES.values()], separators=(",", ":"))
-        system_text = GUIDE + "\n\nFeature catalog:\n" + catalog
+        gemini_directives = (
+            "\n\nDIRECTIVES FOR IN-APP CHAT (FOLLOW THESE STRICTLY):\n"
+            "- Direct building: When the user requests a specific shape, part, or geometry change with explicit dimensions or parameters "
+            "(e.g., 'make me a 20mm cube', 'cylinder 30mm diameter and 15mm tall', 'chamfer top edge 1mm', 'change wall thickness to 2mm'), "
+            "this is a change they spelled out exactly. You MUST SKIP propose_concept and wait_for_concept entirely! "
+            "Call apply_changes directly to build the geometry, then render_preview and run_checks.\n"
+            "- When to propose concepts: Only call propose_concept when the user's request is high-level, creative, ambiguous, or asks for open-ended "
+            "designs where dimensions and styling must be explored (e.g. 'design a phone stand', 'organizer for my desk', 'a case for my trimmer').\n"
+            "- Conversational responses: Always provide clear, concise natural language in your reply describing what changes you made, "
+            "how they were checked, and any decisions for the user, just like a helpful CAD engineering colleague.\n"
+        )
+        system_text = GUIDE + gemini_directives + "\n\nFeature catalog:\n" + catalog
 
         interaction_tools = [
             {
@@ -196,6 +224,25 @@ class Chat:
             }
             for t in tools
         ]
+
+        def _safe_create(**kwargs: Any) -> Any:
+            nonlocal model
+            for attempt in range(3):
+                try:
+                    return client.interactions.create(**kwargs)
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    is_rate_limit = "rate limit" in err_str or "too_many_requests" in err_str or "429" in err_str
+                    if is_rate_limit and model != "gemini-3-flash-preview":
+                        fallback_model = "gemini-3-flash-preview"
+                        self.log.append(Entry("assistant", f"Rate limit reached on {model}. Seamlessly continuing with {fallback_model}..."))
+                        model = fallback_model
+                        kwargs["model"] = fallback_model
+                        return client.interactions.create(**kwargs)
+                    if is_rate_limit and attempt < 2:
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    raise
 
         user_prompt = ""
         for m in reversed(self.messages):
@@ -213,7 +260,7 @@ class Chat:
         if self.gemini_interaction_id:
             create_kwargs["previous_interaction_id"] = self.gemini_interaction_id
 
-        interaction = client.interactions.create(**create_kwargs)
+        interaction = _safe_create(**create_kwargs)
         if getattr(interaction, "id", None):
             self.gemini_interaction_id = interaction.id
 
@@ -265,11 +312,19 @@ class Chat:
 
             results = []
             for fc in fc_steps:
+                if self.cancel.is_set():
+                    self.log.append(Entry("error", "Stopped."))
+                    return
+
                 fc_name = getattr(fc, "name", None) or (fc.get("name") if isinstance(fc, dict) else "")
                 fc_args = getattr(fc, "arguments", None) or (fc.get("arguments") if isinstance(fc, dict) else {})
                 fc_id = getattr(fc, "id", None) or (fc.get("id") if isinstance(fc, dict) else "")
 
-                content, ok = _call(fc_name, fc_args or {})
+                content, ok = _call(fc_name, fc_args or {}, cancel=self.cancel)
+                if self.cancel.is_set():
+                    self.log.append(Entry("error", "Stopped."))
+                    return
+
                 summary = content if isinstance(content, str) else "(image)"
                 self.log.append(Entry("tool", summary[:600], tool=fc_name, ok=ok))
 
@@ -286,7 +341,7 @@ class Chat:
                     "result": fn_result,
                 })
 
-            interaction = client.interactions.create(
+            interaction = _safe_create(
                 model=model,
                 previous_interaction_id=getattr(interaction, "id", None),
                 input=results,
