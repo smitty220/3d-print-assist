@@ -17,18 +17,7 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
-_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"  # backend/.env
-_SHELL_GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-
-
-def load_env_key(env: Path = _ENV_FILE) -> None:
-    """Read GEMINI_API_KEY from backend/.env unless the shell set it."""
-    if _SHELL_GEMINI_KEY is not None or not env.exists():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        k, sep, v = line.strip().partition("=")
-        if sep and k.removeprefix("export ").strip() == "GEMINI_API_KEY":
-            os.environ["GEMINI_API_KEY"] = v.strip().strip('"').strip("'")
+from .ai.client import load_env_key
 
 API = "https://generativelanguage.googleapis.com/v1beta/interactions"
 # Quality → model, and the US$ per image Google lists for it (1K / 2K / 4K), to show what a round costs.

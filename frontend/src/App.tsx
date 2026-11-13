@@ -2,7 +2,7 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, type Activity, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
@@ -45,6 +45,7 @@ export default function App() {
   const [concepts, setConcepts] = useState<Concept[]>([])
   const [conceptOpen, setConceptOpen] = useState<string | null>(null) // shown on request
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
+  const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('pa.leftCollapsed') === '1')
   const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('pa.rightCollapsed') === '1')
@@ -91,9 +92,9 @@ export default function App() {
       seen.current = { slug: '', rev: -1, built: -1, activity: -1 }
       return
     }
-    const [p, c, f, pr, t, pt, ch, act] = await Promise.all([api.project(), api.catalog(), api.fonts(), api.printers(),
-      api.tree(), api.part(), api.checks(), api.activity()])
-    setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setTree(t); setPart(pt); setChecks(ch); setActivity(act)
+    const [p, c, f, pr, t, pt, ch, a, act] = await Promise.all([api.project(), api.catalog(), api.fonts(), api.printers(),
+      api.tree(), api.part(), api.checks(), api.aiStatus(), api.activity()])
+    setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
     api.concepts().then(setConcepts).catch(() => {})
     seen.current = { slug: p.slug, rev: t.rev, built: t.built_rev, activity: act.length }
   }, [])
@@ -138,6 +139,13 @@ export default function App() {
     connect()
     return () => { clearTimeout(retry); es.close() }
   }, [run, loadAll])
+
+  // While the chat works, follow it.
+  useEffect(() => {
+    if (!ai?.chat.running) return
+    const t = setInterval(() => api.aiStatus().then(setAi).catch(() => {}), 1000)
+    return () => clearInterval(t)
+  }, [ai?.chat.running])
 
   const refreshFile = () => api.file().then(setFile).catch(() => {})
   const changed = (r?: { tree: Tree }) => { if (r) { setTree(r.tree); refreshFile() } }
@@ -551,9 +559,13 @@ export default function App() {
           </ViewportPane>
         )}
 
-        <AiPanel activity={activity} context={context} concept={concepts[0] ?? null}
+        <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
           collapsed={rightCollapsed} onToggleCollapse={() => setRightCollapsed((v) => !v)}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
+          onMode={(m) => { run(() => api.settings({ ai_mode: m })).then(() => api.aiStatus().then(setAi)) }}
+          onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
+          onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
+          onCancel={() => { run(api.chatCancel) }} onReset={() => { run(api.chatReset).then(() => api.aiStatus().then(setAi)) }}
           onRevert={() => { run(api.revertAi).then((r) => { if (r) setTree(r.tree) }) }} />
       </main>
 

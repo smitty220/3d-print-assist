@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from .ai import client as ai
 from .build.ops import USER, OpError
 from .build.workspace import ChangeRefused, Workspace
 from .features.context import FeatureError
@@ -288,6 +289,9 @@ def get_printers() -> list[dict]:
 class SettingsPatch(BaseModel):
     update_mode: Literal["manual", "auto"] | None = None
     printer: str | None = None
+    ai_mode: Literal["mcp", "api"] | None = None
+    ai_provider: Literal["auto", "gemini", "anthropic"] | None = None
+    ai_model: str | None = None
 
 
 @app.put("/api/settings")
@@ -298,6 +302,12 @@ def put_settings(body: SettingsPatch) -> dict:
         if body.printer not in profiles():
             raise HTTPException(422, f"No printer profile {body.printer!r}")
         s.printer = body.printer
+    if body.ai_mode is not None:
+        s.ai_mode = body.ai_mode
+    if body.ai_provider is not None:
+        s.ai_provider = body.ai_provider
+    if body.ai_model is not None:
+        s.ai_model = body.ai_model
     w.project.save()
     if body.update_mode is not None:
         w.set_mode(body.update_mode)
@@ -1008,4 +1018,92 @@ def ai_guide() -> dict:
     return {"guide": GUIDE, "ops": OP_NAMES}
 
 
+# ---------------------------------------------------------------- AI chat (the panel's API mode)
 
+
+def chat():
+    w = ws()
+    if not hasattr(w, "chat"):
+        from .ai.chat import Chat
+
+        w.chat = Chat()
+    return w.chat
+
+
+AVAILABLE_MODELS = {
+    "gemini": [
+        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Recommended, Free Tier)"},
+        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (Free Tier)"},
+        {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
+        {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+        {"id": "gemini-4-argon", "label": "Gemini 4.0 Argon (Reasoning, Paid Tier)"},
+    ],
+    "anthropic": [
+        {"id": "claude-opus-5-5", "label": "Claude Opus 5.5"},
+        {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5"},
+        {"id": "claude-haiku-5-5", "label": "Claude Haiku 5.5"},
+    ],
+}
+
+
+@app.get("/api/ai/status")
+def ai_status(refresh: bool = False) -> dict:
+    s = project().data.settings
+    chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
+    active_provider = ai.provider(chosen_provider)
+    model = ai.model_name(s.ai_model or None, provider_override=active_provider)
+    has_key = ai.has_api_key(active_provider)
+    available = {
+        "gemini": ai.list_gemini_models(force_refresh=refresh),
+        "anthropic": AVAILABLE_MODELS["anthropic"],
+    }
+    return {
+        "model": model,
+        "provider": active_provider,
+        "key": has_key,
+        "mode": s.ai_mode,
+        "settings_provider": s.ai_provider,
+        "settings_model": s.ai_model,
+        "available_models": available,
+        "chat": chat().to_dict(),
+    }
+
+
+class ChatIn(BaseModel):
+    message: str
+
+
+@app.post("/api/ai/chat")
+def ai_chat(body: ChatIn) -> dict:
+    if not body.message.strip():
+        raise HTTPException(422, "Say what you want changed")
+    s = project().data.settings
+    chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
+    active_provider = ai.provider(chosen_provider)
+    model = ai.model_name(s.ai_model or None, provider_override=active_provider)
+    try:
+        client = ai.make_client(active_provider)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    try:
+        chat().send(body.message.strip(), client, model=model)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return chat().to_dict()
+
+
+@app.post("/api/ai/chat/cancel")
+def ai_chat_cancel() -> dict:
+    chat().cancel.set()
+    ws().concepts.dismiss_pending("cancelled by user")
+    return chat().to_dict()
+
+
+@app.post("/api/ai/chat/reset")
+def ai_chat_reset() -> dict:
+    try:
+        chat().reset()
+        ws().concepts.dismiss_pending("superseded by new conversation")
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return chat().to_dict()
