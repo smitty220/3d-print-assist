@@ -13,6 +13,12 @@ GEMINI_API_KEY=your_key_here docker compose up -d --build
 
 Then open `http://<your-server-ip>:8010`.
 
+To check if `8010` is already in use on Unraid before starting:
+```bash
+ss -tulpn | grep :8010 || docker ps --format '{{.Names}}\t{{.Ports}}'
+```
+If `8010` is taken, pick any free host port (for example `PRINT_ASSIST_PORT=8310 docker compose up -d --build`). The in-app `PRINT_ASSIST_URL` helper automatically uses whichever host port you open in your browser.
+
 To persist designs across container rebuilds, map `/data` to an Unraid appdata folder (for example `/mnt/user/appdata/3d-print-assist/data:/data` in `compose.yaml`).
 
 ---
