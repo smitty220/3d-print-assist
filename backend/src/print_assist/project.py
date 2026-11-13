@@ -36,7 +36,7 @@ class Settings(BaseModel):
     update_mode: Literal["manual", "auto"] = "manual"
     printer: str = DEFAULT_PRINTER
     slicer: str = ""
-    ai_mode: Literal["mcp", "api"] = "api"
+    ai_mode: Literal["mcp", "api"] = "mcp"
     ai_provider: Literal["auto", "agy", "gemini", "anthropic"] = "auto"
     ai_model: str = ""
 

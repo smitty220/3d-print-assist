@@ -26,7 +26,7 @@ interface Props {
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
-  const mode = status?.mode ?? 'api'
+  const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
   const chat = status?.chat
@@ -77,7 +77,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
         </div>
       <div className="row sm" style={{ padding: '8px 12px', gap: 10, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minWidth: 0, gap: 3 }}>
-          <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>LLM</label>
+          <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Assistant</label>
           <select
             id="ai-provider-select"
             value={mode === 'mcp' ? 'mcp' : (status?.settings_provider || 'auto')}
@@ -145,7 +145,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
                 <p>Run Claude Code or your MCP client in the <code>3d-print-assist</code> folder while this app is open. It connects through
                   the <code>3d-print-assist</code> MCP server and designs with the same tools you have; you watch each change
                   land here and in the tree, and can edit alongside it.</p>
-                <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : status?.provider === 'agy' ? 'Antigravity' : 'Claude'}</b> in this window, pick an LLM from the dropdown above.</p>
+                <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : status?.provider === 'agy' ? 'Antigravity' : 'Claude'}</b> in this window, pick an Assistant from the dropdown above.</p>
               </div>
             )}
             {ai.map((a, i) => (
@@ -175,6 +175,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
                     <code>backend/.env</code>; it is read on the next message, no restart needed. Model: {status?.model ?? '…'}.
                   </p>
                 )}
+                <p>Or choose <b>External MCP (Terminal / IDE)</b> above to drive the app from Claude Code.</p>
               </div>
             )}
             {chat?.log.map((e, i) => (
