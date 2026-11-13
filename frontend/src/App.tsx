@@ -567,6 +567,16 @@ export default function App() {
                     if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
                   })
                 }}
+                onBuild={(note) => {
+                  const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
+                  const msg = `Build concept ${shownConcept.id} ("${shownConcept.title}"). Call look_at_concept("${shownConcept.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
+                  setConceptOpen(null)
+                  if (rightPanel.collapsed) rightPanel.setCollapsed(false)
+                  run(async () => {
+                    if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+                    await api.chat(msg)
+                  }).then(() => api.aiStatus().then(setAi))
+                }}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
             )}
             {feature && spec && (
