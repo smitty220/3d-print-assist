@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { toCreasedNormals } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { PlateMesh, ShapeMesh } from '../api'
 import { SectionTool, type CapStyle } from './section'
 
@@ -312,15 +313,17 @@ export class Viewer {
     }
     for (const o of plate.objects) {
       for (const p of o.parts) {
-        const geo = new THREE.BufferGeometry()
-        geo.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
-        geo.setIndex(new THREE.BufferAttribute(p.indices, 1))
-        geo.computeVertexNormals()
+        const raw = new THREE.BufferGeometry()
+        raw.setAttribute('position', new THREE.BufferAttribute(p.positions, 3))
+        raw.setIndex(new THREE.BufferAttribute(p.indices, 1))
+        const edges = new THREE.EdgesGeometry(raw, 30)
+        const geo = toCreasedNormals(raw, Math.PI / 6)
+        raw.dispose()
         const c = new THREE.Color(p.color ?? '#c8c2b4')
         const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: c, metalness: 0.2, roughness: 0.55,
           polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }))
         mesh.raycast = NO_RAYCAST
-        const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: 0x2a3138, transparent: true, opacity: 0.8 }))
+        const lines = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x2a3138, transparent: true, opacity: 0.8 }))
         lines.raycast = () => {}
         group.add(mesh, lines)
       }
