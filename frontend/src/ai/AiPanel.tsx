@@ -152,12 +152,12 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
 
       {mode === 'mcp' ? (() => {
         const cleanUrl = (mcpUrl.trim() || defaultMcpUrl()).replace(/\/+$/, '')
+        const remoteMcpUrl = `${cleanUrl}/mcp/`
         const mcpJson = JSON.stringify({
           mcpServers: {
             '3d-print-assist': {
-              command: 'uv',
-              args: ['run', '--directory', 'mcp', 'print-assist-mcp'],
-              env: { PRINT_ASSIST_URL: cleanUrl },
+              type: 'http',
+              url: remoteMcpUrl,
             },
           },
         }, null, 2)
@@ -166,16 +166,14 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             <div className="log">
               {ai.length === 0 && (
                 <div className="intro">
-                  <p>Run Claude Code, Gemini CLI, or your MCP client in the <code>3d-print-assist</code> folder while this app is open. It connects through
-                    the <code>3d-print-assist</code> MCP server and designs with the same tools you have; you watch each change
-                    land here and in the tree, and can edit alongside it.</p>
+                  <p>Connect Claude Code, Gemini CLI, or any MCP client to this app. You watch each change land here and in the tree, and can edit alongside it.</p>
                   <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : status?.provider === 'agy' ? 'Antigravity' : 'Claude'}</b> in this window, pick an Assistant from the dropdown above.</p>
                 </div>
               )}
               <details className="intro" open={ai.length === 0} style={{ marginTop: 6 }}>
-                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>MCP connection (<code>PRINT_ASSIST_URL</code>)</summary>
+                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>MCP connection (no local repo needed)</summary>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-                  <label htmlFor="mcp-url-input" className="nm">Server URL for your MCP client (e.g. local or Unraid IP):</label>
+                  <label htmlFor="mcp-url-input" className="nm">Server URL (auto-detected; edit if connecting over LAN/VPN):</label>
                   <div className="row" style={{ gap: 6 }}>
                     <input
                       id="mcp-url-input"
@@ -214,7 +212,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
                     >
                       {copied ? 'Copied!' : 'Copy .mcp.json'}
                     </button>
-                    <span className="nm">Or run with <code>PRINT_ASSIST_URL={cleanUrl}</code></span>
+                    <span className="nm">Endpoint: <code>{remoteMcpUrl}</code></span>
                   </div>
                 </div>
               </details>

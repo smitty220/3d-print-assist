@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
@@ -30,7 +31,15 @@ from .params.graph import resolve
 from .printers import profiles
 from .project import Projects
 
-app = FastAPI(title="3D Print Assist", version="0.2.0")
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    from print_assist_mcp.server import mcp as _mcp
+
+    async with _mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title="3D Print Assist", version="0.2.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5183", "http://127.0.0.1:5183"],
@@ -1227,6 +1236,19 @@ def ai_chat_reset() -> dict:
     return chat().to_dict()
 
 
+# Expose the MCP server over Streamable HTTP at /mcp so remote clients can connect by URL with no local repo.
+from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
+from print_assist_mcp.server import mcp as _mcp_server  # noqa: E402
+
+app.mount(
+    "/mcp",
+    _mcp_server.streamable_http_app(
+        streamable_http_path="/",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    ),
+)
+
+
 _static_dir = os.environ.get("PRINT_ASSIST_STATIC_DIR")
 if _static_dir:
     from pathlib import Path
@@ -1241,7 +1263,7 @@ if _static_dir:
 
         @app.get("/{full_path:path}", include_in_schema=False)
         def _spa(full_path: str) -> Response:
-            if full_path.startswith("api/"):
+            if full_path.startswith(("api/", "mcp")):
                 raise HTTPException(404)
             candidate = (_static_root / full_path).resolve()
             if full_path and candidate.is_file() and candidate.is_relative_to(_static_root):

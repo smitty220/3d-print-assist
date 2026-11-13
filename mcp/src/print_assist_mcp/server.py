@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from mcp.server.mcpserver import Image, MCPServer
 
-BASE_URL = os.environ.get("PRINT_ASSIST_URL", "http://127.0.0.1:8010")
+BASE_URL = os.environ.get("PRINT_ASSIST_URL") or f"http://127.0.0.1:{os.environ.get('PRINT_ASSIST_PORT', '8010')}"
 ACTOR = {"X-Actor": os.environ.get("PRINT_ASSIST_ACTOR", "claude-code")}  # the in-app chat reuses these tools as "claude"
 
 _client: httpx.Client | None = None
