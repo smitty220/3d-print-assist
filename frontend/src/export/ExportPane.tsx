@@ -59,6 +59,25 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, slicers
   const [sendMenu, setSendMenu] = useState(false)
   const [sending, setSending] = useState<string | null>(null)
   const activeSlicer = slicers.find((s) => s.id === slicer) ?? slicers.find((s) => s.installed) ?? slicers[0]
+  const anySlicerInstalled = slicers.some((s) => s.installed)
+
+  async function sendOrDownload(s: SlicerInfo) {
+    if (!anySlicerInstalled) {
+      const a = document.createElement('a')
+      a.href = api.exportUrl('3mf')
+      a.download = ''
+      a.click()
+      return
+    }
+    setSending(s.name)
+    try {
+      await api.sendToSlicer(s.id, '3mf')
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSending(null)
+    }
+  }
   const [addingPrinter, setAddingPrinter] = useState(false)
   const [pName, setPName] = useState('')
   const [pX, setPX] = useState('256')
@@ -201,22 +220,13 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, slicers
             type="button"
             className="btn"
             style={{ flex: 1 }}
-            disabled={!!why || !!sending || !activeSlicer?.installed}
-            title={activeSlicer?.installed ? `Export 3MF and open in ${activeSlicer.name}` : `${activeSlicer?.name ?? 'Slicer'} not found in /Applications`}
-            onClick={async () => {
-              if (!activeSlicer) return
-              setSendMenu(false)
-              setSending(activeSlicer.name)
-              try {
-                await api.sendToSlicer(activeSlicer.id, '3mf')
-              } catch (e) {
-                onError(e instanceof Error ? e.message : String(e))
-              } finally {
-                setSending(null)
-              }
-            }}
+            disabled={!!why || !!sending || (anySlicerInstalled && !activeSlicer?.installed)}
+            title={!anySlicerInstalled
+              ? `Download 3MF for ${activeSlicer?.name ?? 'slicer'} (headless server)`
+              : activeSlicer?.installed ? `Export 3MF and open in ${activeSlicer.name}` : `${activeSlicer?.name ?? 'Slicer'} not found in /Applications`}
+            onClick={() => activeSlicer && (setSendMenu(false), sendOrDownload(activeSlicer))}
           >
-            {sending ? `Opening ${sending}…` : `Send to ${activeSlicer?.name ?? 'Slicer'}`}
+            {sending ? `Opening ${sending}…` : anySlicerInstalled ? `Send to ${activeSlicer?.name ?? 'Slicer'}` : `Download 3MF (${activeSlicer?.name ?? 'Slicer'})`}
           </button>
           <button
             type="button"
@@ -236,23 +246,16 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, slicers
                 key={s.id}
                 type="button"
                 role="menuitem"
-                disabled={!s.installed}
-                title={s.installed ? `Export 3MF and open in ${s.name}` : `${s.name} not found in /Applications`}
-                onClick={async () => {
+                disabled={anySlicerInstalled && !s.installed}
+                title={!anySlicerInstalled ? `Download 3MF for ${s.name}` : s.installed ? `Export 3MF and open in ${s.name}` : `${s.name} not found in /Applications`}
+                onClick={() => {
                   setSendMenu(false)
                   onSlicer(s.id)
-                  setSending(s.name)
-                  try {
-                    await api.sendToSlicer(s.id, '3mf')
-                  } catch (e) {
-                    onError(e instanceof Error ? e.message : String(e))
-                  } finally {
-                    setSending(null)
-                  }
+                  sendOrDownload(s)
                 }}
               >
                 <span>{s.name}</span>
-                {!s.installed && <span className="kb">not installed</span>}
+                <span className="nm" style={{ marginLeft: 'auto' }}>{!anySlicerInstalled ? '3MF' : s.installed ? 'Open' : 'not installed'}</span>
               </button>
             ))}
           </div>

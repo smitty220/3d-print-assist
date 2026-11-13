@@ -19,6 +19,7 @@ export function PlatesPane({ tree, plate, onPlate, slicers, slicer, onError }: P
   const [busy, setBusy] = useState(false)
   const [sending, setSending] = useState(false)
   const activeSlicer = slicers.find((s) => s.id === slicer) ?? slicers.find((s) => s.installed) ?? slicers[0]
+  const anySlicerInstalled = slicers.some((s) => s.installed)
   const items = tree.print_layout?.items ?? 0
   const why = tree.stale ? 'Update the model first' : tree.failed ? 'A feature failed: fix it first' : null
 
@@ -102,7 +103,7 @@ export function PlatesPane({ tree, plate, onPlate, slicers, slicer, onError }: P
         <button className="btn primary" disabled={!!why || busy || problems.length > 0} onClick={exportPlates}>
           {busy ? 'Exporting…' : `Export ${report?.plates.length ?? tree.print_layout?.plates} plates (3MF)`}
         </button>
-        {activeSlicer && (
+        {activeSlicer && anySlicerInstalled && (
           <button
             className="btn"
             disabled={!!why || sending || problems.length > 0 || !activeSlicer.installed}

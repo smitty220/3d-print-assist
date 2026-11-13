@@ -60,16 +60,19 @@ export function Header({
               </select>
             </label>
           )}
-          {slicers.length > 0 && (
-            <label className="hdr-pick" title="Target slicer">
-              <span className="hdr-lbl">Slicer</span>
-              <select aria-label="Slicer" value={slicer} onChange={(e) => onSlicer(e.target.value)}>
-                {slicers.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}{s.installed ? '' : ' (not installed)'}</option>
-                ))}
-              </select>
-            </label>
-          )}
+          {slicers.length > 0 && (() => {
+            const anyInstalled = slicers.some((s) => s.installed)
+            return (
+              <label className="hdr-pick" title="Target slicer">
+                <span className="hdr-lbl">Slicer</span>
+                <select aria-label="Slicer" value={slicer} onChange={(e) => onSlicer(e.target.value)}>
+                  {slicers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}{anyInstalled && !s.installed ? ' (not installed)' : ''}</option>
+                  ))}
+                </select>
+              </label>
+            )
+          })()}
         </div>
       )}
       <div className="spacer" />
