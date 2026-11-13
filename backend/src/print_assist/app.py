@@ -926,10 +926,18 @@ def _find_slicer_app(candidates: list[str]) -> str | None:
 
     if sys.platform == "darwin":
         for base in (Path("/Applications"), Path.home() / "Applications"):
+            if not base.is_dir():
+                continue
             for name in candidates:
                 app_path = base / f"{name}.app"
                 if app_path.exists():
                     return str(app_path)
+            for sub in base.iterdir():
+                if sub.is_dir() and not sub.name.endswith(".app"):
+                    for name in candidates:
+                        app_path = sub / f"{name}.app"
+                        if app_path.exists():
+                            return str(app_path)
     for name in candidates:
         found = shutil.which(name)
         if found:
