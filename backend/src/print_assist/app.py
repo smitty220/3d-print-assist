@@ -1225,3 +1225,25 @@ def ai_chat_reset() -> dict:
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return chat().to_dict()
+
+
+_static_dir = os.environ.get("PRINT_ASSIST_STATIC_DIR")
+if _static_dir:
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+
+    _static_root = Path(_static_dir).resolve()
+    if _static_root.is_dir():
+        _assets_dir = _static_root / "assets"
+        if _assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def _spa(full_path: str) -> Response:
+            if full_path.startswith("api/"):
+                raise HTTPException(404)
+            candidate = (_static_root / full_path).resolve()
+            if full_path and candidate.is_file() and candidate.is_relative_to(_static_root):
+                return FileResponse(candidate)
+            return FileResponse(_static_root / "index.html")

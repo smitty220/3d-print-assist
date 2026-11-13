@@ -1,0 +1,16 @@
+services:
+  3d-print-assist:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: 3d-print-assist
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./data:/data
+    environment:
+      - PRINT_ASSIST_DATA=/data
+      # Set your API key(s) for In-App Chat (Gemini / Claude):
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
