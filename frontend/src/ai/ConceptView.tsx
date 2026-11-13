@@ -9,10 +9,11 @@ const STATUS = { pending: 'Waiting for you', approved: 'Approved', revise: 'Chan
 interface Props {
   concept: Concept
   onAnswer: (decision: 'approve' | 'revise', note: string) => void
+  onBuild?: (note: string) => void
   onClose: () => void
 }
 
-export function ConceptView({ concept: c, onAnswer, onClose }: Props) {
+export function ConceptView({ concept: c, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
   const pending = c.status === 'pending'
   const draw = useRef<HTMLDivElement>(null)
@@ -49,7 +50,23 @@ export function ConceptView({ concept: c, onAnswer, onClose }: Props) {
                 <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
               </div>
             </div>
-          ) : c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
+          ) : (
+            <>
+              {c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
+              {onBuild && (
+                <div className="canswer">
+                  <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
+                  <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+                    placeholder="Optional notes before building this concept…"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
+                  <div className="row">
+                    <span className="spacer" />
+                    <button className="btn primary" onClick={() => onBuild(note)}>Approve and build</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     </section>

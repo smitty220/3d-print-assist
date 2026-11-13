@@ -59,6 +59,8 @@ def _check_refs(d: Design, refs: dict[str, str], before: int) -> None:
 
 def _split_values(kind: str, values: dict[str, Any]) -> tuple[dict, dict]:
     """Literal values and formulas: a string given for a number is a formula (`"height * 0.8"`)."""
+    if not isinstance(values, dict):
+        raise OpError(f"{kind} params must be a dictionary, got {type(values).__name__}")
     spec = {s.name: s for s in FEATURES[kind].params}
     bad = sorted(set(values) - set(spec))
     if bad:

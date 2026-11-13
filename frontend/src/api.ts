@@ -291,7 +291,7 @@ export interface Project {
     update_mode: 'manual' | 'auto'
     printer: string
     ai_mode: 'mcp' | 'api'
-    ai_provider?: 'auto' | 'gemini' | 'anthropic'
+    ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'
     ai_model?: string
   }
   design: { sketches: (Sketch & { report?: SolveReport | null })[] }
@@ -340,6 +340,8 @@ export const api = {
   openProject: (slug: string) => send<Project>('POST', `/projects/${encodeURIComponent(slug)}/open`),
   history: () => get<Version[]>('/history'),
   printers: () => get<Printer[]>('/printers'),
+  createPrinter: (p: { name: string; bed: [number, number, number]; nozzle_dia?: number; slots?: number }) =>
+    send<Printer>('POST', '/printers', p),
   settings: (s: Partial<Project['settings']>) => send<Project['settings']>('PUT', '/settings', s),
   catalog: () => get<FeatureSpec[]>('/features/catalog'),
   fonts: () => get<FontInfo[]>('/fonts'),

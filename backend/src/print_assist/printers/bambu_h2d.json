@@ -1,0 +1,1 @@
+{"id": "bambu_h2d", "name": "Bambu H2D (Dual Nozzle)", "bed": [300, 320, 320], "nozzles": [{"dia": 0.4, "slots": 4}, {"dia": 0.4, "slots": 1}]}

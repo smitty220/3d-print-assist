@@ -7,13 +7,56 @@ key here.
 from __future__ import annotations
 
 import os
+import shutil
+import time
 from pathlib import Path
 from typing import Any, Protocol
 
 
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
+
+DEFAULT_GEMINI_MODELS: list[dict[str, str]] = [
+    {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Recommended, Free Tier)"},
+    {"id": "gemini-4-hydrogen", "label": "Gemini 4 Hydrogen"},
+    {"id": "gemini-4-carbon", "label": "Gemini 4 Carbon"},
+    {"id": "gemini-4-argon", "label": "Gemini 4 Argon"},
+    {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+    {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
+    {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+]
+
+DEFAULT_AGY_MODELS: list[dict[str, str]] = [
+    {"id": "", "label": "Antigravity Default (Subscription)"},
+    {"id": "Gemini 4 Argon (High)", "label": "Gemini 4 Argon (High)"},
+    {"id": "Gemini 4 Argon (Medium)", "label": "Gemini 4 Argon (Medium)"},
+    {"id": "Gemini 4 Argon (Low)", "label": "Gemini 4 Argon (Low)"},
+    {"id": "Gemini 4 Hydrogen (XHigh)", "label": "Gemini 4 Hydrogen (XHigh)"},
+    {"id": "Gemini 4 Hydrogen (High)", "label": "Gemini 4 Hydrogen (High)"},
+    {"id": "Gemini 4 Hydrogen (Medium)", "label": "Gemini 4 Hydrogen (Medium)"},
+    {"id": "Gemini 4 Hydrogen (Low)", "label": "Gemini 4 Hydrogen (Low)"},
+    {"id": "Orchestrator (Argon)", "label": "Orchestrator (Argon)"},
+    {"id": "Gemini 3.8 Flash (High)", "label": "Gemini 3.8 Flash (High)"},
+    {"id": "Gemini 3.8 Flash (Medium)", "label": "Gemini 3.8 Flash (Medium)"},
+    {"id": "Gemini 3.8 Flash (Low)", "label": "Gemini 3.8 Flash (Low)"},
+    {"id": "Claude Opus 5.5 (High)", "label": "Claude Opus 5.5 (High)"},
+    {"id": "Claude Opus 5.5 (Medium)", "label": "Claude Opus 5.5 (Medium)"},
+    {"id": "Claude Opus 5.5 (Low)", "label": "Claude Opus 5.5 (Low)"},
+    {"id": "Claude Sonnet 5.5 (High)", "label": "Claude Sonnet 5.5 (High)"},
+    {"id": "Claude Sonnet 5.5 (Medium)", "label": "Claude Sonnet 5.5 (Medium)"},
+    {"id": "Claude Sonnet 5.5 (Low)", "label": "Claude Sonnet 5.5 (Low)"},
+    {"id": "GPT-OSS 120B (Medium)", "label": "GPT-OSS 120B (Medium)"},
+]
+AGY_MODEL_IDS = {m["id"] for m in DEFAULT_AGY_MODELS if m["id"]}
+
+_GEMINI_SKIP_SUBSTRINGS = (
+    "-tts", "-image", "nano-banana", "omni", "transcribe",
+    "robotics", "computer-use", "embedding", "-live", "decision",
+    "customtools", "-latest", "flash-lite",
+)
+_GEMINI_MODELS_CACHE: tuple[float, list[dict[str, str]]] | None = None
+_GEMINI_MODELS_TTL = 60.0  # seconds
 
 GEMINI_MODEL_ALIASES = {
     "gemini-4": "gemini-4-argon",
@@ -57,15 +100,38 @@ ENV_KEYS = (
 _SHELL_ENV = {k for k in ENV_KEYS if os.environ.get(k)}
 
 
-def provider(override: str | None = None) -> str:
-    """Return active provider: 'gemini' or 'anthropic'.
+def find_agy_bin() -> str | None:
+    """Locate the Antigravity CLI (`agy`) binary if installed."""
+    explicit = os.environ.get("AGY_BIN")
+    if explicit and Path(explicit).is_file():
+        return explicit
+    found = shutil.which("agy")
+    if found:
+        return found
+    local_bin = Path.home() / ".local" / "bin" / "agy"
+    if local_bin.is_file():
+        return str(local_bin)
+    return None
 
-    Can be explicitly set with override, PRINT_ASSIST_AI_PROVIDER ('gemini' or 'anthropic').
+
+class AgyClient:
+    """Marker client that executes turns via the Antigravity CLI (`agy -p`)."""
+
+    def __init__(self, binary: str) -> None:
+        self.binary = binary
+
+
+def provider(override: str | None = None) -> str:
+    """Return active provider: 'agy', 'gemini', or 'anthropic'.
+
+    Can be explicitly set with override or PRINT_ASSIST_AI_PROVIDER ('agy', 'gemini', or 'anthropic').
     Otherwise auto-detects based on available API keys and model name, defaulting
     to 'anthropic' for backwards compatibility.
     """
     load_env_key()
     p = (override or os.environ.get("PRINT_ASSIST_AI_PROVIDER") or "").strip().lower()
+    if p in ("agy", "antigravity"):
+        return "agy"
     if p in ("gemini", "google"):
         return "gemini"
     if p in ("anthropic", "claude"):
@@ -88,6 +154,9 @@ def provider(override: str | None = None) -> str:
 def model_name(model_override: str | None = None, provider_override: str | None = None) -> str:
     load_env_key()
     p = provider_override or provider()
+    if p == "agy":
+        m = (model_override or "").strip()
+        return m if m in AGY_MODEL_IDS else ""
     custom = (model_override or os.environ.get("PRINT_ASSIST_MODEL") or "").strip()
     if custom:
         if p == "gemini":
@@ -99,6 +168,8 @@ def model_name(model_override: str | None = None, provider_override: str | None 
 def has_api_key(provider_override: str | None = None) -> bool:
     load_env_key()
     p = provider_override or provider()
+    if p == "agy":
+        return bool(find_agy_bin())
     if p == "gemini":
         return bool(os.environ.get("GEMINI_API_KEY"))
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -123,7 +194,7 @@ def make_gemini_client() -> Any:
         raise RuntimeError("No Gemini API key: set GEMINI_API_KEY in your shell or in backend/.env, then restart the backend")
     from google import genai
 
-    client = genai.Client(api_key=key)
+    client = genai.Client(api_key=key, http_options={"timeout": 180000})
     try:
         from google.genai._gaos.utils import RetryConfig
 
@@ -135,10 +206,63 @@ def make_gemini_client() -> Any:
     return client
 
 
+def make_agy_client() -> AgyClient:
+    binary = find_agy_bin()
+    if not binary:
+        raise RuntimeError("Antigravity CLI (`agy`) not found; install `agy` or set AGY_BIN")
+    return AgyClient(binary)
+
+
 def make_client(provider_override: str | None = None) -> Any:
     load_env_key()
     p = provider_override or provider()
+    if p == "agy":
+        return make_agy_client()
     if p == "gemini":
         return make_gemini_client()
     return make_anthropic_client()
+
+
+def list_gemini_models(force_refresh: bool = False) -> list[dict[str, str]]:
+    """Fetch available Gemini chat models from the API, caching briefly for fast UI status polls."""
+    global _GEMINI_MODELS_CACHE
+    load_env_key()
+    if not os.environ.get("GEMINI_API_KEY"):
+        return list(DEFAULT_GEMINI_MODELS)
+
+    now = time.time()
+    if not force_refresh and _GEMINI_MODELS_CACHE is not None:
+        cached_at, cached_models = _GEMINI_MODELS_CACHE
+        if now - cached_at < _GEMINI_MODELS_TTL:
+            return list(cached_models)
+
+    try:
+        client = make_gemini_client()
+        fetched: list[dict[str, str]] = []
+        for m in client.models.list():
+            name = getattr(m, "name", "") or ""
+            actions = getattr(m, "supported_actions", None) or []
+            if not name.startswith("models/gemini-") or "generateContent" not in actions:
+                continue
+            mid = name.removeprefix("models/")
+            if any(s in mid for s in _GEMINI_SKIP_SUBSTRINGS):
+                continue
+            label = getattr(m, "display_name", None) or mid
+            if mid == "gemini-3-flash-preview":
+                label = f"{label} (Recommended, Free Tier)"
+            fetched.append({"id": mid, "label": label})
+
+        if fetched:
+            # Put recommended model first, then newest models first
+            fetched.sort(key=lambda x: (x["id"] != "gemini-3-flash-preview", x["id"]), reverse=False)
+            # Re-order non-recommended items in reverse (newest versions at the top)
+            rec = [x for x in fetched if x["id"] == "gemini-3-flash-preview"]
+            others = list(reversed([x for x in fetched if x["id"] != "gemini-3-flash-preview"]))
+            result = rec + others
+            _GEMINI_MODELS_CACHE = (now, result)
+            return list(result)
+    except Exception:
+        pass
+
+    return list(DEFAULT_GEMINI_MODELS)
 

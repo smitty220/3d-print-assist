@@ -3,15 +3,21 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Activity, AiStatus, Concept } from '../api'
 import { Icon } from '../ui/icons'
+import type { usePanelLayout } from '../ui/usePanelLayout'
+
+type PanelLayout = ReturnType<typeof usePanelLayout>
 
 interface Props {
   status: AiStatus | null
   activity: Activity[]
   context: string | null
   concept: Concept | null // the newest
+  layout: PanelLayout
+  zIndex?: number
+  onFocusPanel?: () => void
   onOpenConcept: (id: string) => void
   onMode: (m: 'mcp' | 'api') => void
-  onSettings?: (patch: { ai_provider?: 'auto' | 'gemini' | 'anthropic'; ai_model?: string }) => void
+  onSettings?: (patch: { ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
   onSend: (text: string) => void
   onCancel: () => void
   onReset: () => void
@@ -20,7 +26,7 @@ interface Props {
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-export function AiPanel({ status, activity, context, concept, onOpenConcept, onMode, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onMode, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
@@ -35,46 +41,85 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
     setText('')
   }
 
+  const isCollapsed = layout.collapsed && !layout.floating
   return (
-    <aside className="side ai" aria-label="AI assistant">
-      <div className="aihead">
-        <h2>AI assistant</h2>
-        <span className="spacer" />
-        <div className="seg sm" role="group" aria-label="AI mode">
-          <button aria-pressed={mode === 'mcp'} onClick={() => onMode('mcp')} title="Claude Code or MCP agent connects from terminal">MCP Agent</button>
-          <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
+    <aside
+      className={`side ai${isCollapsed ? ' collapsed' : ''}${layout.floating ? ' floating' : ''}`}
+      style={layout.floating ? { left: layout.box.x, top: layout.box.y, width: layout.box.w, height: layout.box.h, zIndex } : undefined}
+      onPointerDown={onFocusPanel}
+      aria-label="AI assistant"
+    >
+      {isCollapsed ? (
+        <button type="button" className="side-rail" onClick={() => layout.setCollapsed(false)} aria-expanded={false}
+          aria-label="Expand AI assistant panel" title="Expand AI assistant panel">
+          <Icon name="chevL" size={14} />
+          <span className="side-rail-label">AI assistant</span>
+        </button>
+      ) : null}
+      <div className="side-body" hidden={isCollapsed}>
+        <div className="aihead">
+          {layout.floating ? (
+            <button type="button" className="side-toggle" onClick={() => layout.setFloating(false)}
+              aria-label="Dock AI assistant panel" title="Dock AI assistant panel">
+              <Icon name="dock" size={14} />
+            </button>
+          ) : (
+            <button type="button" className="side-toggle" onClick={() => layout.setCollapsed(true)} aria-expanded={true}
+              aria-label="Collapse AI assistant panel" title="Collapse AI assistant panel">
+              <Icon name="chevR" size={14} />
+            </button>
+          )}
+          <button type="button" className={`side-grip${layout.dragging ? ' dragging' : ''}`}
+            aria-label="Move AI assistant panel. Drag to float or use arrow keys when floating."
+            title="Drag to float / move panel" {...layout.moveHandleProps}>
+            <Icon name="grip" size={14} />
+          </button>
+          <h2>AI assistant</h2>
+          <span className="spacer" />
+          <div className="seg sm" role="group" aria-label="AI mode">
+            <button aria-pressed={mode === 'mcp'} onClick={() => onMode('mcp')} title="Claude Code or MCP agent connects from terminal">MCP Agent</button>
+            <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
+          </div>
         </div>
-      </div>
-      {mode === 'api' && <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 2 }}>
+      {mode === 'api' && <div className="row sm" style={{ padding: '8px 12px', gap: 10, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minWidth: 0, gap: 3 }}>
           <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
           <select
             id="ai-provider-select"
             value={status?.settings_provider || 'auto'}
             onChange={(e) => {
-              onSettings?.({ ai_provider: e.target.value as 'auto' | 'gemini' | 'anthropic', ai_model: '' })
+              onSettings?.({ ai_provider: e.target.value as 'auto' | 'agy' | 'gemini' | 'anthropic', ai_model: '' })
             }}
-            style={{ fontSize: 12, padding: '3px 6px' }}
+            style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
           >
-            <option value="auto">Auto ({status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
-            <option value="gemini">Google Gemini</option>
-            <option value="anthropic">Anthropic Claude</option>
+            <option value="auto">Auto ({status?.provider === 'agy' ? 'Antigravity' : status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
+            <option value="agy">Antigravity CLI (Subscription)</option>
+            <option value="gemini">Google Gemini (API Key)</option>
+            <option value="anthropic">Anthropic Claude (API Key)</option>
           </select>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: '1.25 1 0', minWidth: 0, gap: 3 }}>
           <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
-          <select
-            id="ai-model-select"
-            value={status?.settings_model || status?.model || ''}
-            onChange={(e) => {
-              onSettings?.({ ai_model: e.target.value })
-            }}
-            style={{ fontSize: 12, padding: '3px 6px' }}
-          >
-            {(status?.available_models?.[status?.provider || 'gemini'] || []).map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+          {(() => {
+            const models = status?.available_models?.[status?.provider || 'gemini'] || []
+            const picked = status?.settings_model && models.some((m) => m.id === status.settings_model)
+              ? status.settings_model
+              : (status?.model && models.some((m) => m.id === status.model) ? status.model : (models[0]?.id ?? ''))
+            return (
+              <select
+                id="ai-model-select"
+                value={picked}
+                onChange={(e) => {
+                  onSettings?.({ ai_model: e.target.value })
+                }}
+                style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            )
+          })()}
         </div>
       </div>}
       {context && <div className="ctx">Context: {context}</div>}
@@ -118,12 +163,16 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
           <div className="log">
             {!status?.key && (
               <div className="intro">
-                <p>
-                  No {status?.provider === 'gemini' ? 'Gemini' : 'Claude'} API key yet. Put{' '}
-                  <code>{status?.provider === 'gemini' ? 'GEMINI_API_KEY=…' : 'ANTHROPIC_API_KEY=…'}</code> (or{' '}
-                  <code>{status?.provider === 'gemini' ? 'ANTHROPIC_API_KEY=…' : 'GEMINI_API_KEY=…'}</code>) in{' '}
-                  <code>backend/.env</code>; it is read on the next message, no restart needed. Model: {status?.model ?? '…'}.
-                </p>
+                {status?.provider === 'agy' ? (
+                  <p>Antigravity CLI (<code>agy</code>) was not found. Make sure <code>agy</code> is installed (e.g. <code>~/.local/bin/agy</code>).</p>
+                ) : (
+                  <p>
+                    No {status?.provider === 'gemini' ? 'Gemini' : 'Claude'} API key yet. Put{' '}
+                    <code>{status?.provider === 'gemini' ? 'GEMINI_API_KEY=…' : 'ANTHROPIC_API_KEY=…'}</code> (or{' '}
+                    <code>{status?.provider === 'gemini' ? 'ANTHROPIC_API_KEY=…' : 'GEMINI_API_KEY=…'}</code>) in{' '}
+                    <code>backend/.env</code>; it is read on the next message, no restart needed. Model: {status?.model ?? '…'}.
+                  </p>
+                )}
               </div>
             )}
             {chat?.log.map((e, i) => (
@@ -153,6 +202,16 @@ export function AiPanel({ status, activity, context, concept, onOpenConcept, onM
             </div>
           </div>
         </>
+      )}
+      </div>
+      {!isCollapsed && !layout.floating && (
+        <div className="side-resizer right" role="separator" aria-orientation="vertical"
+          aria-label="Resize AI assistant panel. Use left and right arrow keys or double-click to reset."
+          title="Drag to resize (double-click to reset)" tabIndex={0} {...layout.dockResizeProps} />
+      )}
+      {layout.floating && (
+        <div className="float-resizer" role="separator" aria-label="Resize floating AI assistant panel"
+          title="Drag to resize" {...layout.floatResizeProps} />
       )}
     </aside>
   )

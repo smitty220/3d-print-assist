@@ -286,11 +286,35 @@ def get_printers() -> list[dict]:
     return [p.model_dump() for p in profiles().values()]
 
 
+class PrinterIn(BaseModel):
+    name: str
+    bed: tuple[float, float, float]
+    nozzle_dia: float = 0.4
+    slots: int = 1
+
+
+@app.post("/api/printers")
+def create_printer(body: PrinterIn) -> dict:
+    from .printers import Nozzle, PrinterProfile, save_custom_profile
+    from .project import slugify
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "Printer name is required")
+    if any(v <= 0 for v in body.bed):
+        raise HTTPException(422, "Bed dimensions must be positive")
+    if body.nozzle_dia <= 0 or body.slots < 1:
+        raise HTTPException(422, "Nozzle diameter must be positive and slots >= 1")
+    pid = f"custom_{slugify(name)}"
+    prof = save_custom_profile(PrinterProfile(id=pid, name=name, bed=body.bed, nozzles=[Nozzle(dia=body.nozzle_dia, slots=body.slots)]))
+    return prof.model_dump()
+
+
 class SettingsPatch(BaseModel):
     update_mode: Literal["manual", "auto"] | None = None
     printer: str | None = None
     ai_mode: Literal["mcp", "api"] | None = None
-    ai_provider: Literal["auto", "gemini", "anthropic"] | None = None
+    ai_provider: Literal["auto", "agy", "gemini", "anthropic"] | None = None
     ai_model: str | None = None
 
 
@@ -1032,8 +1056,8 @@ def chat():
 
 AVAILABLE_MODELS = {
     "gemini": [
-        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (Fast, Free Tier)"},
-        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Free Tier)"},
+        {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Recommended, Free Tier)"},
+        {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (Free Tier)"},
         {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
         {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
         {"id": "gemini-4-argon", "label": "Gemini 4.0 Argon (Reasoning, Paid Tier)"},
@@ -1047,12 +1071,17 @@ AVAILABLE_MODELS = {
 
 
 @app.get("/api/ai/status")
-def ai_status() -> dict:
+def ai_status(refresh: bool = False) -> dict:
     s = project().data.settings
     chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
     active_provider = ai.provider(chosen_provider)
     model = ai.model_name(s.ai_model or None, provider_override=active_provider)
     has_key = ai.has_api_key(active_provider)
+    available = {
+        "agy": ai.DEFAULT_AGY_MODELS,
+        "gemini": ai.list_gemini_models(force_refresh=refresh),
+        "anthropic": AVAILABLE_MODELS["anthropic"],
+    }
     return {
         "model": model,
         "provider": active_provider,
@@ -1060,7 +1089,7 @@ def ai_status() -> dict:
         "mode": s.ai_mode,
         "settings_provider": s.ai_provider,
         "settings_model": s.ai_model,
-        "available_models": AVAILABLE_MODELS,
+        "available_models": available,
         "chat": chat().to_dict(),
     }
 
@@ -1091,6 +1120,7 @@ def ai_chat(body: ChatIn) -> dict:
 @app.post("/api/ai/chat/cancel")
 def ai_chat_cancel() -> dict:
     chat().cancel.set()
+    ws().concepts.dismiss_pending("cancelled by user")
     return chat().to_dict()
 
 
@@ -1098,6 +1128,7 @@ def ai_chat_cancel() -> dict:
 def ai_chat_reset() -> dict:
     try:
         chat().reset()
+        ws().concepts.dismiss_pending("superseded by new conversation")
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
     return chat().to_dict()

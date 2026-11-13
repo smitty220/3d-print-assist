@@ -1,7 +1,7 @@
 // The app: header (design, mode tabs, update), toolbar, then the specification tree | the view | the AI panel, and the
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
@@ -16,6 +16,7 @@ import type { Tool } from './layout/tools'
 import { SketchEditor } from './sketch/SketchEditor'
 import { SpecTree, type NodeKey } from './tree/SpecTree'
 import { Icon } from './ui/icons'
+import { usePanelLayout } from './ui/usePanelLayout'
 import { ViewportPane } from './viewport/ViewportPane'
 import type { FacePick as ViewPick } from './viewer/Viewer'
 
@@ -47,6 +48,9 @@ export default function App() {
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
+  const leftPanel = usePanelLayout({ storageKey: 'pa.left', side: 'left', defaultWidth: 300, minWidth: 180, maxWidth: 580 })
+  const rightPanel = usePanelLayout({ storageKey: 'pa.right', side: 'right', defaultWidth: 360, minWidth: 240, maxWidth: 640 })
+  const [frontPanel, setFrontPanel] = useState<'left' | 'right'>('right')
   const [plateNo, setPlateNo] = useState(1) // the plate shown in the Plates tab
   const [plateMesh, setPlateMesh] = useState<PlateMesh | null>(null)
   const [selected, setSelected] = useState<NodeKey | null>(null)
@@ -136,9 +140,20 @@ export default function App() {
     return () => { clearTimeout(retry); es.close() }
   }, [run, loadAll])
 
-  // While the chat works, follow it.
+  // While the chat works, follow it; when a turn finishes, ensure tree/part/checks are synced even if SSE missed an event.
+  const wasChatRunning = useRef(false)
   useEffect(() => {
-    if (!ai?.chat.running) return
+    const running = !!ai?.chat.running
+    if (wasChatRunning.current && !running) {
+      api.tree().then(setTree).catch(() => {})
+      api.part().then(setPart).catch(() => {})
+      api.checks().then(setChecks).catch(() => {})
+      api.activity().then(setActivity).catch(() => {})
+      api.concepts().then(setConcepts).catch(() => {})
+      api.file().then(setFile).catch(() => {})
+    }
+    wasChatRunning.current = running
+    if (!running) return
     const t = setInterval(() => api.aiStatus().then(setAi).catch(() => {}), 1000)
     return () => clearInterval(t)
   }, [ai?.chat.running])
@@ -469,23 +484,79 @@ export default function App() {
         </div>
       )}
 
-      <main className="main">
-        <aside className="side left" aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}>
-          {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
-            onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
-            onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
-          {mode === 'sketch' && <div ref={setTreeHost} />}
-          {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
-          {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
-            onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }}
-            onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
-          {mode === 'part' && (
-            <div className="legend">
-              <span><Icon name="bolt" size={12} color="var(--stale)" fill="var(--stale)" /> needs update</span>
-              <span><Icon name="ok" size={12} color="var(--ok)" width={2.4} /> up to date</span>
-              <span><Icon name="warn" size={12} color="var(--warn)" width={2.2} /> check fails</span>
-              <span><Icon name="fail" size={12} color="var(--bad)" width={2.4} /> failed</span>
+      <main
+        className={`main${leftPanel.collapsed && !leftPanel.floating ? ' collapsed-left' : ''}${rightPanel.collapsed && !rightPanel.floating ? ' collapsed-right' : ''}`}
+        style={{
+          '--left-w': leftPanel.floating ? '0px' : leftPanel.collapsed ? '32px' : `${leftPanel.width}px`,
+          '--right-w': rightPanel.floating ? '0px' : rightPanel.collapsed ? '32px' : `${rightPanel.width}px`,
+        } as CSSProperties}
+      >
+        <aside
+          className={`side left${leftPanel.collapsed && !leftPanel.floating ? ' collapsed' : ''}${leftPanel.floating ? ' floating' : ''}`}
+          style={leftPanel.floating ? { left: leftPanel.box.x, top: leftPanel.box.y, width: leftPanel.box.w, height: leftPanel.box.h, zIndex: frontPanel === 'left' ? 42 : 41 } : undefined}
+          onPointerDown={() => setFrontPanel('left')}
+          aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}
+        >
+          {leftPanel.collapsed && !leftPanel.floating ? (
+            <button type="button" className="side-rail" onClick={() => leftPanel.setCollapsed(false)} aria-expanded={false}
+              aria-label="Expand left panel" title="Expand left panel">
+              <Icon name="chevR" size={14} />
+              <span className="side-rail-label">{mode === 'export' ? 'Export' : mode === 'plates' ? 'Plates' : mode === 'sketch' ? 'Sketch' : 'Model'}</span>
+            </button>
+          ) : (
+            <div className="sidehead">
+              <button type="button" className={`side-grip${leftPanel.dragging ? ' dragging' : ''}`}
+                aria-label="Move left panel. Drag to float or use arrow keys when floating."
+                title="Drag to float / move panel" {...leftPanel.moveHandleProps}>
+                <Icon name="grip" size={14} />
+              </button>
+              <h2>{mode === 'export' ? 'Export' : mode === 'plates' ? 'Plates' : mode === 'sketch' ? 'Sketch' : 'Model'}</h2>
+              <span className="spacer" />
+              {leftPanel.floating ? (
+                <button type="button" className="side-toggle" onClick={() => leftPanel.setFloating(false)}
+                  aria-label="Dock left panel" title="Dock left panel">
+                  <Icon name="dock" size={14} />
+                </button>
+              ) : (
+                <button type="button" className="side-toggle" onClick={() => leftPanel.setCollapsed(true)} aria-expanded={true}
+                  aria-label="Collapse left panel" title="Collapse left panel">
+                  <Icon name="chevL" size={14} />
+                </button>
+              )}
             </div>
+          )}
+          <div className="side-body" hidden={leftPanel.collapsed && !leftPanel.floating}>
+            {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
+              onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
+              onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
+            {mode === 'sketch' && <div ref={setTreeHost} />}
+            {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
+            {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
+              onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => Promise.all([api.project().then(setProject), api.checks().then(setChecks), api.tree().then(setTree)])) }}
+              onAddPrinter={async (p) => {
+                const created = await run(() => api.createPrinter(p))
+                if (!created) return
+                await api.settings({ printer: created.id })
+                await Promise.all([api.printers().then(setPrinters), api.project().then(setProject), api.checks().then(setChecks), api.tree().then(setTree)])
+              }}
+              onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
+            {mode === 'part' && (
+              <div className="legend">
+                <span><Icon name="bolt" size={12} color="var(--stale)" fill="var(--stale)" /> needs update</span>
+                <span><Icon name="ok" size={12} color="var(--ok)" width={2.4} /> up to date</span>
+                <span><Icon name="warn" size={12} color="var(--warn)" width={2.2} /> check fails</span>
+                <span><Icon name="fail" size={12} color="var(--bad)" width={2.4} /> failed</span>
+              </div>
+            )}
+          </div>
+          {!leftPanel.collapsed && !leftPanel.floating && (
+            <div className="side-resizer left" role="separator" aria-orientation="vertical"
+              aria-label="Resize left panel. Use left and right arrow keys or double-click to reset."
+              title="Drag to resize (double-click to reset)" tabIndex={0} {...leftPanel.dockResizeProps} />
+          )}
+          {leftPanel.floating && (
+            <div className="float-resizer" role="separator" aria-label="Resize floating left panel"
+              title="Drag to resize" {...leftPanel.floatResizeProps} />
           )}
         </aside>
 
@@ -513,6 +584,16 @@ export default function App() {
                     if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
                   })
                 }}
+                onBuild={(note) => {
+                  const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
+                  const msg = `Build concept ${shownConcept.id} ("${shownConcept.title}"). Call look_at_concept("${shownConcept.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
+                  setConceptOpen(null)
+                  if (rightPanel.collapsed) rightPanel.setCollapsed(false)
+                  run(async () => {
+                    if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+                    await api.chat(msg)
+                  }).then(() => api.aiStatus().then(setAi))
+                }}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
             )}
             {feature && spec && (
@@ -538,6 +619,7 @@ export default function App() {
         )}
 
         <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
+          layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onMode={(m) => { run(() => api.settings({ ai_mode: m })).then(() => api.aiStatus().then(setAi)) }}
           onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}

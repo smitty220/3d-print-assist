@@ -31,12 +31,28 @@ class PrinterProfile(BaseModel):
         return HERE / self.bambu_template if self.bambu_template else None
 
 
+def _custom_dir() -> Path:
+    from ..project import data_root
+
+    return data_root() / "printers"
+
+
 def profiles() -> dict[str, PrinterProfile]:
     out = {}
-    for path in sorted(HERE.glob("*.json")):
-        p = PrinterProfile.model_validate_json(path.read_text(encoding="utf-8"))
-        out[p.id] = p
+    for folder in (HERE, _custom_dir()):
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            p = PrinterProfile.model_validate_json(path.read_text(encoding="utf-8"))
+            out[p.id] = p
     return out
+
+
+def save_custom_profile(profile: PrinterProfile) -> PrinterProfile:
+    d = _custom_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{profile.id}.json").write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+    return profile
 
 
 DEFAULT_PRINTER = "bambu_a1_ams_lite"
