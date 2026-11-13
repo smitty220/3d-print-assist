@@ -140,9 +140,20 @@ export default function App() {
     return () => { clearTimeout(retry); es.close() }
   }, [run, loadAll])
 
-  // While the chat works, follow it.
+  // While the chat works, follow it; when a turn finishes, ensure tree/part/checks are synced even if SSE missed an event.
+  const wasChatRunning = useRef(false)
   useEffect(() => {
-    if (!ai?.chat.running) return
+    const running = !!ai?.chat.running
+    if (wasChatRunning.current && !running) {
+      api.tree().then(setTree).catch(() => {})
+      api.part().then(setPart).catch(() => {})
+      api.checks().then(setChecks).catch(() => {})
+      api.activity().then(setActivity).catch(() => {})
+      api.concepts().then(setConcepts).catch(() => {})
+      api.file().then(setFile).catch(() => {})
+    }
+    wasChatRunning.current = running
+    if (!running) return
     const t = setInterval(() => api.aiStatus().then(setAi).catch(() => {}), 1000)
     return () => clearInterval(t)
   }, [ai?.chat.running])
