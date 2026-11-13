@@ -401,6 +401,7 @@ def test_web_search_and_fetch_url_tools(monkeypatch):
 
 
 def test_agy_cli_chat_turn(monkeypatch):
+    import io
     from print_assist.ai import chat as ai_chat, client as ai_client
 
     calls = []
@@ -410,20 +411,35 @@ def test_agy_cli_chat_turn(monkeypatch):
 
         def __init__(self, cmd, **kw):
             calls.append(cmd)
-            self._polls = 0
+            lines = "\n".join([
+                json.dumps({"event": "init", "conversation_id": "conv-123"}),
+                json.dumps({
+                    "event": "step_update",
+                    "step_update": {
+                        "state": "DONE",
+                        "step_type": "tool",
+                        "tool_name": "call_mcp_tool",
+                        "tool_info": {"parameters": {"ToolName": "apply_changes"}, "output": "{\"ok\": true}"},
+                    },
+                }),
+                json.dumps({
+                    "event": "result",
+                    "result": {
+                        "conversation_id": "conv-123",
+                        "status": "SUCCESS",
+                        "response": "Created the box.",
+                        "usage": {"input_tokens": 120, "output_tokens": 15, "cache_read_tokens": 30},
+                    },
+                }),
+            ]) + "\n"
+            self.stdout = io.StringIO(lines)
+            self.stderr = io.StringIO("")
 
         def poll(self):
-            self._polls += 1
-            return 0 if self._polls >= 1 else None
+            return 0
 
-        def communicate(self):
-            payload = json.dumps({
-                "conversation_id": "conv-123",
-                "status": "SUCCESS",
-                "response": "Created the box.",
-                "usage": {"input_tokens": 120, "output_tokens": 15, "cache_read_tokens": 30},
-            })
-            return payload, ""
+        def wait(self, timeout=None):
+            return 0
 
     monkeypatch.setattr(ai_chat.subprocess, "Popen", lambda cmd, **kw: FakeProc(cmd, **kw))
     monkeypatch.setattr(ai_client, "find_agy_bin", lambda: "/fake/agy")

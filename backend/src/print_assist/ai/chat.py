@@ -11,6 +11,7 @@ import base64
 import html
 import json
 import re
+import select
 import subprocess
 import threading
 import time
@@ -249,14 +250,15 @@ class Chat:
     def _run_agy(self, client: AgyClient, model: str) -> None:
         user_text = str(self.messages[-1]["content"])
         prompt = user_text if self._agy_conv else (
-            "You are the AI assistant inside 3D Print Assist. Use the `3d-print-assist` MCP tools "
-            "(such as get_guide, get_model, apply_changes, render_preview, run_checks, create_design, etc.) "
+            "You are the CAD assistant inside 3D Print Assist. Do NOT inspect or edit repository source files; "
+            "ONLY use the `3d-print-assist` MCP tools (such as get_guide, get_model, get_feature_catalog, "
+            "apply_changes, render_preview, run_checks, propose_concept, wait_for_concept, create_design) "
             "to inspect and modify the currently open design in the running app.\n\nUser request: " + user_text
         )
         cmd = [
             client.binary,
             "-p", prompt,
-            "--output-format", "json",
+            "--output-format", "stream-json",
             "--dangerously-skip-permissions",
             "--print-timeout", "5m",
         ]
@@ -269,11 +271,49 @@ class Chat:
         proc = subprocess.Popen(
             cmd,
             cwd=str(repo_root) if repo_root.is_dir() else None,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            bufsize=1,
         )
-        while proc.poll() is None:
+
+        result_data: dict | None = None
+        last_text = ""
+        use_select = proc.stdout is not None and hasattr(proc.stdout, "fileno")
+
+        def _handle_line(raw_line: str) -> None:
+            nonlocal result_data, last_text
+            s = raw_line.strip()
+            if not s.startswith("{"):
+                return
+            try:
+                ev = json.loads(s)
+            except json.JSONDecodeError:
+                return
+            if ev.get("conversation_id"):
+                self._agy_conv = str(ev["conversation_id"])
+            kind = ev.get("event")
+            if kind == "step_update":
+                su = ev.get("step_update") or {}
+                if su.get("state") == "DONE" and su.get("step_type") == "tool":
+                    info = su.get("tool_info") or {}
+                    tname = su.get("tool_name") or "tool"
+                    params = info.get("parameters") or {}
+                    if tname == "call_mcp_tool" and params.get("ToolName"):
+                        tname = str(params["ToolName"])
+                    elif tname == "read_file":
+                        return  # skip noisy MCP schema reads
+                    out = str(info.get("output") or "").strip()
+                    self.log.append(Entry("tool", out[:400], tool=tname, ok=True))
+                elif su.get("state") == "DONE" and su.get("step_type") == "agent_response":
+                    td = (su.get("text_delta") or "").strip()
+                    if td:
+                        last_text = td
+            elif kind == "result":
+                result_data = ev.get("result") or {}
+
+        while proc.stdout is not None:
             if self.cancel.is_set():
                 proc.terminate()
                 try:
@@ -282,45 +322,48 @@ class Chat:
                     proc.kill()
                 self.log.append(Entry("error", "Stopped.", ok=False))
                 return
-            time.sleep(0.25)
-
-        stdout, stderr = proc.communicate()
-        raw = (stdout or "").strip()
-        data: dict | None = None
-        for line in reversed(raw.splitlines()):
-            line = line.strip()
-            if line.startswith("{"):
+            if use_select:
                 try:
-                    data = json.loads(line)
+                    ready, _, _ = select.select([proc.stdout], [], [], 0.25)
+                except (OSError, ValueError):
+                    ready = [proc.stdout]
+                if not ready:
+                    if proc.poll() is not None:
+                        break
+                    continue
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
                     break
-                except json.JSONDecodeError:
-                    pass
-        if data is None and raw.startswith("{"):
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                pass
+                continue
+            _handle_line(line)
 
-        if data is not None:
-            if data.get("conversation_id"):
-                self._agy_conv = str(data["conversation_id"])
-            u = data.get("usage") or {}
+        if proc.stdout is not None:
+            for rem in proc.stdout:
+                _handle_line(rem)
+        stderr = proc.stderr.read() if proc.stderr is not None else ""
+        proc.wait()
+
+        if result_data is not None:
+            if result_data.get("conversation_id"):
+                self._agy_conv = str(result_data["conversation_id"])
+            u = result_data.get("usage") or {}
             self.tokens["input"] += int(u.get("input_tokens") or 0)
             self.tokens["output"] += int(u.get("output_tokens") or 0)
             self.tokens["cache_read"] += int(u.get("cache_read_tokens") or 0)
-            if proc.returncode == 0 and data.get("status") == "SUCCESS":
-                reply = (data.get("response") or "").strip() or "(Done)"
+            if proc.returncode == 0 and result_data.get("status") == "SUCCESS":
+                reply = (result_data.get("response") or last_text or "").strip() or "(Done)"
                 self.log.append(Entry("assistant", reply))
                 return
-            err = data.get("error") or data.get("response") or stderr or f"agy exited with {proc.returncode}"
+            err = result_data.get("error") or result_data.get("response") or stderr or f"agy exited with {proc.returncode}"
             self.log.append(Entry("error", str(err).strip(), ok=False))
             return
 
         if proc.returncode != 0:
-            err = (stderr or raw or f"agy exited with {proc.returncode}").strip()
+            err = (stderr or f"agy exited with {proc.returncode}").strip()
             self.log.append(Entry("error", err, ok=False))
             return
-        self.log.append(Entry("assistant", raw or "(Done)"))
+        self.log.append(Entry("assistant", last_text or "(Done)"))
 
     def _run_claude(self, client: Any, model: str) -> None:
         _wire_tools(actor="claude")
