@@ -11,12 +11,14 @@ import base64
 import html
 import json
 import re
+import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Literal
 
-from .client import MessagesClient, model_name
+from .client import AgyClient, MessagesClient, model_name
 from .guide import GUIDE
 
 MAX_TURNS = 40
@@ -195,6 +197,7 @@ class Chat:
         self.tokens = {"input": 0, "output": 0, "cache_read": 0}
         self._thread: threading.Thread | None = None
         self._gemini_last: str | None = None  # Gemini keeps the conversation server side; continue from here
+        self._agy_conv: str | None = None  # Antigravity CLI conversation_id
 
     def to_dict(self) -> dict:
         return {"running": self.running, "log": [asdict(e) for e in self.log], "tokens": dict(self.tokens)}
@@ -204,6 +207,7 @@ class Chat:
             raise RuntimeError("the AI is still working; stop it first")
         self.messages, self.log = [], []
         self._gemini_last = None
+        self._agy_conv = None
 
     def send(self, text: str, client: Any, model: str | None = None, wait: bool = False) -> None:
         if self.running:
@@ -219,7 +223,9 @@ class Chat:
 
     def _run(self, client: Any, model: str) -> None:
         try:
-            if hasattr(client, "interactions"):
+            if isinstance(client, AgyClient):
+                self._run_agy(client, model)
+            elif hasattr(client, "interactions"):
                 self._run_gemini(client, model)
             else:
                 self._run_claude(client, model)
@@ -239,6 +245,82 @@ class Chat:
             self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
         finally:
             self.running = False
+
+    def _run_agy(self, client: AgyClient, model: str) -> None:
+        user_text = str(self.messages[-1]["content"])
+        prompt = user_text if self._agy_conv else (
+            "You are the AI assistant inside 3D Print Assist. Use the `3d-print-assist` MCP tools "
+            "(such as get_guide, get_model, apply_changes, render_preview, run_checks, create_design, etc.) "
+            "to inspect and modify the currently open design in the running app.\n\nUser request: " + user_text
+        )
+        cmd = [
+            client.binary,
+            "-p", prompt,
+            "--output-format", "json",
+            "--dangerously-skip-permissions",
+            "--print-timeout", "5m",
+        ]
+        if self._agy_conv:
+            cmd.extend(["--conversation", self._agy_conv])
+        if model:
+            cmd.extend(["--model", model])
+
+        repo_root = Path(__file__).resolve().parents[4]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(repo_root) if repo_root.is_dir() else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        while proc.poll() is None:
+            if self.cancel.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                self.log.append(Entry("error", "Stopped.", ok=False))
+                return
+            time.sleep(0.25)
+
+        stdout, stderr = proc.communicate()
+        raw = (stdout or "").strip()
+        data: dict | None = None
+        for line in reversed(raw.splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    data = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    pass
+        if data is None and raw.startswith("{"):
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                pass
+
+        if data is not None:
+            if data.get("conversation_id"):
+                self._agy_conv = str(data["conversation_id"])
+            u = data.get("usage") or {}
+            self.tokens["input"] += int(u.get("input_tokens") or 0)
+            self.tokens["output"] += int(u.get("output_tokens") or 0)
+            self.tokens["cache_read"] += int(u.get("cache_read_tokens") or 0)
+            if proc.returncode == 0 and data.get("status") == "SUCCESS":
+                reply = (data.get("response") or "").strip() or "(Done)"
+                self.log.append(Entry("assistant", reply))
+                return
+            err = data.get("error") or data.get("response") or stderr or f"agy exited with {proc.returncode}"
+            self.log.append(Entry("error", str(err).strip(), ok=False))
+            return
+
+        if proc.returncode != 0:
+            err = (stderr or raw or f"agy exited with {proc.returncode}").strip()
+            self.log.append(Entry("error", err, ok=False))
+            return
+        self.log.append(Entry("assistant", raw or "(Done)"))
 
     def _run_claude(self, client: Any, model: str) -> None:
         _wire_tools(actor="claude")

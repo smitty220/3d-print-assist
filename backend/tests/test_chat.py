@@ -398,3 +398,49 @@ def test_web_search_and_fetch_url_tools(monkeypatch):
     data2 = json.loads(out2)
     assert "Body width is 28mm." in data2["content"]
     assert "ignore()" not in data2["content"]
+
+
+def test_agy_cli_chat_turn(monkeypatch):
+    from print_assist.ai import chat as ai_chat, client as ai_client
+
+    calls = []
+
+    class FakeProc:
+        returncode = 0
+
+        def __init__(self, cmd, **kw):
+            calls.append(cmd)
+            self._polls = 0
+
+        def poll(self):
+            self._polls += 1
+            return 0 if self._polls >= 1 else None
+
+        def communicate(self):
+            payload = json.dumps({
+                "conversation_id": "conv-123",
+                "status": "SUCCESS",
+                "response": "Created the box.",
+                "usage": {"input_tokens": 120, "output_tokens": 15, "cache_read_tokens": 30},
+            })
+            return payload, ""
+
+    monkeypatch.setattr(ai_chat.subprocess, "Popen", lambda cmd, **kw: FakeProc(cmd, **kw))
+    monkeypatch.setattr(ai_client, "find_agy_bin", lambda: "/fake/agy")
+
+    assert ai_client.provider("agy") == "agy"
+    assert ai_client.has_api_key("agy") is True
+    c = ai_client.make_client("agy")
+    assert isinstance(c, ai_client.AgyClient)
+
+    ch = Chat()
+    ch.send("make a box", c, model="", wait=True)
+    assert ch._agy_conv == "conv-123"
+    assert ch.tokens == {"input": 120, "output": 15, "cache_read": 30}
+    assert ch.log[-1].role == "assistant"
+    assert ch.log[-1].text == "Created the box."
+    assert "--conversation" not in calls[0]
+
+    ch.send("fillet it", c, model="", wait=True)
+    assert "--conversation" in calls[1]
+    assert "conv-123" in calls[1]

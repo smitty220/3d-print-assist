@@ -291,7 +291,7 @@ export interface Project {
     update_mode: 'manual' | 'auto'
     printer: string
     ai_mode: 'mcp' | 'api'
-    ai_provider?: 'auto' | 'gemini' | 'anthropic'
+    ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'
     ai_model?: string
   }
   design: { sketches: (Sketch & { report?: SolveReport | null })[] }

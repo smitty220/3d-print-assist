@@ -7,6 +7,7 @@ key here.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -76,15 +77,38 @@ ENV_KEYS = (
 _SHELL_ENV = {k for k in ENV_KEYS if os.environ.get(k)}
 
 
-def provider(override: str | None = None) -> str:
-    """Return active provider: 'gemini' or 'anthropic'.
+def find_agy_bin() -> str | None:
+    """Locate the Antigravity CLI (`agy`) binary if installed."""
+    explicit = os.environ.get("AGY_BIN")
+    if explicit and Path(explicit).is_file():
+        return explicit
+    found = shutil.which("agy")
+    if found:
+        return found
+    local_bin = Path.home() / ".local" / "bin" / "agy"
+    if local_bin.is_file():
+        return str(local_bin)
+    return None
 
-    Can be explicitly set with override, PRINT_ASSIST_AI_PROVIDER ('gemini' or 'anthropic').
+
+class AgyClient:
+    """Marker client that executes turns via the Antigravity CLI (`agy -p`)."""
+
+    def __init__(self, binary: str) -> None:
+        self.binary = binary
+
+
+def provider(override: str | None = None) -> str:
+    """Return active provider: 'agy', 'gemini', or 'anthropic'.
+
+    Can be explicitly set with override or PRINT_ASSIST_AI_PROVIDER ('agy', 'gemini', or 'anthropic').
     Otherwise auto-detects based on available API keys and model name, defaulting
     to 'anthropic' for backwards compatibility.
     """
     load_env_key()
     p = (override or os.environ.get("PRINT_ASSIST_AI_PROVIDER") or "").strip().lower()
+    if p in ("agy", "antigravity"):
+        return "agy"
     if p in ("gemini", "google"):
         return "gemini"
     if p in ("anthropic", "claude"):
@@ -107,6 +131,8 @@ def provider(override: str | None = None) -> str:
 def model_name(model_override: str | None = None, provider_override: str | None = None) -> str:
     load_env_key()
     p = provider_override or provider()
+    if p == "agy":
+        return (model_override or "").strip()
     custom = (model_override or os.environ.get("PRINT_ASSIST_MODEL") or "").strip()
     if custom:
         if p == "gemini":
@@ -118,6 +144,8 @@ def model_name(model_override: str | None = None, provider_override: str | None 
 def has_api_key(provider_override: str | None = None) -> bool:
     load_env_key()
     p = provider_override or provider()
+    if p == "agy":
+        return bool(find_agy_bin())
     if p == "gemini":
         return bool(os.environ.get("GEMINI_API_KEY"))
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
@@ -154,9 +182,18 @@ def make_gemini_client() -> Any:
     return client
 
 
+def make_agy_client() -> AgyClient:
+    binary = find_agy_bin()
+    if not binary:
+        raise RuntimeError("Antigravity CLI (`agy`) not found; install `agy` or set AGY_BIN")
+    return AgyClient(binary)
+
+
 def make_client(provider_override: str | None = None) -> Any:
     load_env_key()
     p = provider_override or provider()
+    if p == "agy":
+        return make_agy_client()
     if p == "gemini":
         return make_gemini_client()
     return make_anthropic_client()

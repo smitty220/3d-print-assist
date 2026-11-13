@@ -13,7 +13,7 @@ interface Props {
   onToggleCollapse?: () => void
   onOpenConcept: (id: string) => void
   onMode: (m: 'mcp' | 'api') => void
-  onSettings?: (patch: { ai_provider?: 'auto' | 'gemini' | 'anthropic'; ai_model?: string }) => void
+  onSettings?: (patch: { ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
   onSend: (text: string) => void
   onCancel: () => void
   onReset: () => void
@@ -68,13 +68,14 @@ export function AiPanel({ status, activity, context, concept, collapsed = false,
             id="ai-provider-select"
             value={status?.settings_provider || 'auto'}
             onChange={(e) => {
-              onSettings?.({ ai_provider: e.target.value as 'auto' | 'gemini' | 'anthropic', ai_model: '' })
+              onSettings?.({ ai_provider: e.target.value as 'auto' | 'agy' | 'gemini' | 'anthropic', ai_model: '' })
             }}
             style={{ fontSize: 12, padding: '3px 6px' }}
           >
-            <option value="auto">Auto ({status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
-            <option value="gemini">Google Gemini</option>
-            <option value="anthropic">Anthropic Claude</option>
+            <option value="auto">Auto ({status?.provider === 'agy' ? 'Antigravity' : status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
+            <option value="agy">Antigravity CLI (Subscription)</option>
+            <option value="gemini">Google Gemini (API Key)</option>
+            <option value="anthropic">Anthropic Claude (API Key)</option>
           </select>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
@@ -134,12 +135,16 @@ export function AiPanel({ status, activity, context, concept, collapsed = false,
           <div className="log">
             {!status?.key && (
               <div className="intro">
-                <p>
-                  No {status?.provider === 'gemini' ? 'Gemini' : 'Claude'} API key yet. Put{' '}
-                  <code>{status?.provider === 'gemini' ? 'GEMINI_API_KEY=…' : 'ANTHROPIC_API_KEY=…'}</code> (or{' '}
-                  <code>{status?.provider === 'gemini' ? 'ANTHROPIC_API_KEY=…' : 'GEMINI_API_KEY=…'}</code>) in{' '}
-                  <code>backend/.env</code>; it is read on the next message, no restart needed. Model: {status?.model ?? '…'}.
-                </p>
+                {status?.provider === 'agy' ? (
+                  <p>Antigravity CLI (<code>agy</code>) was not found. Make sure <code>agy</code> is installed (e.g. <code>~/.local/bin/agy</code>).</p>
+                ) : (
+                  <p>
+                    No {status?.provider === 'gemini' ? 'Gemini' : 'Claude'} API key yet. Put{' '}
+                    <code>{status?.provider === 'gemini' ? 'GEMINI_API_KEY=…' : 'ANTHROPIC_API_KEY=…'}</code> (or{' '}
+                    <code>{status?.provider === 'gemini' ? 'ANTHROPIC_API_KEY=…' : 'GEMINI_API_KEY=…'}</code>) in{' '}
+                    <code>backend/.env</code>; it is read on the next message, no restart needed. Model: {status?.model ?? '…'}.
+                  </p>
+                )}
               </div>
             )}
             {chat?.log.map((e, i) => (

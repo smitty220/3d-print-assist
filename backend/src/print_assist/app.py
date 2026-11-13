@@ -290,7 +290,7 @@ class SettingsPatch(BaseModel):
     update_mode: Literal["manual", "auto"] | None = None
     printer: str | None = None
     ai_mode: Literal["mcp", "api"] | None = None
-    ai_provider: Literal["auto", "gemini", "anthropic"] | None = None
+    ai_provider: Literal["auto", "agy", "gemini", "anthropic"] | None = None
     ai_model: str | None = None
 
 
@@ -1054,6 +1054,7 @@ def ai_status(refresh: bool = False) -> dict:
     model = ai.model_name(s.ai_model or None, provider_override=active_provider)
     has_key = ai.has_api_key(active_provider)
     available = {
+        "agy": [{"id": "", "label": "Antigravity Default (Subscription)"}],
         "gemini": ai.list_gemini_models(force_refresh=refresh),
         "anthropic": AVAILABLE_MODELS["anthropic"],
     }
