@@ -64,7 +64,9 @@ def test_parameters_features_update_and_part(client):
 
 def test_settings_and_events(client):
     assert client.put("/api/settings", json={"update_mode": "auto"}).json()["update_mode"] == "auto"
+    assert client.put("/api/settings", json={"slicer": "prusaslicer"}).json()["slicer"] == "prusaslicer"
     assert client.put("/api/settings", json={"printer": "nope"}).status_code == 422
+    assert client.put("/api/settings", json={"slicer": "nope"}).status_code == 422
     with client.stream("GET", "/api/events", params={"once": True}) as r:
         line = next(r.iter_lines())
     assert line.startswith("data: ") and '"rev"' in line

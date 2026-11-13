@@ -2,7 +2,7 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
@@ -41,6 +41,7 @@ export default function App() {
   const [catalog, setCatalog] = useState<FeatureSpec[]>([])
   const [fonts, setFonts] = useState<FontInfo[]>([])
   const [printers, setPrinters] = useState<Printer[]>([])
+  const [slicers, setSlicers] = useState<SlicerInfo[]>([])
   const [checks, setChecks] = useState<Checks | null>(null)
   const [activity, setActivity] = useState<Activity[]>([])
   const [concepts, setConcepts] = useState<Concept[]>([])
@@ -92,9 +93,9 @@ export default function App() {
       seen.current = { slug: '', rev: -1, built: -1, activity: -1 }
       return
     }
-    const [p, c, f, pr, t, pt, ch, a, act] = await Promise.all([api.project(), api.catalog(), api.fonts(), api.printers(),
-      api.tree(), api.part(), api.checks(), api.aiStatus(), api.activity()])
-    setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
+    const [p, c, f, pr, sl, t, pt, ch, a, act] = await Promise.all([api.project(), api.catalog(), api.fonts(), api.printers(),
+      api.slicers(), api.tree(), api.part(), api.checks(), api.aiStatus(), api.activity()])
+    setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setSlicers(sl); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
     api.concepts().then(setConcepts).catch(() => {})
     seen.current = { slug: p.slug, rev: t.rev, built: t.built_rev, activity: act.length }
   }, [])
@@ -463,11 +464,22 @@ export default function App() {
 
   if (!tree || !file) return <div className="loading">{error ? `Cannot reach the app's backend: ${error}. Is ./dev.sh running?` : 'Loading…'}</div>
 
+  const activePrinter = project?.settings.printer ?? ''
+  const activeSlicer = project?.settings.slicer || slicers.find((s) => s.installed)?.id || slicers[0]?.id || 'prusaslicer'
+  const onPrinter = (id: string) => {
+    run(() => api.settings({ printer: id })).then(() => Promise.all([api.project().then(setProject), api.checks().then(setChecks), api.tree().then(setTree)]))
+  }
+  const onSlicer = (id: string) => {
+    run(() => api.settings({ slicer: id })).then(() => api.project().then(setProject))
+  }
+
   return (
     <div className={`app mode-${mode}`}>
       {modals}
       <Header tree={tree} mode={mode} onMode={switchMode} onUpdate={update} updating={updating} file={file} onFile={onFile} onUndo={undo} onRedo={redo}
-        onUpdateMode={(m) => { run(() => api.settings({ update_mode: m })).then(() => api.tree().then(setTree)) }} />
+        onUpdateMode={(m) => { run(() => api.settings({ update_mode: m })).then(() => api.tree().then(setTree)) }}
+        printers={printers} printer={activePrinter} onPrinter={onPrinter}
+        slicers={slicers} slicer={activeSlicer} onSlicer={onSlicer} />
 
       {mode === 'sketch' ? <div ref={setToolbarHost} className="toolbar-host" /> : mode === 'plates' ? <div className="toolbar-wrap" /> : (
         <div className="toolbar-wrap">
@@ -530,9 +542,9 @@ export default function App() {
               onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
               onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
             {mode === 'sketch' && <div ref={setTreeHost} />}
-            {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
-            {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
-              onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => Promise.all([api.project().then(setProject), api.checks().then(setChecks), api.tree().then(setTree)])) }}
+            {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} slicers={slicers} slicer={activeSlicer} onError={setError} />}
+            {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={activePrinter}
+              onPrinter={onPrinter} slicers={slicers} slicer={activeSlicer} onSlicer={onSlicer}
               onAddPrinter={async (p) => {
                 const created = await run(() => api.createPrinter(p))
                 if (!created) return

@@ -12,6 +12,9 @@ interface Props {
   printers: Printer[]
   printer: string
   onPrinter: (id: string) => void
+  slicers: SlicerInfo[]
+  slicer: string
+  onSlicer: (id: string) => void
   onAddPrinter?: (p: { name: string; bed: [number, number, number]; nozzle_dia: number; slots: number }) => Promise<void>
   onOps: (ops: Op[], message: string) => void
   preview: string | null // the colorway shown in the view
@@ -46,25 +49,16 @@ function Field({ value, label, onCommit, placeholder, className }: { value: stri
   )
 }
 
-export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPrinter, onOps, preview, onPreview, onError }: Props) {
+export function ExportPane({ tree, checks, printers, printer, onPrinter, slicers, slicer, onSlicer, onAddPrinter, onOps, preview, onPreview, onError }: Props) {
   const why = tree.stale ? 'Update the model first' : tree.failed ? 'A feature failed: fix it first' : null
   const prof = printers.find((p) => p.id === printer)
   const slots = prof ? prof.nozzles.reduce((n, z) => n + z.slots, 0) : 4
   const free = Array.from({ length: slots }, (_, i) => i + 1).find((s) => !tree.filaments.some((f) => f.slot === s))
   const [fmt, setFmt] = useState<Fmt>('3mf')
   const [busy, setBusy] = useState(false)
-  const [slicers, setSlicers] = useState<SlicerInfo[]>([
-    { id: 'prusaslicer', name: 'PrusaSlicer', installed: true },
-    { id: 'bambu', name: 'Bambu Studio', installed: true },
-    { id: 'orca', name: 'OrcaSlicer', installed: true },
-    { id: 'cura', name: 'UltiMaker Cura', installed: true },
-    { id: 'creality', name: 'Creality Print', installed: true },
-  ])
   const [sendMenu, setSendMenu] = useState(false)
   const [sending, setSending] = useState<string | null>(null)
-  useEffect(() => {
-    api.slicers().then(setSlicers).catch(() => {})
-  }, [])
+  const activeSlicer = slicers.find((s) => s.id === slicer) ?? slicers.find((s) => s.installed) ?? slicers[0]
   const [addingPrinter, setAddingPrinter] = useState(false)
   const [pName, setPName] = useState('')
   const [pX, setPX] = useState('256')
@@ -202,16 +196,39 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPr
         ))}
       </div>
       <div className="fmenu" style={{ marginTop: 6 }}>
-        <button
-          type="button"
-          className="btn"
-          style={{ width: '100%' }}
-          disabled={!!why || !!sending}
-          aria-expanded={sendMenu}
-          onClick={() => setSendMenu((v) => !v)}
-        >
-          {sending ? `Opening ${sending}…` : 'Send to… ▾'}
-        </button>
+        <div className="row" style={{ gap: 4 }}>
+          <button
+            type="button"
+            className="btn"
+            style={{ flex: 1 }}
+            disabled={!!why || !!sending || !activeSlicer?.installed}
+            title={activeSlicer?.installed ? `Export 3MF and open in ${activeSlicer.name}` : `${activeSlicer?.name ?? 'Slicer'} not found in /Applications`}
+            onClick={async () => {
+              if (!activeSlicer) return
+              setSendMenu(false)
+              setSending(activeSlicer.name)
+              try {
+                await api.sendToSlicer(activeSlicer.id, '3mf')
+              } catch (e) {
+                onError(e instanceof Error ? e.message : String(e))
+              } finally {
+                setSending(null)
+              }
+            }}
+          >
+            {sending ? `Opening ${sending}…` : `Send to ${activeSlicer?.name ?? 'Slicer'}`}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            aria-label="Choose slicer"
+            aria-expanded={sendMenu}
+            disabled={!!why || !!sending}
+            onClick={() => setSendMenu((v) => !v)}
+          >
+            ▾
+          </button>
+        </div>
         {sendMenu && !why && (
           <div className="fdrop" role="menu" style={{ width: '100%', top: 'auto', bottom: 'calc(100% + 4px)' }}>
             {slicers.map((s) => (
@@ -223,6 +240,7 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPr
                 title={s.installed ? `Export 3MF and open in ${s.name}` : `${s.name} not found in /Applications`}
                 onClick={async () => {
                   setSendMenu(false)
+                  onSlicer(s.id)
                   setSending(s.name)
                   try {
                     await api.sendToSlicer(s.id, '3mf')

@@ -2,19 +2,23 @@
 // plates, the objects on each, anything that keeps them from printing, and the export of the plates as one Bambu
 // Studio project. The arrangement itself is made and changed by asking Claude; nothing here edits it.
 import { useEffect, useState } from 'react'
-import { api, type LayoutReport, type Tree } from '../api'
+import { api, type LayoutReport, type SlicerInfo, type Tree } from '../api'
 import { Icon } from '../ui/icons'
 
 interface Props {
   tree: Tree
   plate: number
   onPlate: (n: number) => void
+  slicers: SlicerInfo[]
+  slicer: string
   onError: (msg: string) => void
 }
 
-export function PlatesPane({ tree, plate, onPlate, onError }: Props) {
+export function PlatesPane({ tree, plate, onPlate, slicers, slicer, onError }: Props) {
   const [report, setReport] = useState<LayoutReport | null>(null)
   const [busy, setBusy] = useState(false)
+  const [sending, setSending] = useState(false)
+  const activeSlicer = slicers.find((s) => s.id === slicer) ?? slicers.find((s) => s.installed) ?? slicers[0]
   const items = tree.print_layout?.items ?? 0
   const why = tree.stale ? 'Update the model first' : tree.failed ? 'A feature failed: fix it first' : null
 
@@ -98,8 +102,27 @@ export function PlatesPane({ tree, plate, onPlate, onError }: Props) {
         <button className="btn primary" disabled={!!why || busy || problems.length > 0} onClick={exportPlates}>
           {busy ? 'Exporting…' : `Export ${report?.plates.length ?? tree.print_layout?.plates} plates (3MF)`}
         </button>
+        {activeSlicer && (
+          <button
+            className="btn"
+            disabled={!!why || sending || problems.length > 0 || !activeSlicer.installed}
+            title={activeSlicer.installed ? `Export 3MF and open in ${activeSlicer.name}` : `${activeSlicer.name} not found in /Applications`}
+            onClick={async () => {
+              setSending(true)
+              try {
+                await api.sendToSlicer(activeSlicer.id, '3mf')
+              } catch (e) {
+                onError(e instanceof Error ? e.message : String(e))
+              } finally {
+                setSending(false)
+              }
+            }}
+          >
+            {sending ? `Opening ${activeSlicer.name}…` : `Send to ${activeSlicer.name}`}
+          </button>
+        )}
       </div>
-      <p className="nm">One Bambu Studio project: each plate ready to slice.</p>
+      <p className="nm">One 3MF project: each plate ready to slice.</p>
     </div>
   )
 }

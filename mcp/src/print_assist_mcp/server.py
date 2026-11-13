@@ -81,7 +81,8 @@ def get_model() -> str:
     if isinstance(tree, dict) and "error" in tree:
         return _text(tree)
     design = proj.get("design", {}) if isinstance(proj, dict) else {}
-    return _text({"tree": tree, "sketches": design.get("sketches", []), "printer": proj.get("settings", {}).get("printer")})
+    settings = proj.get("settings", {}) if isinstance(proj, dict) else {}
+    return _text({"tree": tree, "sketches": design.get("sketches", []), "printer": settings.get("printer"), "slicer": settings.get("slicer")})
 
 
 @mcp.tool()

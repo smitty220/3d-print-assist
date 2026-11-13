@@ -313,6 +313,7 @@ def create_printer(body: PrinterIn) -> dict:
 class SettingsPatch(BaseModel):
     update_mode: Literal["manual", "auto"] | None = None
     printer: str | None = None
+    slicer: str | None = None
     ai_mode: Literal["mcp", "api"] | None = None
     ai_provider: Literal["auto", "agy", "gemini", "anthropic"] | None = None
     ai_model: str | None = None
@@ -326,6 +327,10 @@ def put_settings(body: SettingsPatch) -> dict:
         if body.printer not in profiles():
             raise HTTPException(422, f"No printer profile {body.printer!r}")
         s.printer = body.printer
+    if body.slicer is not None:
+        if body.slicer and body.slicer not in SLICERS:
+            raise HTTPException(422, f"Unknown slicer {body.slicer!r}")
+        s.slicer = body.slicer
     if body.ai_mode is not None:
         s.ai_mode = body.ai_mode
     if body.ai_provider is not None:
@@ -954,7 +959,7 @@ def get_slicers() -> list[dict]:
 
 
 class SendToIn(BaseModel):
-    slicer: str
+    slicer: str | None = None
     fmt: Literal["3mf", "stl", "step"] = "3mf"
 
 
@@ -965,15 +970,18 @@ def export_send_to(body: SendToIn) -> dict:
 
     from .export import ExportError, export, filename
 
-    entry = SLICERS.get(body.slicer)
+    w = ws()
+    slicer_id = body.slicer or w.project.data.settings.slicer
+    if not slicer_id:
+        slicer_id = next((sid for sid, (_, cands) in SLICERS.items() if _find_slicer_app(cands)), "prusaslicer")
+    entry = SLICERS.get(slicer_id)
     if entry is None:
-        raise HTTPException(404, f"Unknown slicer {body.slicer!r}")
+        raise HTTPException(404, f"Unknown slicer {slicer_id!r}")
     label, cands = entry
     app_target = _find_slicer_app(cands)
     if not app_target:
         raise HTTPException(422, f"{label} was not found in /Applications or PATH")
 
-    w = ws()
     t = w.tree()
     if not t["exportable"]:
         why = "update it first" if t["stale"] else "a feature failed" if t["failed"] else "nothing is built"
