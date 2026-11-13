@@ -283,6 +283,7 @@ export interface AiStatus {
 export interface FontInfo { name: string; styles: string[]; license: string; source: string }
 
 export interface Printer { id: string; name: string; bed: Vec3; nozzles: { dia: number; slots: number }[] }
+export interface SlicerInfo { id: string; name: string; installed: boolean }
 
 export interface Project {
   slug: string
@@ -340,6 +341,9 @@ export const api = {
   openProject: (slug: string) => send<Project>('POST', `/projects/${encodeURIComponent(slug)}/open`),
   history: () => get<Version[]>('/history'),
   printers: () => get<Printer[]>('/printers'),
+  slicers: () => get<SlicerInfo[]>('/slicers'),
+  sendToSlicer: (slicer: string, fmt: '3mf' | 'stl' | 'step' = '3mf') =>
+    send<{ slicer: string; path: string }>('POST', '/export/send-to', { slicer, fmt }),
   createPrinter: (p: { name: string; bed: [number, number, number]; nozzle_dia?: number; slots?: number }) =>
     send<Printer>('POST', '/printers', p),
   settings: (s: Partial<Project['settings']>) => send<Project['settings']>('PUT', '/settings', s),

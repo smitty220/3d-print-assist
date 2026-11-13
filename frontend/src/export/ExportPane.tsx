@@ -2,7 +2,7 @@
 // the variants table (sizes) and colorways (colour sets), the print checks, and the files: one now, or every
 // variant in every colorway in one zip.
 import { useEffect, useRef, useState } from 'react'
-import type { Checks, Colorway, Op, Printer, Tree, Variant } from '../api'
+import type { Checks, Colorway, Op, Printer, SlicerInfo, Tree, Variant } from '../api'
 import { api } from '../api'
 import { Icon } from '../ui/icons'
 
@@ -53,6 +53,18 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPr
   const free = Array.from({ length: slots }, (_, i) => i + 1).find((s) => !tree.filaments.some((f) => f.slot === s))
   const [fmt, setFmt] = useState<Fmt>('3mf')
   const [busy, setBusy] = useState(false)
+  const [slicers, setSlicers] = useState<SlicerInfo[]>([
+    { id: 'prusaslicer', name: 'PrusaSlicer', installed: true },
+    { id: 'bambu', name: 'Bambu Studio', installed: true },
+    { id: 'orca', name: 'OrcaSlicer', installed: true },
+    { id: 'cura', name: 'UltiMaker Cura', installed: true },
+    { id: 'creality', name: 'Creality Print', installed: true },
+  ])
+  const [sendMenu, setSendMenu] = useState(false)
+  const [sending, setSending] = useState<string | null>(null)
+  useEffect(() => {
+    api.slicers().then(setSlicers).catch(() => {})
+  }, [])
   const [addingPrinter, setAddingPrinter] = useState(false)
   const [pName, setPName] = useState('')
   const [pX, setPX] = useState('256')
@@ -188,6 +200,45 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPr
           why ? <button key={f} className="btn" disabled>{f.toUpperCase()}</button>
             : <a key={f} className={`btn${f === '3mf' ? ' primary' : ''}`} href={api.exportUrl(f)} download>{f.toUpperCase()}</a>
         ))}
+      </div>
+      <div className="fmenu" style={{ marginTop: 6 }}>
+        <button
+          type="button"
+          className="btn"
+          style={{ width: '100%' }}
+          disabled={!!why || !!sending}
+          aria-expanded={sendMenu}
+          onClick={() => setSendMenu((v) => !v)}
+        >
+          {sending ? `Opening ${sending}…` : 'Send to… ▾'}
+        </button>
+        {sendMenu && !why && (
+          <div className="fdrop" role="menu" style={{ width: '100%' }}>
+            {slicers.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                role="menuitem"
+                disabled={!s.installed}
+                title={s.installed ? `Export 3MF and open in ${s.name}` : `${s.name} not found in /Applications`}
+                onClick={async () => {
+                  setSendMenu(false)
+                  setSending(s.name)
+                  try {
+                    await api.sendToSlicer(s.id, '3mf')
+                  } catch (e) {
+                    onError(e instanceof Error ? e.message : String(e))
+                  } finally {
+                    setSending(null)
+                  }
+                }}
+              >
+                <span>{s.name}</span>
+                {!s.installed && <span className="kb">not installed</span>}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
       {(tree.variants.length > 0 || tree.colorways.length > 0) && (
         <div className="row batch">

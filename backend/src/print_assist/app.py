@@ -910,6 +910,82 @@ def export_design(fmt: str) -> FileResponse:
     return FileResponse(path, filename=path.name, headers={"X-Saved-Path": str(path)})
 
 
+SLICERS: dict[str, tuple[str, list[str]]] = {
+    "prusaslicer": ("PrusaSlicer", ["PrusaSlicer", "prusa-slicer"]),
+    "bambu": ("Bambu Studio", ["Bambu Studio", "BambuStudio", "bambu-studio"]),
+    "orca": ("OrcaSlicer", ["OrcaSlicer", "orca-slicer"]),
+    "cura": ("UltiMaker Cura", ["UltiMaker Cura", "UltiMaker-Cura", "cura"]),
+    "creality": ("Creality Print", ["Creality Print", "CrealityPrint"]),
+}
+
+
+def _find_slicer_app(candidates: list[str]) -> str | None:
+    import shutil
+    import sys
+
+    if sys.platform == "darwin":
+        for base in (Path("/Applications"), Path.home() / "Applications"):
+            for name in candidates:
+                app_path = base / f"{name}.app"
+                if app_path.exists():
+                    return str(app_path)
+    for name in candidates:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+@app.get("/api/slicers")
+def get_slicers() -> list[dict]:
+    return [
+        {"id": sid, "name": label, "installed": _find_slicer_app(cands) is not None}
+        for sid, (label, cands) in SLICERS.items()
+    ]
+
+
+class SendToIn(BaseModel):
+    slicer: str
+    fmt: Literal["3mf", "stl", "step"] = "3mf"
+
+
+@app.post("/api/export/send-to")
+def export_send_to(body: SendToIn) -> dict:
+    import subprocess
+    import sys
+
+    from .export import ExportError, export, filename
+
+    entry = SLICERS.get(body.slicer)
+    if entry is None:
+        raise HTTPException(404, f"Unknown slicer {body.slicer!r}")
+    label, cands = entry
+    app_target = _find_slicer_app(cands)
+    if not app_target:
+        raise HTTPException(422, f"{label} was not found in /Applications or PATH")
+
+    w = ws()
+    t = w.tree()
+    if not t["exportable"]:
+        why = "update it first" if t["stale"] else "a feature failed" if t["failed"] else "nothing is built"
+        raise HTTPException(409, f"Can't export: the model is not ready ({why})")
+    good = w.last_good
+    names = {b.id: b.name for b in w.design.bodies}
+    colors = {b.id: w.design.body_color(b) for b in w.design.bodies}
+    path = w.project.root / "exports" / filename(w.project.data.name, body.fmt)
+    try:
+        export(good.parts, names, w.project.printer, body.fmt, path, w.project.data.name, colors, w.design)
+    except ExportError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    if sys.platform == "darwin" and app_target.endswith(".app"):
+        subprocess.Popen(["open", "-a", app_target, str(path)])
+    else:
+        subprocess.Popen([app_target, str(path)])
+    w.log(USER, f"Sent {path.name} to {label}")
+    return {"slicer": label, "path": str(path)}
+
+
 class BatchRow(BaseModel):
     variant: str | None = None  # None: the design as it is
     colorway: str | None = None  # None: the palette's colours
