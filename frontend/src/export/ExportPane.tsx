@@ -213,7 +213,7 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPr
           {sending ? `Opening ${sending}…` : 'Send to… ▾'}
         </button>
         {sendMenu && !why && (
-          <div className="fdrop" role="menu" style={{ width: '100%' }}>
+          <div className="fdrop" role="menu" style={{ width: '100%', top: 'auto', bottom: 'calc(100% + 4px)' }}>
             {slicers.map((s) => (
               <button
                 key={s.id}

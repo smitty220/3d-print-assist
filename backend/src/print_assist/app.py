@@ -922,6 +922,7 @@ SLICERS: dict[str, tuple[str, list[str]]] = {
 def _find_slicer_app(candidates: list[str]) -> str | None:
     import shutil
     import sys
+    from pathlib import Path
 
     if sys.platform == "darwin":
         for base in (Path("/Applications"), Path.home() / "Applications"):
