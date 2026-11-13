@@ -81,8 +81,8 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
           </div>
         </div>
-      {mode === 'api' && <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, gap: 2 }}>
+      {mode === 'api' && <div className="row sm" style={{ padding: '8px 12px', gap: 10, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minWidth: 0, gap: 3 }}>
           <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
           <select
             id="ai-provider-select"
@@ -90,7 +90,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             onChange={(e) => {
               onSettings?.({ ai_provider: e.target.value as 'auto' | 'agy' | 'gemini' | 'anthropic', ai_model: '' })
             }}
-            style={{ fontSize: 12, padding: '3px 6px' }}
+            style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
           >
             <option value="auto">Auto ({status?.provider === 'agy' ? 'Antigravity' : status?.provider === 'gemini' ? 'Gemini' : 'Claude'})</option>
             <option value="agy">Antigravity CLI (Subscription)</option>
@@ -98,7 +98,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             <option value="anthropic">Anthropic Claude (API Key)</option>
           </select>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', flex: '1.25 1 0', minWidth: 0, gap: 3 }}>
           <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
           {(() => {
             const models = status?.available_models?.[status?.provider || 'gemini'] || []
@@ -112,7 +112,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
                 onChange={(e) => {
                   onSettings?.({ ai_model: e.target.value })
                 }}
-                style={{ fontSize: 12, padding: '3px 6px' }}
+                style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
               >
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>{m.label}</option>
