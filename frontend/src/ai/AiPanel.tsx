@@ -16,8 +16,7 @@ interface Props {
   zIndex?: number
   onFocusPanel?: () => void
   onOpenConcept: (id: string) => void
-  onMode: (m: 'mcp' | 'api') => void
-  onSettings?: (patch: { ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
+  onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
   onSend: (text: string) => void
   onCancel: () => void
   onReset: () => void
@@ -26,8 +25,8 @@ interface Props {
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onMode, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
-  const mode = status?.mode ?? 'mcp'
+export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+  const mode = status?.mode ?? 'api'
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
   const chat = status?.chat
@@ -75,20 +74,20 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             <Icon name="grip" size={14} />
           </button>
           <h2>AI assistant</h2>
-          <span className="spacer" />
-          <div className="seg sm" role="group" aria-label="AI mode">
-            <button aria-pressed={mode === 'mcp'} onClick={() => onMode('mcp')} title="Claude Code or MCP agent connects from terminal">MCP Agent</button>
-            <button aria-pressed={mode === 'api'} onClick={() => onMode('api')} title="In-App AI Chat (Gemini / Claude)">In-App Chat</button>
-          </div>
         </div>
-      {mode === 'api' && <div className="row sm" style={{ padding: '8px 12px', gap: 10, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', boxSizing: 'border-box' }}>
+      <div className="row sm" style={{ padding: '8px 12px', gap: 10, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minWidth: 0, gap: 3 }}>
-          <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Provider</label>
+          <label htmlFor="ai-provider-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>LLM</label>
           <select
             id="ai-provider-select"
-            value={status?.settings_provider || 'auto'}
+            value={mode === 'mcp' ? 'mcp' : (status?.settings_provider || 'auto')}
             onChange={(e) => {
-              onSettings?.({ ai_provider: e.target.value as 'auto' | 'agy' | 'gemini' | 'anthropic', ai_model: '' })
+              const v = e.target.value
+              if (v === 'mcp') {
+                onSettings?.({ ai_mode: 'mcp' })
+              } else {
+                onSettings?.({ ai_mode: 'api', ai_provider: v as 'auto' | 'agy' | 'gemini' | 'anthropic', ai_model: '' })
+              }
             }}
             style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
           >
@@ -96,32 +95,35 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             <option value="agy">Antigravity CLI (Subscription)</option>
             <option value="gemini">Google Gemini (API Key)</option>
             <option value="anthropic">Anthropic Claude (API Key)</option>
+            <option value="mcp">External MCP (Terminal / IDE)</option>
           </select>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', flex: '1.25 1 0', minWidth: 0, gap: 3 }}>
-          <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
-          {(() => {
-            const models = status?.available_models?.[status?.provider || 'gemini'] || []
-            const picked = status?.settings_model && models.some((m) => m.id === status.settings_model)
-              ? status.settings_model
-              : (status?.model && models.some((m) => m.id === status.model) ? status.model : (models[0]?.id ?? ''))
-            return (
-              <select
-                id="ai-model-select"
-                value={picked}
-                onChange={(e) => {
-                  onSettings?.({ ai_model: e.target.value })
-                }}
-                style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
-              >
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>{m.label}</option>
-                ))}
-              </select>
-            )
-          })()}
-        </div>
-      </div>}
+        {mode !== 'mcp' && (
+          <div style={{ display: 'flex', flexDirection: 'column', flex: '1.25 1 0', minWidth: 0, gap: 3 }}>
+            <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
+            {(() => {
+              const models = status?.available_models?.[status?.provider || 'gemini'] || []
+              const picked = status?.settings_model && models.some((m) => m.id === status.settings_model)
+                ? status.settings_model
+                : (status?.model && models.some((m) => m.id === status.model) ? status.model : (models[0]?.id ?? ''))
+              return (
+                <select
+                  id="ai-model-select"
+                  value={picked}
+                  onChange={(e) => {
+                    onSettings?.({ ai_model: e.target.value })
+                  }}
+                  style={{ fontSize: 12, padding: '4px 8px', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                >
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              )
+            })()}
+          </div>
+        )}
+      </div>
       {context && <div className="ctx">Context: {context}</div>}
       {concept && (
         <div className="ccard">
@@ -143,7 +145,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
                 <p>Run Claude Code or your MCP client in the <code>3d-print-assist</code> folder while this app is open. It connects through
                   the <code>3d-print-assist</code> MCP server and designs with the same tools you have; you watch each change
                   land here and in the tree, and can edit alongside it.</p>
-                <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : 'Claude'}</b> in this window, switch to <b>In-App Chat</b> above.</p>
+                <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : status?.provider === 'agy' ? 'Antigravity' : 'Claude'}</b> in this window, pick an LLM from the dropdown above.</p>
               </div>
             )}
             {ai.map((a, i) => (
