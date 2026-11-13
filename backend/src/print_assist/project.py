@@ -35,9 +35,6 @@ def data_root() -> Path:
 class Settings(BaseModel):
     update_mode: Literal["manual", "auto"] = "manual"
     printer: str = DEFAULT_PRINTER
-    ai_mode: Literal["mcp", "api"] = "mcp"
-    ai_provider: Literal["auto", "gemini", "anthropic"] = "auto"
-    ai_model: str = ""
 
 
 class ProjectFile(BaseModel):

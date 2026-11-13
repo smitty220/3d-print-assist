@@ -265,21 +265,6 @@ export interface Checks { part: Finding[]; counts: Record<'ok' | 'warn' | 'fail'
 
 export interface Activity { actor: string; text: string; at: number; ok: boolean }
 
-export interface ChatEntry { role: 'user' | 'assistant' | 'tool' | 'error'; text: string; tool: string | null; ok: boolean; at: number }
-
-export interface ModelOption { id: string; label: string }
-
-export interface AiStatus {
-  model: string
-  key: boolean
-  mode: 'mcp' | 'api'
-  provider?: string
-  settings_provider?: string
-  settings_model?: string
-  available_models?: Record<string, ModelOption[]>
-  chat: { running: boolean; log: ChatEntry[]; tokens: Record<string, number> }
-}
-
 export interface FontInfo { name: string; styles: string[]; license: string; source: string }
 
 export interface Printer { id: string; name: string; bed: Vec3; nozzles: { dia: number; slots: number }[] }
@@ -290,9 +275,6 @@ export interface Project {
   settings: {
     update_mode: 'manual' | 'auto'
     printer: string
-    ai_mode: 'mcp' | 'api'
-    ai_provider?: 'auto' | 'gemini' | 'anthropic'
-    ai_model?: string
   }
   design: { sketches: (Sketch & { report?: SolveReport | null })[] }
 }
@@ -406,9 +388,4 @@ export const api = {
     return { blob: await r.blob(), name, saved: r.headers.get('X-Saved-Path') ?? '' }
   },
   revertAi: () => send<{ reverted: string; tree: Tree }>('POST', '/revert-ai'),
-
-  aiStatus: () => get<AiStatus>('/ai/status'),
-  chat: (message: string) => send<AiStatus['chat']>('POST', '/ai/chat', { message }),
-  chatCancel: () => send<AiStatus['chat']>('POST', '/ai/chat/cancel'),
-  chatReset: () => send<AiStatus['chat']>('POST', '/ai/chat/reset'),
 }
