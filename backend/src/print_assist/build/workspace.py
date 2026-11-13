@@ -292,6 +292,11 @@ class Workspace:
             self.log(actor, f"Uploaded reference image {img.id}: {img.prompt[:80]}")
             return img
 
+    def delete_image(self, iid: str, actor: str = design_ops.USER) -> None:
+        with self.lock:
+            self.images.delete(iid)
+            self.log(actor, f"Removed image {iid}")
+
     def answer_concept(self, cid: str, decision: str, note: str = "") -> Concept:
         with self.lock:
             c = self.concepts.respond(cid, decision, note)  # type: ignore[arg-type]

@@ -387,6 +387,7 @@ export const api = {
     const qs = note ? `?note=${encodeURIComponent(note)}` : ''
     return fetch(`/api/images/upload${qs}`, { method: 'POST', body: form }).then((r) => json<ImageInfo>(r))
   },
+  deleteImage: (id: string) => send<{ deleted: string }>('DELETE', `/images/${encodeURIComponent(id)}`),
   addReference: (file: File, newDesign: boolean) => {
     const form = new FormData()
     form.append('file', file)

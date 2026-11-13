@@ -172,6 +172,14 @@ class Images:
         self.items.append(img)
         return img
 
+    def delete(self, iid: str) -> None:
+        img = self.get(iid)
+        if img is None:
+            raise ImageError(f"no image {iid!r}")
+        (self.folder / img.file).unlink(missing_ok=True)
+        (self.folder / f"{img.id}.json").unlink(missing_ok=True)
+        self.items = [i for i in self.items if i.id != iid]
+
 
 _HREF = re.compile(r"""((?:xlink:)?href\s*=\s*)(["'])images/(I\d+)\.(?:png|jpg|webp)\2""")
 

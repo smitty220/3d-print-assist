@@ -18,6 +18,7 @@ interface Props {
   onFocusPanel?: () => void
   onOpenConcept: (id: string) => void
   onUploadImage: (file: File) => Promise<ImageInfo | undefined>
+  onDeleteImage: (id: string) => Promise<void>
   onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
   onSend: (text: string) => void
   onCancel: () => void
@@ -38,7 +39,7 @@ function defaultMcpUrl(): string {
     : window.location.origin
 }
 
-export function AiPanel({ status, activity, images, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
   const [attached, setAttached] = useState<string[]>([])
@@ -92,21 +93,39 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
       {images.map((img) => {
         const on = mode !== 'mcp' && attached.includes(img.id)
         return (
-          <button
+          <span
             key={img.id}
-            type="button"
-            className="btn sm"
-            onClick={() => mode !== 'mcp' && toggleAttach(img.id)}
-            title={mode === 'mcp' ? `${img.id}: ${img.prompt} (ask MCP client to look_at_image ${img.id})` : `${on ? 'Detach' : 'Attach'} ${img.id}: ${img.prompt}`}
             style={{
-              display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 5px',
-              borderColor: on ? 'var(--accent)' : undefined,
-              background: on ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : undefined,
+              display: 'inline-flex', alignItems: 'center', gap: 2,
+              border: `1px solid ${on ? 'var(--accent)' : 'var(--line)'}`,
+              borderRadius: 6,
+              background: on ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'var(--panel)',
             }}
           >
-            <img src={api.imageUrl(img.id)} alt={img.id} style={{ width: 18, height: 18, objectFit: 'cover', borderRadius: 3 }} />
-            <span>{img.id}</span>
-          </button>
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => mode !== 'mcp' && toggleAttach(img.id)}
+              title={mode === 'mcp' ? `${img.id}: ${img.prompt} (ask MCP client to look_at_image ${img.id})` : `${on ? 'Detach' : 'Attach'} ${img.id}: ${img.prompt}`}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 5px', border: 0, background: 'transparent' }}
+            >
+              <img src={api.imageUrl(img.id)} alt={img.id} style={{ width: 18, height: 18, objectFit: 'cover', borderRadius: 3 }} />
+              <span>{img.id}</span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Remove ${img.id}`}
+              title={`Remove ${img.id}`}
+              onClick={async (e) => {
+                e.stopPropagation()
+                setAttached((prev) => prev.filter((x) => x !== img.id))
+                await onDeleteImage(img.id)
+              }}
+              style={{ border: 0, background: 'transparent', color: 'var(--muted)', cursor: 'pointer', padding: '0 5px 0 2px', fontSize: 13, lineHeight: 1 }}
+            >
+              ×
+            </button>
+          </span>
         )
       })}
     </div>

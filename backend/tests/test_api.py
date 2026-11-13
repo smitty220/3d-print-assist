@@ -184,3 +184,6 @@ def test_upload_reference_image(client):
     assert img["id"] == "I1" and img["file"] == "I1.png" and img["model"] == "upload"
     assert client.get("/api/images/I1").content == png
     assert client.post("/api/images/upload", files={"file": ("bad.txt", b"hi", "text/plain")}).status_code == 422
+    assert client.delete("/api/images/I1").json() == {"deleted": "I1"}
+    assert client.get("/api/images/I1").status_code == 404
+    assert client.delete("/api/images/I1").status_code == 404

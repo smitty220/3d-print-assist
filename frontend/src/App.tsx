@@ -640,6 +640,10 @@ export default function App() {
             if (img) api.images().then(setImages).catch(() => {})
             return img
           }}
+          onDeleteImage={async (id) => {
+            const ok = await run(() => api.deleteImage(id))
+            if (ok) api.images().then(setImages).catch(() => {})
+          }}
           onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
           onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
           onCancel={() => { run(api.chatCancel) }} onReset={() => { run(api.chatReset).then(() => api.aiStatus().then(setAi)) }}

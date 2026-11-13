@@ -727,6 +727,17 @@ def image_file(iid: str) -> FileResponse:
         raise HTTPException(404, str(exc)) from exc
 
 
+@app.delete("/api/images/{iid}")
+def delete_image(iid: str, x_actor: str = Header(default=USER)) -> dict:
+    from .images import ImageError
+
+    try:
+        ws().delete_image(iid, actor=x_actor)
+        return {"deleted": iid}
+    except ImageError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 # ---------------------------------------------------------------- import and references
 
 IMPORT_MAX = 200 * 1024 * 1024  # bytes
