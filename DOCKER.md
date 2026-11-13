@@ -33,8 +33,18 @@ To persist designs across container rebuilds, map `/data` to an Unraid appdata f
 ## Using Gemini CLI / Claude Code / Antigravity with the Container
 
 - **In-App Chat**: Use **Google Gemini (API Key)** or **Anthropic Claude (API Key)** in the **Assistant** dropdown by setting `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` on the container. (Local Mac CLI binaries such as `agy` are not inside the Linux container.)
-- **External MCP from your Mac/PC**: Your local Gemini CLI, Claude Code, or Antigravity IDE can still drive the Unraid-hosted app over MCP! Point the MCP server at your Unraid host:
-  ```bash
-  PRINT_ASSIST_URL=http://<unraid-ip>:8010
+- **External MCP from your Mac/PC**: Your local Gemini CLI, Claude Code, or Antigravity IDE can still drive the Unraid-hosted app over MCP! Point the MCP server at your Unraid host in `.mcp.json` (or copy the generated snippet from the **External MCP** view inside the app):
+  ```json
+  {
+    "mcpServers": {
+      "3d-print-assist": {
+        "command": "uv",
+        "args": ["run", "--directory", "mcp", "print-assist-mcp"],
+        "env": {
+          "PRINT_ASSIST_URL": "http://<unraid-ip>:8010"
+        }
+      }
+    }
+  }
   ```
 - **Slicers**: Because the container runs headless on Unraid, **Send to \<Slicer\>** is for local desktop runs. When hosted on Unraid, use the **3MF / STL / STEP** download buttons and open the file in PrusaSlicer / Bambu Studio on your computer.

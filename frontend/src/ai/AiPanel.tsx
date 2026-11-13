@@ -25,9 +25,22 @@ interface Props {
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
+function defaultMcpUrl(): string {
+  try {
+    const saved = localStorage.getItem('pa.mcpUrl')
+    if (saved) return saved
+  } catch { /* ignore */ }
+  if (typeof window === 'undefined') return 'http://127.0.0.1:8010'
+  return window.location.port === '5183'
+    ? `http://${window.location.hostname}:8010`
+    : window.location.origin
+}
+
 export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
+  const [mcpUrl, setMcpUrl] = useState(defaultMcpUrl)
+  const [copied, setCopied] = useState(false)
   const end = useRef<HTMLDivElement>(null)
   const chat = status?.chat
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }) }, [chat?.log.length, activity.length])
@@ -137,30 +150,88 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
         </div>
       )}
 
-      {mode === 'mcp' ? (
-        <>
-          <div className="log">
-            {ai.length === 0 && (
-              <div className="intro">
-                <p>Run Claude Code or your MCP client in the <code>3d-print-assist</code> folder while this app is open. It connects through
-                  the <code>3d-print-assist</code> MCP server and designs with the same tools you have; you watch each change
-                  land here and in the tree, and can edit alongside it.</p>
-                <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : status?.provider === 'agy' ? 'Antigravity' : 'Claude'}</b> in this window, pick an Assistant from the dropdown above.</p>
-              </div>
-            )}
-            {ai.map((a, i) => (
-              <div key={i} className={`entry ${a.ok ? 'tool' : 'error'}`}>
-                <span className="who">{a.actor}</span><span className="when">{time(a.at)}</span>
-                <div>{a.text}</div>
-              </div>
-            ))}
-            <div ref={end} />
-          </div>
-          <div className="aifoot">
-            <button className="btn" onClick={onRevert} disabled={!ai.some((a) => a.ok && a.actor !== 'user')}>Revert last AI change</button>
-          </div>
-        </>
-      ) : (
+      {mode === 'mcp' ? (() => {
+        const cleanUrl = (mcpUrl.trim() || defaultMcpUrl()).replace(/\/+$/, '')
+        const mcpJson = JSON.stringify({
+          mcpServers: {
+            '3d-print-assist': {
+              command: 'uv',
+              args: ['run', '--directory', 'mcp', 'print-assist-mcp'],
+              env: { PRINT_ASSIST_URL: cleanUrl },
+            },
+          },
+        }, null, 2)
+        return (
+          <>
+            <div className="log">
+              {ai.length === 0 && (
+                <div className="intro">
+                  <p>Run Claude Code, Gemini CLI, or your MCP client in the <code>3d-print-assist</code> folder while this app is open. It connects through
+                    the <code>3d-print-assist</code> MCP server and designs with the same tools you have; you watch each change
+                    land here and in the tree, and can edit alongside it.</p>
+                  <p>To chat directly with <b>{status?.provider === 'gemini' ? 'Google Gemini' : status?.provider === 'agy' ? 'Antigravity' : 'Claude'}</b> in this window, pick an Assistant from the dropdown above.</p>
+                </div>
+              )}
+              <details className="intro" open={ai.length === 0} style={{ marginTop: 6 }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600 }}>MCP connection (<code>PRINT_ASSIST_URL</code>)</summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+                  <label htmlFor="mcp-url-input" className="nm">Server URL for your MCP client (e.g. local or Unraid IP):</label>
+                  <div className="row" style={{ gap: 6 }}>
+                    <input
+                      id="mcp-url-input"
+                      type="url"
+                      value={mcpUrl}
+                      onChange={(e) => {
+                        setMcpUrl(e.target.value)
+                        try { localStorage.setItem('pa.mcpUrl', e.target.value) } catch { /* ignore */ }
+                      }}
+                      placeholder="http://127.0.0.1:8010"
+                      style={{ flex: 1, minWidth: 0, fontSize: 12, padding: '4px 8px' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={() => {
+                        try { localStorage.removeItem('pa.mcpUrl') } catch { /* ignore */ }
+                        setMcpUrl(defaultMcpUrl())
+                      }}
+                      title="Reset to detected URL"
+                    >
+                      Auto
+                    </button>
+                  </div>
+                  <pre style={{ margin: 0, padding: 8, borderRadius: 6, background: 'var(--bg)', border: '1px solid var(--line)', fontSize: 11, overflowX: 'auto' }}>{mcpJson}</pre>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(mcpJson).then(() => {
+                          setCopied(true)
+                          setTimeout(() => setCopied(false), 2000)
+                        }).catch(() => {})
+                      }}
+                    >
+                      {copied ? 'Copied!' : 'Copy .mcp.json'}
+                    </button>
+                    <span className="nm">Or run with <code>PRINT_ASSIST_URL={cleanUrl}</code></span>
+                  </div>
+                </div>
+              </details>
+              {ai.map((a, i) => (
+                <div key={i} className={`entry ${a.ok ? 'tool' : 'error'}`}>
+                  <span className="who">{a.actor}</span><span className="when">{time(a.at)}</span>
+                  <div>{a.text}</div>
+                </div>
+              ))}
+              <div ref={end} />
+            </div>
+            <div className="aifoot">
+              <button className="btn" onClick={onRevert} disabled={!ai.some((a) => a.ok && a.actor !== 'user')}>Revert last AI change</button>
+            </div>
+          </>
+        )
+      })() : (
         <>
           <div className="log">
             {!status?.key && (
