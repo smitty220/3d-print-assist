@@ -532,7 +532,13 @@ export default function App() {
             {mode === 'sketch' && <div ref={setTreeHost} />}
             {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
             {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
-              onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }}
+              onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => Promise.all([api.project().then(setProject), api.checks().then(setChecks), api.tree().then(setTree)])) }}
+              onAddPrinter={async (p) => {
+                const created = await run(() => api.createPrinter(p))
+                if (!created) return
+                await api.settings({ printer: created.id })
+                await Promise.all([api.printers().then(setPrinters), api.project().then(setProject), api.checks().then(setChecks), api.tree().then(setTree)])
+              }}
               onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
             {mode === 'part' && (
               <div className="legend">

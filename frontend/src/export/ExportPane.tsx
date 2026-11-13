@@ -12,6 +12,7 @@ interface Props {
   printers: Printer[]
   printer: string
   onPrinter: (id: string) => void
+  onAddPrinter?: (p: { name: string; bed: [number, number, number]; nozzle_dia: number; slots: number }) => Promise<void>
   onOps: (ops: Op[], message: string) => void
   preview: string | null // the colorway shown in the view
   onPreview: (id: string | null) => void
@@ -45,13 +46,20 @@ function Field({ value, label, onCommit, placeholder, className }: { value: stri
   )
 }
 
-export function ExportPane({ tree, checks, printers, printer, onPrinter, onOps, preview, onPreview, onError }: Props) {
+export function ExportPane({ tree, checks, printers, printer, onPrinter, onAddPrinter, onOps, preview, onPreview, onError }: Props) {
   const why = tree.stale ? 'Update the model first' : tree.failed ? 'A feature failed: fix it first' : null
   const prof = printers.find((p) => p.id === printer)
   const slots = prof ? prof.nozzles.reduce((n, z) => n + z.slots, 0) : 4
   const free = Array.from({ length: slots }, (_, i) => i + 1).find((s) => !tree.filaments.some((f) => f.slot === s))
   const [fmt, setFmt] = useState<Fmt>('3mf')
   const [busy, setBusy] = useState(false)
+  const [addingPrinter, setAddingPrinter] = useState(false)
+  const [pName, setPName] = useState('')
+  const [pX, setPX] = useState('256')
+  const [pY, setPY] = useState('256')
+  const [pZ, setPZ] = useState('256')
+  const [pNozzle, setPNozzle] = useState('0.4')
+  const [pSlots, setPSlots] = useState('1')
   const count = Math.max(tree.variants.length, 1) * Math.max(tree.colorways.length, 1)
 
   async function batch() {
@@ -78,6 +86,35 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, onOps, 
         <select aria-label="Printer profile" value={printer} onChange={(e) => onPrinter(e.target.value)}>
           {printers.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.bed.join(' × ')} mm · {p.nozzles.reduce((n, z) => n + z.slots, 0)} slots</option>)}
         </select>
+        {onAddPrinter && !addingPrinter && (
+          <button className="btn sm" type="button" onClick={() => setAddingPrinter(true)}>+ Custom printer</button>
+        )}
+        {onAddPrinter && addingPrinter && (
+          <div className="xfield" style={{ gap: 6, padding: 8, border: '1px solid var(--line)', borderRadius: 6, background: 'var(--panel-2)' }}>
+            <input aria-label="Custom printer name" placeholder="Printer name (e.g. Prusa XL)" value={pName} onChange={(e) => setPName(e.target.value)} />
+            <div className="row" style={{ gap: 4 }}>
+              <input aria-label="Bed X (mm)" type="number" min={10} placeholder="X" value={pX} onChange={(e) => setPX(e.target.value)} style={{ width: '100%' }} />
+              <input aria-label="Bed Y (mm)" type="number" min={10} placeholder="Y" value={pY} onChange={(e) => setPY(e.target.value)} style={{ width: '100%' }} />
+              <input aria-label="Bed Z (mm)" type="number" min={10} placeholder="Z" value={pZ} onChange={(e) => setPZ(e.target.value)} style={{ width: '100%' }} />
+            </div>
+            <div className="row" style={{ gap: 4 }}>
+              <input aria-label="Nozzle diameter (mm)" type="number" step="0.05" min={0.1} placeholder="Nozzle mm" value={pNozzle} onChange={(e) => setPNozzle(e.target.value)} style={{ width: '100%' }} />
+              <input aria-label="Filament slots" type="number" min={1} max={16} placeholder="Slots" value={pSlots} onChange={(e) => setPSlots(e.target.value)} style={{ width: '100%' }} />
+            </div>
+            <div className="row" style={{ gap: 6 }}>
+              <button className="btn sm primary" type="button" onClick={async () => {
+                const x = Number(pX), y = Number(pY), z = Number(pZ), dia = Number(pNozzle), s = Number(pSlots)
+                if (!pName.trim() || !(x > 0 && y > 0 && z > 0 && dia > 0 && s >= 1)) {
+                  onError('Enter a printer name, positive bed dimensions, nozzle size, and slots >= 1.')
+                  return
+                }
+                await onAddPrinter({ name: pName.trim(), bed: [x, y, z], nozzle_dia: dia, slots: s })
+                setAddingPrinter(false); setPName('')
+              }}>Save</button>
+              <button className="btn sm" type="button" onClick={() => setAddingPrinter(false)}>Cancel</button>
+            </div>
+          </div>
+        )}
       </div>
 
       <h2>Filaments</h2>

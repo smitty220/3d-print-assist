@@ -286,6 +286,30 @@ def get_printers() -> list[dict]:
     return [p.model_dump() for p in profiles().values()]
 
 
+class PrinterIn(BaseModel):
+    name: str
+    bed: tuple[float, float, float]
+    nozzle_dia: float = 0.4
+    slots: int = 1
+
+
+@app.post("/api/printers")
+def create_printer(body: PrinterIn) -> dict:
+    from .printers import Nozzle, PrinterProfile, save_custom_profile
+    from .project import slugify
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(422, "Printer name is required")
+    if any(v <= 0 for v in body.bed):
+        raise HTTPException(422, "Bed dimensions must be positive")
+    if body.nozzle_dia <= 0 or body.slots < 1:
+        raise HTTPException(422, "Nozzle diameter must be positive and slots >= 1")
+    pid = f"custom_{slugify(name)}"
+    prof = save_custom_profile(PrinterProfile(id=pid, name=name, bed=body.bed, nozzles=[Nozzle(dia=body.nozzle_dia, slots=body.slots)]))
+    return prof.model_dump()
+
+
 class SettingsPatch(BaseModel):
     update_mode: Literal["manual", "auto"] | None = None
     printer: str | None = None
