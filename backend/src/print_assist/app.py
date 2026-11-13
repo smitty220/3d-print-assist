@@ -1054,7 +1054,7 @@ def ai_status(refresh: bool = False) -> dict:
     model = ai.model_name(s.ai_model or None, provider_override=active_provider)
     has_key = ai.has_api_key(active_provider)
     available = {
-        "agy": [{"id": "", "label": "Antigravity Default (Subscription)"}],
+        "agy": ai.DEFAULT_AGY_MODELS,
         "gemini": ai.list_gemini_models(force_refresh=refresh),
         "anthropic": AVAILABLE_MODELS["anthropic"],
     }

@@ -27,6 +27,29 @@ DEFAULT_GEMINI_MODELS: list[dict[str, str]] = [
     {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
 ]
 
+DEFAULT_AGY_MODELS: list[dict[str, str]] = [
+    {"id": "", "label": "Antigravity Default (Subscription)"},
+    {"id": "Gemini 4 Argon (High)", "label": "Gemini 4 Argon (High)"},
+    {"id": "Gemini 4 Argon (Medium)", "label": "Gemini 4 Argon (Medium)"},
+    {"id": "Gemini 4 Argon (Low)", "label": "Gemini 4 Argon (Low)"},
+    {"id": "Gemini 4 Hydrogen (XHigh)", "label": "Gemini 4 Hydrogen (XHigh)"},
+    {"id": "Gemini 4 Hydrogen (High)", "label": "Gemini 4 Hydrogen (High)"},
+    {"id": "Gemini 4 Hydrogen (Medium)", "label": "Gemini 4 Hydrogen (Medium)"},
+    {"id": "Gemini 4 Hydrogen (Low)", "label": "Gemini 4 Hydrogen (Low)"},
+    {"id": "Orchestrator (Argon)", "label": "Orchestrator (Argon)"},
+    {"id": "Gemini 3.8 Flash (High)", "label": "Gemini 3.8 Flash (High)"},
+    {"id": "Gemini 3.8 Flash (Medium)", "label": "Gemini 3.8 Flash (Medium)"},
+    {"id": "Gemini 3.8 Flash (Low)", "label": "Gemini 3.8 Flash (Low)"},
+    {"id": "Claude Opus 5.5 (High)", "label": "Claude Opus 5.5 (High)"},
+    {"id": "Claude Opus 5.5 (Medium)", "label": "Claude Opus 5.5 (Medium)"},
+    {"id": "Claude Opus 5.5 (Low)", "label": "Claude Opus 5.5 (Low)"},
+    {"id": "Claude Sonnet 5.5 (High)", "label": "Claude Sonnet 5.5 (High)"},
+    {"id": "Claude Sonnet 5.5 (Medium)", "label": "Claude Sonnet 5.5 (Medium)"},
+    {"id": "Claude Sonnet 5.5 (Low)", "label": "Claude Sonnet 5.5 (Low)"},
+    {"id": "GPT-OSS 120B (Medium)", "label": "GPT-OSS 120B (Medium)"},
+]
+AGY_MODEL_IDS = {m["id"] for m in DEFAULT_AGY_MODELS if m["id"]}
+
 _GEMINI_SKIP_SUBSTRINGS = (
     "-tts", "-image", "nano-banana", "omni", "transcribe",
     "robotics", "computer-use", "embedding", "-live", "decision",
@@ -132,7 +155,8 @@ def model_name(model_override: str | None = None, provider_override: str | None 
     load_env_key()
     p = provider_override or provider()
     if p == "agy":
-        return (model_override or "").strip()
+        m = (model_override or "").strip()
+        return m if m in AGY_MODEL_IDS else ""
     custom = (model_override or os.environ.get("PRINT_ASSIST_MODEL") or "").strip()
     if custom:
         if p == "gemini":

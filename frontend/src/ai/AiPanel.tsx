@@ -100,18 +100,26 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1.5, gap: 2 }}>
           <label htmlFor="ai-model-select" style={{ fontSize: 10, textTransform: 'uppercase', opacity: 0.65, letterSpacing: '0.04em' }}>Model</label>
-          <select
-            id="ai-model-select"
-            value={status?.settings_model || status?.model || ''}
-            onChange={(e) => {
-              onSettings?.({ ai_model: e.target.value })
-            }}
-            style={{ fontSize: 12, padding: '3px 6px' }}
-          >
-            {(status?.available_models?.[status?.provider || 'gemini'] || []).map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+          {(() => {
+            const models = status?.available_models?.[status?.provider || 'gemini'] || []
+            const picked = status?.settings_model && models.some((m) => m.id === status.settings_model)
+              ? status.settings_model
+              : (status?.model && models.some((m) => m.id === status.model) ? status.model : (models[0]?.id ?? ''))
+            return (
+              <select
+                id="ai-model-select"
+                value={picked}
+                onChange={(e) => {
+                  onSettings?.({ ai_model: e.target.value })
+                }}
+                style={{ fontSize: 12, padding: '3px 6px' }}
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            )
+          })()}
         </div>
       </div>}
       {context && <div className="ctx">Context: {context}</div>}
