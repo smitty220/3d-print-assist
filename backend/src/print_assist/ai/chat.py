@@ -260,7 +260,7 @@ class Chat:
             "-p", prompt,
             "--output-format", "stream-json",
             "--dangerously-skip-permissions",
-            "--print-timeout", "5m",
+            "--print-timeout", "30m",
         ]
         if self._agy_conv:
             cmd.extend(["--conversation", self._agy_conv])
