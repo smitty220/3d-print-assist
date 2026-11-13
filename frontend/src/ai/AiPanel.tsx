@@ -53,7 +53,7 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
   // The AI's changes, and the user's answers to its concepts (the conversation about what to build).
   const ai = activity.filter((a) => a.actor !== 'user' || a.text.startsWith('Concept '))
   const uploadFiles = async (files: FileList | File[]) => {
-    const list = Array.from(files).filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(f.name))
+    const list = Array.from(files).filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp|heic|heif)$/i.test(f.name))
     if (!list.length) return
     setUploading(true)
     try {
@@ -81,13 +81,13 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
       <input
         ref={imgInput}
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif"
         multiple
         hidden
         onChange={(e) => { if (e.target.files) uploadFiles(e.target.files); e.target.value = '' }}
       />
       <button type="button" className="btn sm" disabled={uploading} onClick={() => imgInput.current?.click()}
-        title="Upload a reference photo (PNG, JPG, WebP) so the AI can inspect it">
+        title="Upload a reference photo (PNG, JPG, WebP, HEIC) so the AI can inspect it">
         {uploading ? 'Uploading…' : '+ Photo'}
       </button>
       {images.map((img) => {

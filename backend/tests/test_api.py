@@ -187,3 +187,15 @@ def test_upload_reference_image(client):
     assert client.delete("/api/images/I1").json() == {"deleted": "I1"}
     assert client.get("/api/images/I1").status_code == 404
     assert client.delete("/api/images/I1").status_code == 404
+
+    import io
+    import pillow_heif
+    from PIL import Image
+
+    pillow_heif.register_heif_opener()
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 100, 50)).save(buf, format="HEIF")
+    r2 = client.post("/api/images/upload", files={"file": ("iphone.heic", buf.getvalue(), "image/heic")})
+    assert r2.status_code == 200
+    assert r2.json()["file"].endswith(".jpg")
+    assert client.get(f"/api/images/{r2.json()['id']}").content[:2] == b"\xff\xd8"

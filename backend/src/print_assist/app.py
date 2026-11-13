@@ -710,7 +710,7 @@ async def upload_image(file: UploadFile, note: str = "", x_actor: str = Header(d
     data = await file.read(IMAGE_MAX + 1)
     if len(data) > IMAGE_MAX:
         raise HTTPException(413, "Image is over 25 MB")
-    ext = Path(file.filename or "").suffix.lower() or EXT.get(file.content_type or "", "")
+    ext = Path(file.filename or "").suffix.lower() or {**EXT, "image/heic": ".heic", "image/heif": ".heif"}.get(file.content_type or "", "")
     try:
         return ws().upload_image(data=data, ext=ext, note=note or (file.filename or ""), actor=x_actor).model_dump()
     except ImageError as exc:

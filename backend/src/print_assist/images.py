@@ -154,8 +154,23 @@ class Images:
         norm_ext = ext.lower()
         if norm_ext == ".jpeg":
             norm_ext = ".jpg"
+        if norm_ext in (".heic", ".heif"):
+            import io
+            import pillow_heif
+            from PIL import Image, ImageOps
+
+            pillow_heif.register_heif_opener()
+            try:
+                with Image.open(io.BytesIO(data)) as im:
+                    im = ImageOps.exif_transpose(im).convert("RGB")
+                    buf = io.BytesIO()
+                    im.save(buf, format="JPEG", quality=92)
+                    data = buf.getvalue()
+            except Exception as exc:
+                raise ImageError(f"could not decode HEIC/HEIF image: {exc}") from exc
+            norm_ext = ".jpg"
         if norm_ext not in (".png", ".jpg", ".webp"):
-            raise ImageError("only PNG, JPEG, and WebP images are supported")
+            raise ImageError("only PNG, JPEG, WebP, and HEIC/HEIF images are supported")
         n = max((int(i.id[1:]) for i in self.items if i.id[1:].isdigit()), default=0) + 1
         img = GeneratedImage(
             id=f"I{n}",
