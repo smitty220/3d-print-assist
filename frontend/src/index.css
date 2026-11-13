@@ -78,8 +78,21 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .menu { position: absolute; z-index: 20; left: 8px; top: 64px; display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px #0007; }
 
 /* panels */
-.main { display: grid; grid-template-columns: 300px minmax(0, 1fr) 360px; min-height: 0; }
+.main { --left-w: 300px; --right-w: 360px; display: grid; grid-template-columns: var(--left-w) minmax(0, 1fr) var(--right-w); min-height: 0; }
+.main.collapsed-left { --left-w: 32px; }
+.main.collapsed-right { --right-w: 32px; }
 .side { display: flex; flex-direction: column; min-height: 0; overflow: auto; background: var(--panel); }
+.side.collapsed { overflow: hidden; }
+.side-body { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; }
+.side-body[hidden] { display: none; }
+.sidehead { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line-2); flex-shrink: 0; }
+.sidehead h2 { padding: 0; }
+.side-toggle { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; flex-shrink: 0; }
+.side-toggle:hover { background: var(--panel-2); border-color: var(--line); color: var(--fg); }
+.side-rail { flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 10px 0; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.side-rail:hover { background: var(--panel-2); color: var(--fg); }
+.side-rail-label { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500; user-select: none; }
+.side.ai .side-rail-label { transform: none; }
 .side.left { border-right: 1px solid var(--line); }
 .side h2 { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; margin: 0; padding: 10px 12px 6px; }
 
@@ -241,7 +254,7 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .clist .formula { font-family: var(--mono); font-size: 11.5px; color: #9cc4ff; }
 
 @media (max-width: 1100px) {
-  .main { grid-template-columns: 240px minmax(0, 1fr) 300px; }
+  .main { --left-w: 240px; --right-w: 300px; }
 }
 
 /* File menu */

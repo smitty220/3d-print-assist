@@ -47,6 +47,10 @@ export default function App() {
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('pa.leftCollapsed') === '1')
+  const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('pa.rightCollapsed') === '1')
+  useEffect(() => { localStorage.setItem('pa.leftCollapsed', leftCollapsed ? '1' : '0') }, [leftCollapsed])
+  useEffect(() => { localStorage.setItem('pa.rightCollapsed', rightCollapsed ? '1' : '0') }, [rightCollapsed])
   const [plateNo, setPlateNo] = useState(1) // the plate shown in the Plates tab
   const [plateMesh, setPlateMesh] = useState<PlateMesh | null>(null)
   const [selected, setSelected] = useState<NodeKey | null>(null)
@@ -469,24 +473,42 @@ export default function App() {
         </div>
       )}
 
-      <main className="main">
-        <aside className="side left" aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}>
-          {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
-            onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
-            onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
-          {mode === 'sketch' && <div ref={setTreeHost} />}
-          {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
-          {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
-            onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }}
-            onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
-          {mode === 'part' && (
-            <div className="legend">
-              <span><Icon name="bolt" size={12} color="var(--stale)" fill="var(--stale)" /> needs update</span>
-              <span><Icon name="ok" size={12} color="var(--ok)" width={2.4} /> up to date</span>
-              <span><Icon name="warn" size={12} color="var(--warn)" width={2.2} /> check fails</span>
-              <span><Icon name="fail" size={12} color="var(--bad)" width={2.4} /> failed</span>
+      <main className={`main${leftCollapsed ? ' collapsed-left' : ''}${rightCollapsed ? ' collapsed-right' : ''}`}>
+        <aside className={`side left${leftCollapsed ? ' collapsed' : ''}`} aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}>
+          {leftCollapsed ? (
+            <button type="button" className="side-rail" onClick={() => setLeftCollapsed(false)} aria-expanded={false}
+              aria-label="Expand left panel" title="Expand left panel">
+              <Icon name="chevR" size={14} />
+              <span className="side-rail-label">{mode === 'export' ? 'Export' : mode === 'plates' ? 'Plates' : mode === 'sketch' ? 'Sketch' : 'Model'}</span>
+            </button>
+          ) : (
+            <div className="sidehead">
+              <h2>{mode === 'export' ? 'Export' : mode === 'plates' ? 'Plates' : mode === 'sketch' ? 'Sketch' : 'Model'}</h2>
+              <span className="spacer" />
+              <button type="button" className="side-toggle" onClick={() => setLeftCollapsed(true)} aria-expanded={true}
+                aria-label="Collapse left panel" title="Collapse left panel">
+                <Icon name="chevL" size={14} />
+              </button>
             </div>
           )}
+          <div className="side-body" hidden={leftCollapsed}>
+            {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
+              onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
+              onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
+            {mode === 'sketch' && <div ref={setTreeHost} />}
+            {mode === 'plates' && <PlatesPane tree={tree} plate={plateNo} onPlate={setPlateNo} onError={setError} />}
+            {mode === 'export' && <ExportPane tree={tree} checks={checks} printers={printers} printer={project?.settings.printer ?? ''}
+              onPrinter={(id) => { run(() => api.settings({ printer: id })).then(() => api.project().then(setProject)).then(() => api.checks().then(setChecks)) }}
+              onOps={onOps} preview={preview} onPreview={setPreview} onError={setError} />}
+            {mode === 'part' && (
+              <div className="legend">
+                <span><Icon name="bolt" size={12} color="var(--stale)" fill="var(--stale)" /> needs update</span>
+                <span><Icon name="ok" size={12} color="var(--ok)" width={2.4} /> up to date</span>
+                <span><Icon name="warn" size={12} color="var(--warn)" width={2.2} /> check fails</span>
+                <span><Icon name="fail" size={12} color="var(--bad)" width={2.4} /> failed</span>
+              </div>
+            )}
+          </div>
         </aside>
 
         {mode === 'sketch' && sketchId ? (
@@ -538,6 +560,7 @@ export default function App() {
         )}
 
         <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
+          collapsed={rightCollapsed} onToggleCollapse={() => setRightCollapsed((v) => !v)}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onMode={(m) => { run(() => api.settings({ ai_mode: m })).then(() => api.aiStatus().then(setAi)) }}
           onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
