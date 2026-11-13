@@ -1047,12 +1047,16 @@ AVAILABLE_MODELS = {
 
 
 @app.get("/api/ai/status")
-def ai_status() -> dict:
+def ai_status(refresh: bool = False) -> dict:
     s = project().data.settings
     chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
     active_provider = ai.provider(chosen_provider)
     model = ai.model_name(s.ai_model or None, provider_override=active_provider)
     has_key = ai.has_api_key(active_provider)
+    available = {
+        "gemini": ai.list_gemini_models(force_refresh=refresh),
+        "anthropic": AVAILABLE_MODELS["anthropic"],
+    }
     return {
         "model": model,
         "provider": active_provider,
@@ -1060,7 +1064,7 @@ def ai_status() -> dict:
         "mode": s.ai_mode,
         "settings_provider": s.ai_provider,
         "settings_model": s.ai_model,
-        "available_models": AVAILABLE_MODELS,
+        "available_models": available,
         "chat": chat().to_dict(),
     }
 

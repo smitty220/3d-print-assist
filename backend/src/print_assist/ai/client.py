@@ -7,6 +7,7 @@ key here.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -14,6 +15,24 @@ from typing import Any, Protocol
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
 DEFAULT_MODEL = DEFAULT_ANTHROPIC_MODEL
+
+DEFAULT_GEMINI_MODELS: list[dict[str, str]] = [
+    {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash Preview (Recommended, Free Tier)"},
+    {"id": "gemini-4-hydrogen", "label": "Gemini 4 Hydrogen"},
+    {"id": "gemini-4-carbon", "label": "Gemini 4 Carbon"},
+    {"id": "gemini-4-argon", "label": "Gemini 4 Argon"},
+    {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+    {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
+    {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"},
+]
+
+_GEMINI_SKIP_SUBSTRINGS = (
+    "-tts", "-image", "nano-banana", "omni", "transcribe",
+    "robotics", "computer-use", "embedding", "-live", "decision",
+    "customtools", "-latest", "flash-lite",
+)
+_GEMINI_MODELS_CACHE: tuple[float, list[dict[str, str]]] | None = None
+_GEMINI_MODELS_TTL = 60.0  # seconds
 
 GEMINI_MODEL_ALIASES = {
     "gemini-4": "gemini-4-argon",
@@ -141,4 +160,48 @@ def make_client(provider_override: str | None = None) -> Any:
     if p == "gemini":
         return make_gemini_client()
     return make_anthropic_client()
+
+
+def list_gemini_models(force_refresh: bool = False) -> list[dict[str, str]]:
+    """Fetch available Gemini chat models from the API, caching briefly for fast UI status polls."""
+    global _GEMINI_MODELS_CACHE
+    load_env_key()
+    if not os.environ.get("GEMINI_API_KEY"):
+        return list(DEFAULT_GEMINI_MODELS)
+
+    now = time.time()
+    if not force_refresh and _GEMINI_MODELS_CACHE is not None:
+        cached_at, cached_models = _GEMINI_MODELS_CACHE
+        if now - cached_at < _GEMINI_MODELS_TTL:
+            return list(cached_models)
+
+    try:
+        client = make_gemini_client()
+        fetched: list[dict[str, str]] = []
+        for m in client.models.list():
+            name = getattr(m, "name", "") or ""
+            actions = getattr(m, "supported_actions", None) or []
+            if not name.startswith("models/gemini-") or "generateContent" not in actions:
+                continue
+            mid = name.removeprefix("models/")
+            if any(s in mid for s in _GEMINI_SKIP_SUBSTRINGS):
+                continue
+            label = getattr(m, "display_name", None) or mid
+            if mid == "gemini-3-flash-preview":
+                label = f"{label} (Recommended, Free Tier)"
+            fetched.append({"id": mid, "label": label})
+
+        if fetched:
+            # Put recommended model first, then newest models first
+            fetched.sort(key=lambda x: (x["id"] != "gemini-3-flash-preview", x["id"]), reverse=False)
+            # Re-order non-recommended items in reverse (newest versions at the top)
+            rec = [x for x in fetched if x["id"] == "gemini-3-flash-preview"]
+            others = list(reversed([x for x in fetched if x["id"] != "gemini-3-flash-preview"]))
+            result = rec + others
+            _GEMINI_MODELS_CACHE = (now, result)
+            return list(result)
+    except Exception:
+        pass
+
+    return list(DEFAULT_GEMINI_MODELS)
 

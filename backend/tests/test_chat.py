@@ -329,3 +329,32 @@ def test_gemini_timeout_retry_and_recovery(client):
     assert len(gemini.calls) == 2
     assert any("retrying" in e.text for e in chat.log)
     assert any("Recovered after timeout" in e.text for e in chat.log)
+
+
+def test_list_gemini_models_dynamic_discovery(monkeypatch):
+    from print_assist.ai import client as ai_client
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    monkeypatch.setattr(ai_client, "_GEMINI_MODELS_CACHE", None)
+
+    fake_models = [
+        NS(name="models/gemini-3-flash-preview", display_name="Gemini 3 Flash Preview", supported_actions=["generateContent"]),
+        NS(name="models/gemini-4-hydrogen", display_name="Gemini 4 Hydrogen", supported_actions=["generateContent"]),
+        NS(name="models/gemini-2.5-flash-tts", display_name="TTS Model", supported_actions=["generateContent"]),
+        NS(name="models/gemini-embedding-001", display_name="Embed", supported_actions=["embedContent"]),
+    ]
+
+    class FakeClient:
+        class models:
+            @staticmethod
+            def list():
+                return fake_models
+
+    monkeypatch.setattr(ai_client, "make_gemini_client", lambda: FakeClient())
+    result = ai_client.list_gemini_models(force_refresh=True)
+    ids = [m["id"] for m in result]
+    assert "gemini-4-hydrogen" in ids
+    assert "gemini-3-flash-preview" in ids
+    assert "gemini-2.5-flash-tts" not in ids
+    assert "gemini-embedding-001" not in ids
+    assert ids[0] == "gemini-3-flash-preview"
