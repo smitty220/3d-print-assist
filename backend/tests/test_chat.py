@@ -358,3 +358,43 @@ def test_list_gemini_models_dynamic_discovery(monkeypatch):
     assert "gemini-2.5-flash-tts" not in ids
     assert "gemini-embedding-001" not in ids
     assert ids[0] == "gemini-3-flash-preview"
+
+
+def test_web_search_and_fetch_url_tools(monkeypatch):
+    import httpx2
+    from print_assist.ai.chat import _call, _tools
+
+    tool_names = {t["name"] for t in _tools()}
+    assert "web_search" in tool_names
+    assert "fetch_url" in tool_names
+
+    monkeypatch.setattr(
+        httpx2,
+        "post",
+        lambda *a, **kw: NS(
+            status_code=200,
+            raise_for_status=lambda: None,
+            text='<a class="result__a" href="https://example.com/spec">M3 Spec</a><a class="result__snippet">Diameter 3mm</a>',
+        ),
+    )
+    out, ok = _call("web_search", {"query": "M3 screw dimensions"})
+    assert ok is True
+    data = json.loads(out)
+    assert data["results"][0]["title"] == "M3 Spec"
+    assert data["results"][0]["url"] == "https://example.com/spec"
+
+    monkeypatch.setattr(
+        httpx2,
+        "get",
+        lambda *a, **kw: NS(
+            status_code=200,
+            url="https://example.com/spec",
+            raise_for_status=lambda: None,
+            text="<html><script>ignore()</script><body><p>Body width is 28mm.</p></body></html>",
+        ),
+    )
+    out2, ok2 = _call("fetch_url", {"url": "https://example.com/spec"})
+    assert ok2 is True
+    data2 = json.loads(out2)
+    assert "Body width is 28mm." in data2["content"]
+    assert "ignore()" not in data2["content"]

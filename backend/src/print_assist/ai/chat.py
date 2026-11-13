@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import json
+import re
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -31,12 +33,88 @@ class Entry:
     at: float = field(default_factory=time.time)
 
 
+_WEB_TOOLS = [
+    {
+        "name": "web_search",
+        "description": (
+            "Search the web for real-world product dimensions, specs, datasheets, standard hardware sizes "
+            "(e.g. M3 screw, 608 bearing, device dimensions), or 3D printing tips."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Search query"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "fetch_url",
+        "description": "Fetch and read the text content of an HTTP/HTTPS web page (e.g. a product spec page from web_search).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "HTTP or HTTPS URL to fetch"}},
+            "required": ["url"],
+        },
+    },
+]
+
+_WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+
+def _web_search(args: dict) -> tuple[str, bool]:
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return json.dumps({"error": "query is required"}), False
+    import httpx2
+
+    try:
+        r = httpx2.post(
+            "https://html.duckduckgo.com/html/",
+            data={"q": query},
+            headers={"User-Agent": _WEB_UA},
+            timeout=10,
+        )
+        r.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"web_search failed: {exc}"}), False
+
+    titles = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, re.S)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.S)
+    results = []
+    for i, (href, t) in enumerate(titles[:6]):
+        s = snippets[i] if i < len(snippets) else ""
+        results.append({
+            "title": html.unescape(re.sub(r"<[^>]+>", "", t)).strip(),
+            "url": html.unescape(href),
+            "snippet": html.unescape(re.sub(r"<[^>]+>", "", s)).strip(),
+        })
+    return json.dumps({"query": query, "results": results}), True
+
+
+def _fetch_url(args: dict) -> tuple[str, bool]:
+    url = str(args.get("url") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return json.dumps({"error": "url must start with http:// or https://"}), False
+    import httpx2
+
+    try:
+        r = httpx2.get(url, headers={"User-Agent": _WEB_UA}, follow_redirects=True, timeout=15)
+        r.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": f"fetch_url failed: {exc}"}), False
+
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", r.text, flags=re.S | re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    text = re.sub(r"\s+", " ", text).strip()
+    return json.dumps({"url": str(r.url), "content": text[:6000]}), True
+
+
 def _tools() -> list[dict]:
     from print_assist_mcp import server
 
     listed = asyncio.run(server.mcp.list_tools())
-    return [{"name": t.name, "description": t.description or "", "input_schema": t.input_schema}
+    base = [{"name": t.name, "description": t.description or "", "input_schema": t.input_schema}
             for t in listed if t.name not in SKIP_TOOLS]
+    return base + _WEB_TOOLS
 
 
 def _wire_tools(actor: str = "claude") -> None:
@@ -55,6 +133,11 @@ def _call(name: str, args: dict, cancel: threading.Event | None = None) -> tuple
     from mcp.server.mcpserver import Image
 
     from print_assist_mcp import server
+
+    if name == "web_search":
+        return _web_search(args)
+    if name == "fetch_url":
+        return _fetch_url(args)
 
     if name == "wait_for_concept":
         cid = args.get("id")
