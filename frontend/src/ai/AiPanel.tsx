@@ -3,14 +3,18 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Activity, AiStatus, Concept } from '../api'
 import { Icon } from '../ui/icons'
+import type { usePanelLayout } from '../ui/usePanelLayout'
+
+type PanelLayout = ReturnType<typeof usePanelLayout>
 
 interface Props {
   status: AiStatus | null
   activity: Activity[]
   context: string | null
   concept: Concept | null // the newest
-  collapsed?: boolean
-  onToggleCollapse?: () => void
+  layout: PanelLayout
+  zIndex?: number
+  onFocusPanel?: () => void
   onOpenConcept: (id: string) => void
   onMode: (m: 'mcp' | 'api') => void
   onSettings?: (patch: { ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
@@ -22,7 +26,7 @@ interface Props {
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-export function AiPanel({ status, activity, context, concept, collapsed = false, onToggleCollapse, onOpenConcept, onMode, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onMode, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
   const end = useRef<HTMLDivElement>(null)
@@ -37,23 +41,39 @@ export function AiPanel({ status, activity, context, concept, collapsed = false,
     setText('')
   }
 
+  const isCollapsed = layout.collapsed && !layout.floating
   return (
-    <aside className={`side ai${collapsed ? ' collapsed' : ''}`} aria-label="AI assistant">
-      {collapsed ? (
-        <button type="button" className="side-rail" onClick={onToggleCollapse} aria-expanded={false}
+    <aside
+      className={`side ai${isCollapsed ? ' collapsed' : ''}${layout.floating ? ' floating' : ''}`}
+      style={layout.floating ? { left: layout.box.x, top: layout.box.y, width: layout.box.w, height: layout.box.h, zIndex } : undefined}
+      onPointerDown={onFocusPanel}
+      aria-label="AI assistant"
+    >
+      {isCollapsed ? (
+        <button type="button" className="side-rail" onClick={() => layout.setCollapsed(false)} aria-expanded={false}
           aria-label="Expand AI assistant panel" title="Expand AI assistant panel">
           <Icon name="chevL" size={14} />
           <span className="side-rail-label">AI assistant</span>
         </button>
       ) : null}
-      <div className="side-body" hidden={collapsed}>
+      <div className="side-body" hidden={isCollapsed}>
         <div className="aihead">
-          {onToggleCollapse && (
-            <button type="button" className="side-toggle" onClick={onToggleCollapse} aria-expanded={true}
+          {layout.floating ? (
+            <button type="button" className="side-toggle" onClick={() => layout.setFloating(false)}
+              aria-label="Dock AI assistant panel" title="Dock AI assistant panel">
+              <Icon name="dock" size={14} />
+            </button>
+          ) : (
+            <button type="button" className="side-toggle" onClick={() => layout.setCollapsed(true)} aria-expanded={true}
               aria-label="Collapse AI assistant panel" title="Collapse AI assistant panel">
               <Icon name="chevR" size={14} />
             </button>
           )}
+          <button type="button" className={`side-grip${layout.dragging ? ' dragging' : ''}`}
+            aria-label="Move AI assistant panel. Drag to float or use arrow keys when floating."
+            title="Drag to float / move panel" {...layout.moveHandleProps}>
+            <Icon name="grip" size={14} />
+          </button>
           <h2>AI assistant</h2>
           <span className="spacer" />
           <div className="seg sm" role="group" aria-label="AI mode">
@@ -176,6 +196,15 @@ export function AiPanel({ status, activity, context, concept, collapsed = false,
         </>
       )}
       </div>
+      {!isCollapsed && !layout.floating && (
+        <div className="side-resizer right" role="separator" aria-orientation="vertical"
+          aria-label="Resize AI assistant panel. Use left and right arrow keys or double-click to reset."
+          title="Drag to resize (double-click to reset)" tabIndex={0} {...layout.dockResizeProps} />
+      )}
+      {layout.floating && (
+        <div className="float-resizer" role="separator" aria-label="Resize floating AI assistant panel"
+          title="Drag to resize" {...layout.floatResizeProps} />
+      )}
     </aside>
   )
 }

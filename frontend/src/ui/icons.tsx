@@ -23,6 +23,8 @@ export const ICONS: Record<string, string> = {
   undo: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3', bolt: 'M13 2L4 14h7l-1 8 9-12h-7z', ok: 'M5 12l4 4 10-10', warn: 'M12 3L2 21h20zM12 10v5M12 18v.5',
   fail: 'M6 6l12 12M18 6L6 18', skip: 'M6 12h12', lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4', send: 'M4 12h15M13 6l6 6-6 6',
   chevL: 'M15 6l-6 6 6 6', chevR: 'M9 6l6 6-6 6',
+  grip: 'M9 5h.01M9 12h.01M9 19h.01M15 5h.01M15 12h.01M15 19h.01',
+  dock: 'M4 4h16v16H4zM9 4v16',
 }
 
 export function Icon({ name, size = 18, color = 'currentColor', fill = 'none', width = 1.7, label }:

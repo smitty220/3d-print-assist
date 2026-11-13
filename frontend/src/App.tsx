@@ -1,7 +1,7 @@
 // The app: header (design, mode tabs, update), toolbar, then the specification tree | the view | the AI panel, and the
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
@@ -16,6 +16,7 @@ import type { Tool } from './layout/tools'
 import { SketchEditor } from './sketch/SketchEditor'
 import { SpecTree, type NodeKey } from './tree/SpecTree'
 import { Icon } from './ui/icons'
+import { usePanelLayout } from './ui/usePanelLayout'
 import { ViewportPane } from './viewport/ViewportPane'
 import type { FacePick as ViewPick } from './viewer/Viewer'
 
@@ -47,10 +48,9 @@ export default function App() {
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
-  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('pa.leftCollapsed') === '1')
-  const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('pa.rightCollapsed') === '1')
-  useEffect(() => { localStorage.setItem('pa.leftCollapsed', leftCollapsed ? '1' : '0') }, [leftCollapsed])
-  useEffect(() => { localStorage.setItem('pa.rightCollapsed', rightCollapsed ? '1' : '0') }, [rightCollapsed])
+  const leftPanel = usePanelLayout({ storageKey: 'pa.left', side: 'left', defaultWidth: 300, minWidth: 180, maxWidth: 580 })
+  const rightPanel = usePanelLayout({ storageKey: 'pa.right', side: 'right', defaultWidth: 360, minWidth: 240, maxWidth: 640 })
+  const [frontPanel, setFrontPanel] = useState<'left' | 'right'>('right')
   const [plateNo, setPlateNo] = useState(1) // the plate shown in the Plates tab
   const [plateMesh, setPlateMesh] = useState<PlateMesh | null>(null)
   const [selected, setSelected] = useState<NodeKey | null>(null)
@@ -473,25 +473,48 @@ export default function App() {
         </div>
       )}
 
-      <main className={`main${leftCollapsed ? ' collapsed-left' : ''}${rightCollapsed ? ' collapsed-right' : ''}`}>
-        <aside className={`side left${leftCollapsed ? ' collapsed' : ''}`} aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}>
-          {leftCollapsed ? (
-            <button type="button" className="side-rail" onClick={() => setLeftCollapsed(false)} aria-expanded={false}
+      <main
+        className={`main${leftPanel.collapsed && !leftPanel.floating ? ' collapsed-left' : ''}${rightPanel.collapsed && !rightPanel.floating ? ' collapsed-right' : ''}`}
+        style={{
+          '--left-w': leftPanel.floating ? '0px' : leftPanel.collapsed ? '32px' : `${leftPanel.width}px`,
+          '--right-w': rightPanel.floating ? '0px' : rightPanel.collapsed ? '32px' : `${rightPanel.width}px`,
+        } as CSSProperties}
+      >
+        <aside
+          className={`side left${leftPanel.collapsed && !leftPanel.floating ? ' collapsed' : ''}${leftPanel.floating ? ' floating' : ''}`}
+          style={leftPanel.floating ? { left: leftPanel.box.x, top: leftPanel.box.y, width: leftPanel.box.w, height: leftPanel.box.h, zIndex: frontPanel === 'left' ? 42 : 41 } : undefined}
+          onPointerDown={() => setFrontPanel('left')}
+          aria-label={mode === 'export' ? 'Print and export' : mode === 'plates' ? 'Print plates' : 'Specification tree'}
+        >
+          {leftPanel.collapsed && !leftPanel.floating ? (
+            <button type="button" className="side-rail" onClick={() => leftPanel.setCollapsed(false)} aria-expanded={false}
               aria-label="Expand left panel" title="Expand left panel">
               <Icon name="chevR" size={14} />
               <span className="side-rail-label">{mode === 'export' ? 'Export' : mode === 'plates' ? 'Plates' : mode === 'sketch' ? 'Sketch' : 'Model'}</span>
             </button>
           ) : (
             <div className="sidehead">
+              <button type="button" className={`side-grip${leftPanel.dragging ? ' dragging' : ''}`}
+                aria-label="Move left panel. Drag to float or use arrow keys when floating."
+                title="Drag to float / move panel" {...leftPanel.moveHandleProps}>
+                <Icon name="grip" size={14} />
+              </button>
               <h2>{mode === 'export' ? 'Export' : mode === 'plates' ? 'Plates' : mode === 'sketch' ? 'Sketch' : 'Model'}</h2>
               <span className="spacer" />
-              <button type="button" className="side-toggle" onClick={() => setLeftCollapsed(true)} aria-expanded={true}
-                aria-label="Collapse left panel" title="Collapse left panel">
-                <Icon name="chevL" size={14} />
-              </button>
+              {leftPanel.floating ? (
+                <button type="button" className="side-toggle" onClick={() => leftPanel.setFloating(false)}
+                  aria-label="Dock left panel" title="Dock left panel">
+                  <Icon name="dock" size={14} />
+                </button>
+              ) : (
+                <button type="button" className="side-toggle" onClick={() => leftPanel.setCollapsed(true)} aria-expanded={true}
+                  aria-label="Collapse left panel" title="Collapse left panel">
+                  <Icon name="chevL" size={14} />
+                </button>
+              )}
             </div>
           )}
-          <div className="side-body" hidden={leftCollapsed}>
+          <div className="side-body" hidden={leftPanel.collapsed && !leftPanel.floating}>
             {mode === 'part' && <SpecTree tree={tree} selected={selected} onSelect={setSelected} onEdit={onEdit}
               onToggleRef={(id, visible) => onOps([{ op: 'set_reference', id, visible }], `${visible ? 'Show' : 'Hide'} ${id}`)}
               onRollback={(i) => { run(() => api.rollback(i)).then(changed) }} />}
@@ -509,6 +532,15 @@ export default function App() {
               </div>
             )}
           </div>
+          {!leftPanel.collapsed && !leftPanel.floating && (
+            <div className="side-resizer left" role="separator" aria-orientation="vertical"
+              aria-label="Resize left panel. Use left and right arrow keys or double-click to reset."
+              title="Drag to resize (double-click to reset)" tabIndex={0} {...leftPanel.dockResizeProps} />
+          )}
+          {leftPanel.floating && (
+            <div className="float-resizer" role="separator" aria-label="Resize floating left panel"
+              title="Drag to resize" {...leftPanel.floatResizeProps} />
+          )}
         </aside>
 
         {mode === 'sketch' && sketchId ? (
@@ -560,7 +592,7 @@ export default function App() {
         )}
 
         <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
-          collapsed={rightCollapsed} onToggleCollapse={() => setRightCollapsed((v) => !v)}
+          layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onMode={(m) => { run(() => api.settings({ ai_mode: m })).then(() => api.aiStatus().then(setAi)) }}
           onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
