@@ -1,7 +1,7 @@
 // The AI panel (always on the right). Two modes: Claude Code drives the app over MCP (no key needed; this panel shows
 // what it does, live), or the in-app chat calls the Claude API (for the home server).
 import { useEffect, useRef, useState } from 'react'
-import type { Activity, AiStatus, Concept } from '../api'
+import { api, type Activity, type AiStatus, type Concept, type ImageInfo } from '../api'
 import { Icon } from '../ui/icons'
 import type { usePanelLayout } from '../ui/usePanelLayout'
 
@@ -10,12 +10,14 @@ type PanelLayout = ReturnType<typeof usePanelLayout>
 interface Props {
   status: AiStatus | null
   activity: Activity[]
+  images: ImageInfo[]
   context: string | null
   concept: Concept | null // the newest
   layout: PanelLayout
   zIndex?: number
   onFocusPanel?: () => void
   onOpenConcept: (id: string) => void
+  onUploadImage: (file: File) => Promise<ImageInfo | undefined>
   onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
   onSend: (text: string) => void
   onCancel: () => void
@@ -36,22 +38,79 @@ function defaultMcpUrl(): string {
     : window.location.origin
 }
 
-export function AiPanel({ status, activity, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
+  const [attached, setAttached] = useState<string[]>([])
+  const [uploading, setUploading] = useState(false)
   const [mcpUrl, setMcpUrl] = useState(defaultMcpUrl)
   const [copied, setCopied] = useState(false)
   const end = useRef<HTMLDivElement>(null)
+  const imgInput = useRef<HTMLInputElement>(null)
   const chat = status?.chat
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }) }, [chat?.log.length, activity.length])
   // The AI's changes, and the user's answers to its concepts (the conversation about what to build).
   const ai = activity.filter((a) => a.actor !== 'user' || a.text.startsWith('Concept '))
+  const uploadFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(f.name))
+    if (!list.length) return
+    setUploading(true)
+    try {
+      for (const f of list) {
+        const img = await onUploadImage(f)
+        if (img) setAttached((prev) => (prev.includes(img.id) ? prev : [...prev, img.id]))
+      }
+    } finally {
+      setUploading(false)
+    }
+  }
+  const toggleAttach = (id: string) => setAttached((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   const send = () => {
     const t = text.trim()
     if (!t) return
-    onSend(context ? `${t}\n\n(The user has ${context} selected.)` : t)
+    const parts = [t]
+    if (attached.length) parts.push(`(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`)
+    if (context) parts.push(`(The user has ${context} selected.)`)
+    onSend(parts.join('\n\n'))
     setText('')
+    setAttached([])
   }
+  const refStrip = (
+    <div className="row" style={{ padding: '6px 12px', gap: 6, borderTop: '1px solid var(--line)', background: 'var(--panel-2)', flexWrap: 'wrap', alignItems: 'center' }}>
+      <input
+        ref={imgInput}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        multiple
+        hidden
+        onChange={(e) => { if (e.target.files) uploadFiles(e.target.files); e.target.value = '' }}
+      />
+      <button type="button" className="btn sm" disabled={uploading} onClick={() => imgInput.current?.click()}
+        title="Upload a reference photo (PNG, JPG, WebP) so the AI can inspect it">
+        {uploading ? 'Uploading…' : '+ Photo'}
+      </button>
+      {images.map((img) => {
+        const on = mode !== 'mcp' && attached.includes(img.id)
+        return (
+          <button
+            key={img.id}
+            type="button"
+            className="btn sm"
+            onClick={() => mode !== 'mcp' && toggleAttach(img.id)}
+            title={mode === 'mcp' ? `${img.id}: ${img.prompt} (ask MCP client to look_at_image ${img.id})` : `${on ? 'Detach' : 'Attach'} ${img.id}: ${img.prompt}`}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 5px',
+              borderColor: on ? 'var(--accent)' : undefined,
+              background: on ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : undefined,
+            }}
+          >
+            <img src={api.imageUrl(img.id)} alt={img.id} style={{ width: 18, height: 18, objectFit: 'cover', borderRadius: 3 }} />
+            <span>{img.id}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
 
   const isCollapsed = layout.collapsed && !layout.floating
   return (
@@ -224,6 +283,7 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
               ))}
               <div ref={end} />
             </div>
+            {refStrip}
             <div className="aifoot">
               <button className="btn" onClick={onRevert} disabled={!ai.some((a) => a.ok && a.actor !== 'user')}>Revert last AI change</button>
             </div>
@@ -255,11 +315,19 @@ export function AiPanel({ status, activity, context, concept, layout, zIndex, on
             {chat?.running && <div className="entry assistant working">Working…</div>}
             <div ref={end} />
           </div>
+          {refStrip}
           <div className="aifoot col">
             <label htmlFor="ai-msg" className="nm">Ask for a change</label>
             <div className="row">
               <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={chat?.running}
-                placeholder="e.g. make the walls 2 mm and twist it 90°"
+                placeholder="e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)"
+                onPaste={(e) => {
+                  const files = e.clipboardData?.files
+                  if (files?.length && Array.from(files).some((f) => f.type.startsWith('image/'))) {
+                    e.preventDefault()
+                    uploadFiles(files)
+                  }
+                }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }} />
               {chat?.running
                 ? <button className="btn" onClick={onCancel}>Stop</button>

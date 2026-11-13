@@ -698,6 +698,25 @@ def generate_image(body: ImageIn, x_actor: str = Header(default=USER)) -> dict:
         raise HTTPException(422, str(exc)) from exc
 
 
+IMAGE_MAX = 25 * 1024 * 1024  # bytes
+
+
+@app.post("/api/images/upload")
+async def upload_image(file: UploadFile, note: str = "", x_actor: str = Header(default=USER)) -> dict:
+    """Upload a reference photo (PNG, JPEG, WebP) into the design's images folder."""
+    from pathlib import Path
+    from .images import EXT, ImageError
+
+    data = await file.read(IMAGE_MAX + 1)
+    if len(data) > IMAGE_MAX:
+        raise HTTPException(413, "Image is over 25 MB")
+    ext = Path(file.filename or "").suffix.lower() or EXT.get(file.content_type or "", "")
+    try:
+        return ws().upload_image(data=data, ext=ext, note=note or (file.filename or ""), actor=x_actor).model_dump()
+    except ImageError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.get("/api/images/{iid}")
 def image_file(iid: str) -> FileResponse:
     from .images import ImageError

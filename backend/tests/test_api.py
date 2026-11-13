@@ -174,3 +174,13 @@ def test_print_layout_is_worked_out_on_request(client):
     pts = np.frombuffer(base64.b64decode(part["positions"]), dtype="<f4").reshape(-1, 3)
     assert pts.min(0) == pytest.approx([10, 20, 0], abs=1e-4) and pts.max(0) == pytest.approx([70, 30, 40], abs=1e-4)
     assert client.get("/api/layout/plates/1/mesh").json()["objects"] == []
+
+
+def test_upload_reference_image(client):
+    png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    r = client.post("/api/images/upload", files={"file": ("calipers.png", png, "image/png")})
+    assert r.status_code == 200
+    img = r.json()
+    assert img["id"] == "I1" and img["file"] == "I1.png" and img["model"] == "upload"
+    assert client.get("/api/images/I1").content == png
+    assert client.post("/api/images/upload", files={"file": ("bad.txt", b"hi", "text/plain")}).status_code == 422

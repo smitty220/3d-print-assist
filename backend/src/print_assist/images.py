@@ -148,6 +148,30 @@ class Images:
         self.items.append(img)
         return img
 
+    def add_upload(self, data: bytes, ext: str, note: str = "", actor: str = "user") -> GeneratedImage:
+        if not data:
+            raise ImageError("uploaded image is empty")
+        norm_ext = ext.lower()
+        if norm_ext == ".jpeg":
+            norm_ext = ".jpg"
+        if norm_ext not in (".png", ".jpg", ".webp"):
+            raise ImageError("only PNG, JPEG, and WebP images are supported")
+        n = max((int(i.id[1:]) for i in self.items if i.id[1:].isdigit()), default=0) + 1
+        img = GeneratedImage(
+            id=f"I{n}",
+            file=f"I{n}{norm_ext}",
+            prompt=(note or "Uploaded reference photo").strip(),
+            quality="standard",
+            model="upload",
+            actor=actor,
+            cost_usd=0.0,
+        )
+        self.folder.mkdir(parents=True, exist_ok=True)
+        (self.folder / img.file).write_bytes(data)
+        (self.folder / f"{img.id}.json").write_text(img.model_dump_json(indent=1), encoding="utf-8")
+        self.items.append(img)
+        return img
+
 
 _HREF = re.compile(r"""((?:xlink:)?href\s*=\s*)(["'])images/(I\d+)\.(?:png|jpg|webp)\2""")
 

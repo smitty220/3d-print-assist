@@ -286,6 +286,12 @@ class Workspace:
         self.log(actor, f"Image {img.id}: {img.prompt[:80]} (~${img.cost_usd:.2f})")
         return img
 
+    def upload_image(self, data: bytes, ext: str, note: str = "", actor: str = design_ops.USER) -> GeneratedImage:
+        with self.lock:
+            img = self.images.add_upload(data=data, ext=ext, note=note, actor=actor)
+            self.log(actor, f"Uploaded reference image {img.id}: {img.prompt[:80]}")
+            return img
+
     def answer_concept(self, cid: str, decision: str, note: str = "") -> Concept:
         with self.lock:
             c = self.concepts.respond(cid, decision, note)  # type: ignore[arg-type]

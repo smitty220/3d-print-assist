@@ -281,6 +281,7 @@ export interface AiStatus {
 }
 
 export interface FontInfo { name: string; styles: string[]; license: string; source: string }
+export interface ImageInfo { id: string; file: string; prompt: string; model: string; actor: string; created: number }
 
 export interface Printer { id: string; name: string; bed: Vec3; nozzles: { dia: number; slots: number }[] }
 export interface SlicerInfo { id: string; name: string; installed: boolean }
@@ -378,6 +379,14 @@ export const api = {
   concepts: () => get<Concept[]>('/concepts'),
   answerConcept: (id: string, decision: 'approve' | 'revise', note: string) =>
     send<Concept>('POST', `/concepts/${id}/answer`, { decision, note }),
+  images: () => get<ImageInfo[]>('/images'),
+  imageUrl: (id: string) => `/api/images/${encodeURIComponent(id)}`,
+  uploadImage: (file: File, note = '') => {
+    const form = new FormData()
+    form.append('file', file)
+    const qs = note ? `?note=${encodeURIComponent(note)}` : ''
+    return fetch(`/api/images/upload${qs}`, { method: 'POST', body: form }).then((r) => json<ImageInfo>(r))
+  },
   addReference: (file: File, newDesign: boolean) => {
     const form = new FormData()
     form.append('file', file)

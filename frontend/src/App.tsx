@@ -2,7 +2,7 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
@@ -45,6 +45,7 @@ export default function App() {
   const [checks, setChecks] = useState<Checks | null>(null)
   const [activity, setActivity] = useState<Activity[]>([])
   const [concepts, setConcepts] = useState<Concept[]>([])
+  const [images, setImages] = useState<ImageInfo[]>([])
   const [conceptOpen, setConceptOpen] = useState<string | null>(null) // shown on request
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [ai, setAi] = useState<AiStatus | null>(null)
@@ -97,6 +98,7 @@ export default function App() {
       api.slicers(), api.tree(), api.part(), api.checks(), api.aiStatus(), api.activity()])
     setProject(p); setCatalog(c); setFonts(f); setPrinters(pr); setSlicers(sl); setTree(t); setPart(pt); setChecks(ch); setAi(a); setActivity(act)
     api.concepts().then(setConcepts).catch(() => {})
+    api.images().then(setImages).catch(() => {})
     seen.current = { slug: p.slug, rev: t.rev, built: t.built_rev, activity: act.length }
   }, [])
 
@@ -630,9 +632,14 @@ export default function App() {
           </ViewportPane>
         )}
 
-        <AiPanel status={ai} activity={activity} context={context} concept={concepts[0] ?? null}
+        <AiPanel status={ai} activity={activity} images={images} context={context} concept={concepts[0] ?? null}
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
+          onUploadImage={async (f) => {
+            const img = await run(() => api.uploadImage(f))
+            if (img) api.images().then(setImages).catch(() => {})
+            return img
+          }}
           onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
           onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
           onCancel={() => { run(api.chatCancel) }} onReset={() => { run(api.chatReset).then(() => api.aiStatus().then(setAi)) }}
