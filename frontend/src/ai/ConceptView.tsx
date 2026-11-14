@@ -62,49 +62,35 @@ export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, on
           {c.summary && <p className="csum">{c.summary}</p>}
           {c.assumptions.length > 0 && (<><h3>Assumed</h3><ul>{c.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
           {c.questions.length > 0 && (<><h3>Questions</h3><ul className="qs">{c.questions.map((q, i) => <li key={i}>{q}</li>)}</ul></>)}
-          {pending ? (
-            hideAnswerInput ? (
-              <div className="canswer">
-                <p className="note" style={{ margin: 0 }}>Reply in the AI assistant chat to request changes, or approve below.</p>
-                <div className="row">
-                  <span className="spacer" />
-                  <button className="btn primary" onClick={() => onAnswer('approve', '')}>Approve and build</button>
-                </div>
+          {!hideAnswerInput && (pending ? (
+            <div className="canswer">
+              <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
+              <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note) }} />
+              <div className="row">
+                <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
+                  title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
+                <span className="spacer" />
+                <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
               </div>
-            ) : (
-              <div className="canswer">
-                <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
-                <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note) }} />
-                <div className="row">
-                  <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
-                    title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
-                  <span className="spacer" />
-                  <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
-                </div>
-              </div>
-            )
+            </div>
           ) : (
             <>
               {c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
               {onBuild && (
                 <div className="canswer">
-                  {!hideAnswerInput && (
-                    <>
-                      <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
-                      <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
-                        placeholder="Optional notes before building this concept…"
-                        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
-                    </>
-                  )}
+                  <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
+                  <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+                    placeholder="Optional notes before building this concept…"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
                   <div className="row">
                     <span className="spacer" />
-                    <button className="btn primary" onClick={() => onBuild(hideAnswerInput ? '' : note)}>Approve and build</button>
+                    <button className="btn primary" onClick={() => onBuild(note)}>Approve and build</button>
                   </div>
                 </div>
               )}
             </>
-          )}
+          ))}
         </div>
       </div>
     </section>

@@ -583,6 +583,17 @@ export default function App() {
           <ViewportPane part={shownPart} references={tree.references} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
             highlight={highlight} picking={dialog?.type === 'feature' && mode !== 'plates' ? picking : null} onPick={onPick} onUpdate={update}
             plateMode={mode === 'plates'} plate={tree.print_layout?.items && plateMesh?.plate === plateNo ? plateMesh : null}
+            hasDesign={concepts.length > 0}
+            canvasView={shownConcept ? 'design' : 'model'}
+            onCanvasView={(v) => {
+              if (v === 'design' && concepts[0]) {
+                setConceptOpen(concepts[0].id)
+                setConceptHidden(null)
+              } else {
+                if (shownConcept?.status === 'pending') setConceptHidden(shownConcept.id)
+                setConceptOpen(null)
+              }
+            }}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
             {file.recovery && (
               <div className="recovery" role="alert">
