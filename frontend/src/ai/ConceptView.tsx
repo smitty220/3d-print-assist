@@ -1,6 +1,6 @@
 // A concept the AI proposes before it builds: its drawing, what it will make, what it assumed and what it asks.
 // Shown large over the 3D view while it waits; the user approves it or says what to change.
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Concept } from '../api'
 
 const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
@@ -15,12 +15,35 @@ interface Props {
 
 export function ConceptView({ concept: c, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
+  const [expanded, setExpanded] = useState(false)
   const pending = c.status === 'pending'
   const draw = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpanded(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [expanded])
+
   // Full screen shows the drawing alone, as big as the screen allows; Esc (or the button again) comes back.
+  // Falls back to a full-viewport overlay when WebView blocks the DOM Fullscreen API.
   const fullScreen = () => {
-    if (document.fullscreenElement) void document.exitFullscreen()
-    else void draw.current?.requestFullscreen()
+    if (expanded || document.fullscreenElement) {
+      setExpanded(false)
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+      return
+    }
+    const el = draw.current
+    if (!el || !document.fullscreenEnabled || !el.requestFullscreen) {
+      setExpanded(true)
+      return
+    }
+    void el.requestFullscreen()
+      .then(() => { if (!document.fullscreenElement) setExpanded(true) })
+      .catch(() => setExpanded(true))
   }
   return (
     <section className="concept" role="dialog" aria-label={`Concept ${c.id}: ${c.title}`}>
@@ -33,7 +56,14 @@ export function ConceptView({ concept: c, onAnswer, onBuild, onClose }: Props) {
       </div>
       <div className="cbody">
         {/* An <img>: the drawing is shown, never run, whatever it contains. */}
-        <div className="cdraw" ref={draw} onDoubleClick={fullScreen} title="Double-click for full screen"><img src={svgUrl(c.svg)} alt={`Concept drawing: ${c.title}`} /></div>
+        <div className={`cdraw${expanded ? ' expanded' : ''}`} ref={draw} onDoubleClick={fullScreen} title="Double-click for full screen">
+          {expanded && (
+            <button type="button" className="btn cdraw-exit" onClick={fullScreen} title="Exit full screen (Esc)">
+              ✕ Exit full screen
+            </button>
+          )}
+          <img src={svgUrl(c.svg)} alt={`Concept drawing: ${c.title}`} />
+        </div>
         <div className="ctext">
           {c.summary && <p className="csum">{c.summary}</p>}
           {c.assumptions.length > 0 && (<><h3>Assumed</h3><ul>{c.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
