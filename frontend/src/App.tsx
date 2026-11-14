@@ -592,7 +592,7 @@ export default function App() {
               </div>
             )}
             {shownConcept && (
-              <ConceptView key={shownConcept.id} concept={shownConcept}
+              <ConceptView key={shownConcept.id} concept={shownConcept} hideAnswerInput={ai?.mode !== 'mcp'}
                 onAnswer={(decision, note) => {
                   run(() => api.answerConcept(shownConcept.id, decision, note)).then((c) => {
                     if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
@@ -633,6 +633,12 @@ export default function App() {
         )}
 
         <AiPanel status={ai} activity={activity} images={images} context={context} concept={concepts[0] ?? null}
+          conceptOpen={Boolean(shownConcept)}
+          onAnswerConcept={(id, decision, note) => {
+            run(() => api.answerConcept(id, decision, note)).then((c) => {
+              if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
+            })
+          }}
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onUploadImage={async (f) => {

@@ -15,6 +15,8 @@ interface Props {
   images: ImageInfo[]
   context: string | null
   concept: Concept | null // the newest
+  conceptOpen?: boolean
+  onAnswerConcept?: (id: string, decision: 'approve' | 'revise', note: string) => void
   layout: PanelLayout
   zIndex?: number
   onFocusPanel?: () => void
@@ -62,8 +64,9 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
+  const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
   const [rawTools, setRawTools] = useState<boolean>(() => {
     try { return localStorage.getItem('pa.rawTools') === '1' } catch { return false }
@@ -99,6 +102,12 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
   const send = () => {
     const t = text.trim()
     if (!t) return
+    if (pendingConcept && onAnswerConcept) {
+      onAnswerConcept(pendingConcept.id, 'revise', t)
+      setText('')
+      setAttached([])
+      return
+    }
     const parts = [t]
     if (attached.length) parts.push(`(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`)
     if (context) parts.push(`(The user has ${context} selected.)`)
@@ -253,7 +262,7 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
         )}
       </div>
       {context && <div className="ctx">Context: {context}</div>}
-      {concept && (
+      {concept && !conceptOpen && (
         <div className="ccard">
           <div className="row">
             <b>{concept.id} · {concept.title}</b><span className="spacer" />
@@ -381,10 +390,14 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
           </div>
           {refStrip}
           <div className="aifoot col">
-            <label htmlFor="ai-msg" className="nm">Ask for a change</label>
+            <label htmlFor="ai-msg" className="nm">
+              {pendingConcept ? `Reply to concept ${pendingConcept.id} (or approve)` : 'Ask for a change'}
+            </label>
             <div className="row">
-              <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={chat?.running}
-                placeholder="e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)"
+              <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={chat?.running && !pendingConcept}
+                placeholder={pendingConcept
+                  ? 'Ask for changes to this concept, or click Approve & build…'
+                  : 'e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)'}
                 onPaste={(e) => {
                   const files = e.clipboardData?.files
                   if (files?.length && Array.from(files).some((f) => f.type.startsWith('image/'))) {
@@ -393,7 +406,17 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
                   }
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }} />
-              {chat?.running
+              {pendingConcept && onAnswerConcept ? (
+                <div className="col" style={{ gap: 4 }}>
+                  <button className="btn primary sm" onClick={() => { onAnswerConcept(pendingConcept.id, 'approve', text.trim()); setText('') }}>
+                    Approve & build
+                  </button>
+                  <button className="btn sm" onClick={send} disabled={!text.trim()}>
+                    Request changes
+                  </button>
+                  {chat?.running && <button className="btn sm" onClick={onCancel}>Stop</button>}
+                </div>
+              ) : chat?.running
                 ? <button className="btn" onClick={onCancel}>Stop</button>
                 : <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}><Icon name="send" size={18} width={2} /></button>}
             </div>

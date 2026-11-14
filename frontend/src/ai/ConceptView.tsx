@@ -9,12 +9,13 @@ const STATUS = { pending: 'Waiting for you', approved: 'Approved', revise: 'Chan
 
 interface Props {
   concept: Concept
+  hideAnswerInput?: boolean
   onAnswer: (decision: 'approve' | 'revise', note: string) => void
   onBuild?: (note: string) => void
   onClose: () => void
 }
 
-export function ConceptView({ concept: c, onAnswer, onBuild, onClose }: Props) {
+export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState(false)
   const pending = c.status === 'pending'
@@ -62,17 +63,27 @@ export function ConceptView({ concept: c, onAnswer, onBuild, onClose }: Props) {
           {c.assumptions.length > 0 && (<><h3>Assumed</h3><ul>{c.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
           {c.questions.length > 0 && (<><h3>Questions</h3><ul className="qs">{c.questions.map((q, i) => <li key={i}>{q}</li>)}</ul></>)}
           {pending ? (
-            <div className="canswer">
-              <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
-              <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note) }} />
-              <div className="row">
-                <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
-                  title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
-                <span className="spacer" />
-                <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
+            hideAnswerInput ? (
+              <div className="canswer">
+                <p className="note" style={{ margin: 0 }}>Reply in the AI assistant chat to request changes, or approve below.</p>
+                <div className="row">
+                  <span className="spacer" />
+                  <button className="btn primary" onClick={() => onAnswer('approve', '')}>Approve and build</button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="canswer">
+                <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
+                <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note) }} />
+                <div className="row">
+                  <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
+                    title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
+                  <span className="spacer" />
+                  <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
+                </div>
+              </div>
+            )
           ) : (
             <>
               {c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
