@@ -39,9 +39,32 @@ function defaultMcpUrl(): string {
     : window.location.origin
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  get_guide: 'reading guide',
+  get_model: 'inspecting model',
+  get_feature_catalog: 'checking features',
+  apply_changes: 'updating model',
+  update: 'rebuilding geometry',
+  render_preview: 'rendering preview',
+  run_checks: 'running print checks',
+  propose_concept: 'preparing concept',
+  wait_for_concept: 'waiting for concept approval',
+  generate_image: 'generating image',
+  look_at_image: 'inspecting image',
+  search_web: 'searching web',
+  fetch_url: 'reading webpage',
+}
+
 export function AiPanel({ status, activity, images, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const [text, setText] = useState('')
+  const [rawTools, setRawTools] = useState<boolean>(() => {
+    try { return localStorage.getItem('pa.rawTools') === '1' } catch { return false }
+  })
+  const toggleRawTools = (raw: boolean) => {
+    setRawTools(raw)
+    try { localStorage.setItem('pa.rawTools', raw ? '1' : '0') } catch { /* ignore */ }
+  }
   const [attached, setAttached] = useState<string[]>([])
   const [uploading, setUploading] = useState(false)
   const [mcpUrl, setMcpUrl] = useState(defaultMcpUrl)
@@ -165,6 +188,13 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
             <Icon name="grip" size={14} />
           </button>
           <h2>AI assistant</h2>
+          <span className="spacer" />
+          <div className="seg sm" role="group" aria-label="Chat output style">
+            <button type="button" aria-pressed={!rawTools} onClick={() => toggleRawTools(false)}
+              title="Natural-language view (hides raw tool calls)">Natural</button>
+            <button type="button" aria-pressed={rawTools} onClick={() => toggleRawTools(true)}
+              title="Show raw tool calls and JSON outputs">Raw tools</button>
+          </div>
         </div>
       <div className="row sm" style={{ padding: '8px 12px', gap: 10, borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minWidth: 0, gap: 3 }}>
@@ -326,12 +356,16 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
                 <p>Or choose <b>External MCP (Terminal / IDE)</b> above to drive the app from Claude Code.</p>
               </div>
             )}
-            {chat?.log.map((e, i) => (
+            {(chat?.log ?? []).filter((e) => rawTools || e.role !== 'tool' || !e.ok).map((e, i) => (
               <div key={i} className={`entry ${e.role}${e.ok ? '' : ' error'}`}>
                 {e.role === 'tool' ? <><span className="who">{e.tool}</span><div className="toolout">{e.text}</div></> : <div>{e.text}</div>}
               </div>
             ))}
-            {chat?.running && <div className="entry assistant working">Working…</div>}
+            {chat?.running && (() => {
+              const lastTool = !rawTools ? [...(chat.log ?? [])].reverse().find((e) => e.role === 'tool')?.tool : null
+              const hint = lastTool ? TOOL_LABELS[lastTool] ?? lastTool : null
+              return <div className="entry assistant working">{hint ? `Working (${hint})…` : 'Working…'}</div>
+            })()}
             <div ref={end} />
           </div>
           {refStrip}
