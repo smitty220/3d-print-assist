@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 
 SPEC_DIR = Path(SPECPATH).resolve()
 FRONTEND_DIST = SPEC_DIR.parent / "frontend" / "dist"
+ICON_PATH = SPEC_DIR / "assets" / ("icon.icns" if sys.platform == "darwin" else "icon.ico")
 
 datas = [
     (str(FRONTEND_DIST), "frontend_dist"),
@@ -52,6 +53,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=str(ICON_PATH),
 )
 
 coll = COLLECT(
@@ -67,6 +69,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="3D Print Assist.app",
+        icon=str(ICON_PATH),
         bundle_identifier="com.printassist.desktop",
         info_plist={
             "NSHighResolutionCapable": True,
