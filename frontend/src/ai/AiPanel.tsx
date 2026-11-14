@@ -1,6 +1,8 @@
 // The AI panel (always on the right). Two modes: Claude Code drives the app over MCP (no key needed; this panel shows
 // what it does, live), or the in-app chat calls the Claude API (for the home server).
 import { useEffect, useRef, useState } from 'react'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import { api, type Activity, type AiStatus, type Concept, type ImageInfo } from '../api'
 import { Icon } from '../ui/icons'
 import type { usePanelLayout } from '../ui/usePanelLayout'
@@ -27,6 +29,11 @@ interface Props {
 }
 
 const time = (t: number) => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text, { async: false, breaks: true, gfm: true })
+  return DOMPurify.sanitize(html)
+}
 
 function defaultMcpUrl(): string {
   try {
@@ -358,7 +365,11 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
             )}
             {(chat?.log ?? []).filter((e) => rawTools || e.role !== 'tool' || !e.ok).map((e, i) => (
               <div key={i} className={`entry ${e.role}${e.ok ? '' : ' error'}`}>
-                {e.role === 'tool' ? <><span className="who">{e.tool}</span><div className="toolout">{e.text}</div></> : <div>{e.text}</div>}
+                {e.role === 'tool'
+                  ? <><span className="who">{e.tool}</span><div className="toolout">{e.text}</div></>
+                  : e.role === 'assistant'
+                    ? <div className="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(e.text) }} />
+                    : <div>{e.text}</div>}
               </div>
             ))}
             {chat?.running && (() => {
