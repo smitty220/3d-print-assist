@@ -29,7 +29,7 @@ from .features.library import FEATURES
 from .params.expr import ExprError, evaluate
 from .params.graph import resolve
 from .printers import profiles
-from .project import Projects
+from .project import Projects, save_user_prefs
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
@@ -349,6 +349,14 @@ def put_settings(body: SettingsPatch) -> dict:
     if body.ai_model is not None:
         s.ai_model = body.ai_model
     w.project.save()
+    save_user_prefs(
+        projects().root,
+        printer=body.printer,
+        slicer=body.slicer,
+        ai_mode=body.ai_mode,
+        ai_provider=body.ai_provider,
+        ai_model=body.ai_model,
+    )
     if body.update_mode is not None:
         w.set_mode(body.update_mode)
     return s.model_dump()

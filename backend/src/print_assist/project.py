@@ -14,7 +14,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Literal
 
@@ -32,12 +31,35 @@ DEFAULT_ROOT = Path.home() / "Projects" / "3DPrinting" / "designs"
 def data_root() -> Path:
     if env := os.environ.get("PRINT_ASSIST_DATA"):
         return Path(env).expanduser()
-    if os.environ.get("PRINT_ASSIST_DESKTOP") == "1":
-        if sys.platform == "darwin":
-            return Path.home() / "Library" / "Application Support" / "3D Print Assist"
-        if sys.platform == "win32":
-            return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "3D Print Assist"
     return DEFAULT_ROOT.expanduser()
+
+
+PREF_KEYS = ("printer", "slicer", "ai_mode", "ai_provider", "ai_model")
+
+
+def load_user_prefs(root: Path) -> dict[str, str]:
+    """Read global user preferences (last chosen assistant, printer, slicer) from `<root>/.preferences.json`."""
+    f = root / ".preferences.json"
+    if not f.exists():
+        return {}
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8"))
+        return {k: str(v) for k, v in raw.items() if k in PREF_KEYS and v is not None} if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_user_prefs(root: Path, **updates: str | None) -> None:
+    """Persist global user preferences to `<root>/.preferences.json`."""
+    root.mkdir(parents=True, exist_ok=True)
+    prefs = load_user_prefs(root)
+    for k, v in updates.items():
+        if k in PREF_KEYS and v is not None:
+            prefs[k] = v
+    f = root / ".preferences.json"
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    tmp.replace(f)
 
 
 class Settings(BaseModel):
@@ -168,6 +190,12 @@ class Projects:
             slug, n = f"{base}-{n}", n + 1
         p = Project(self.root / slug)
         p.data.name = name.strip() or "Untitled"
+        prefs = load_user_prefs(self.root)
+        if prefs.get("printer") and prefs["printer"] in profiles():
+            p.data.settings.printer = prefs["printer"]
+        if prefs.get("slicer"):
+            p.data.settings.slicer = prefs["slicer"]
+        _apply_ai_prefs(p.data.settings, prefs)
         p.save()
         p.init_git()
         return p
@@ -217,4 +245,15 @@ class Projects:
         path = (self.root / slug).resolve()
         if path.parent != self.root.resolve() or not (path / "project.json").exists():
             raise KeyError(slug)
-        return Project(path)
+        p = Project(path)
+        _apply_ai_prefs(p.data.settings, load_user_prefs(self.root))
+        return p
+
+
+def _apply_ai_prefs(settings: Settings, prefs: dict[str, str]) -> None:
+    if prefs.get("ai_mode") in ("mcp", "api"):
+        settings.ai_mode = prefs["ai_mode"]  # type: ignore[assignment]
+    if prefs.get("ai_provider") in ("auto", "agy", "gemini", "anthropic"):
+        settings.ai_provider = prefs["ai_provider"]  # type: ignore[assignment]
+    if "ai_model" in prefs:
+        settings.ai_model = prefs["ai_model"]
