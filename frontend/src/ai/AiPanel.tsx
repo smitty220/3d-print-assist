@@ -416,12 +416,12 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
           {refStrip}
           <div className="aifoot col">
             <label htmlFor="ai-msg" className="nm">
-              {pendingConcept ? `Reply to concept ${pendingConcept.id} (or approve)` : 'Ask for a change'}
+              {pendingConcept ? `Reply to concept ${pendingConcept.id} (or click Approve & build above)` : 'Ask for a change'}
             </label>
             <div className="row">
               <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={chat?.running && !pendingConcept}
                 placeholder={pendingConcept
-                  ? 'Ask for changes to this concept, or click Approve & build…'
+                  ? 'Ask for changes to this concept, or click Approve & build above…'
                   : 'e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)'}
                 onPaste={(e) => {
                   const files = e.clipboardData?.files
@@ -431,17 +431,7 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
                   }
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }} />
-              {pendingConcept && onAnswerConcept ? (
-                <div className="col" style={{ gap: 4 }}>
-                  <button className="btn primary sm" onClick={() => { onAnswerConcept(pendingConcept.id, 'approve', text.trim()); setText('') }}>
-                    Approve & build
-                  </button>
-                  <button className="btn sm" onClick={send} disabled={!text.trim()}>
-                    Request changes
-                  </button>
-                  {chat?.running && <button className="btn sm" onClick={onCancel}>Stop</button>}
-                </div>
-              ) : chat?.running
+              {chat?.running && !pendingConcept
                 ? <button className="btn" onClick={onCancel}>Stop</button>
                 : <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}><Icon name="send" size={18} width={2} /></button>}
             </div>
