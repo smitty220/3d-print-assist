@@ -10,9 +10,10 @@ import asyncio
 import base64
 import html
 import json
+import os
 import re
-import select
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -268,21 +269,58 @@ class Chat:
             cmd.extend(["--model", model])
 
         repo_root = Path(__file__).resolve().parents[4]
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(repo_root) if repo_root.is_dir() else None,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
+        if os.environ.get("PRINT_ASSIST_DESKTOP") == "1" or not (repo_root / "mcp").is_dir():
+            from ..project import data_root
+
+            work_dir = data_root()
+            work_dir.mkdir(parents=True, exist_ok=True)
+            port = os.environ.get("PRINT_ASSIST_PORT", "8010")
+            mcp_cfg = {
+                "mcpServers": {
+                    "3d-print-assist": {
+                        "type": "http",
+                        "url": f"http://127.0.0.1:{port}/mcp/",
+                    }
+                }
+            }
+            (work_dir / ".mcp.json").write_text(json.dumps(mcp_cfg, indent=2), encoding="utf-8")
+            cwd: str | None = str(work_dir)
+        else:
+            cwd = str(repo_root)
+        popen_kw: dict[str, Any] = {
+            "cwd": cwd,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        if sys.platform == "win32":
+            popen_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            env = os.environ.copy()
+            extra = [str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"]
+            env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
+            popen_kw["env"] = env
+        proc = subprocess.Popen(cmd, **popen_kw)
+
+        import queue
 
         result_data: dict | None = None
         last_text = ""
-        use_select = proc.stdout is not None and hasattr(proc.stdout, "fileno")
+        lines_q: queue.Queue[str | None] = queue.Queue()
+
+        def _reader() -> None:
+            try:
+                if proc.stdout is not None:
+                    for raw in proc.stdout:
+                        lines_q.put(raw)
+            finally:
+                lines_q.put(None)
+
+        threading.Thread(target=_reader, daemon=True).start()
 
         def _handle_line(raw_line: str) -> None:
             nonlocal result_data, last_text
@@ -315,7 +353,7 @@ class Chat:
             elif kind == "result":
                 result_data = ev.get("result") or {}
 
-        while proc.stdout is not None:
+        while True:
             if self.cancel.is_set():
                 proc.terminate()
                 try:
@@ -324,24 +362,19 @@ class Chat:
                     proc.kill()
                 self.log.append(Entry("error", "Stopped.", ok=False))
                 return
-            if use_select:
-                try:
-                    ready, _, _ = select.select([proc.stdout], [], [], 0.25)
-                except (OSError, ValueError):
-                    ready = [proc.stdout]
-                if not ready:
-                    if proc.poll() is not None:
-                        break
-                    continue
-            line = proc.stdout.readline()
-            if not line:
-                if proc.poll() is not None:
+            try:
+                line = lines_q.get(timeout=0.25)
+            except queue.Empty:
+                if proc.poll() is not None and lines_q.empty():
                     break
                 continue
+            if line is None:
+                break
             _handle_line(line)
 
-        if proc.stdout is not None:
-            for rem in proc.stdout:
+        while not lines_q.empty():
+            rem = lines_q.get_nowait()
+            if rem is not None:
                 _handle_line(rem)
         stderr = proc.stderr.read() if proc.stderr is not None else ""
         proc.wait()

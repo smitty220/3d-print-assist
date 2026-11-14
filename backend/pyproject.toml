@@ -21,6 +21,12 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
 ]
 
+[project.optional-dependencies]
+desktop = [
+    "pyinstaller>=6.10",
+    "pywebview>=5.3",
+]
+
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"

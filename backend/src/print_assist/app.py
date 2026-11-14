@@ -239,13 +239,15 @@ def file_close() -> dict:
 
 @app.post("/api/file/reveal")
 def file_reveal() -> dict:
-    """Show the design's folder in Finder (on the machine running the app)."""
+    """Show the design's folder in Finder / Explorer (on the machine running the app)."""
     import subprocess
     import sys
 
     root = ws().project.root
     if sys.platform == "darwin":
         subprocess.run(["open", str(root)], check=False)
+    elif sys.platform == "win32":
+        subprocess.Popen(["explorer", str(root)])
     return {"path": str(root)}
 
 
@@ -982,6 +984,24 @@ def _find_slicer_app(candidates: list[str]) -> str | None:
                         app_path = sub / f"{name}.app"
                         if app_path.exists():
                             return str(app_path)
+    if sys.platform == "win32":
+        win_roots = [
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")),
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")),
+            Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Programs",
+        ]
+        win_subdirs = ("", "Prusa3D/PrusaSlicer", "Bambu Studio", "OrcaSlicer", "UltiMaker Cura", "Creality Print")
+        for base in win_roots:
+            if not base.is_dir():
+                continue
+            for sub in win_subdirs:
+                folder = base / sub if sub else base
+                if not folder.is_dir():
+                    continue
+                for name in candidates:
+                    exe = folder / f"{name}.exe"
+                    if exe.is_file():
+                        return str(exe)
     for name in candidates:
         found = shutil.which(name)
         if found:

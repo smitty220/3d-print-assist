@@ -1,0 +1,71 @@
+name: Desktop App Build (macOS & Windows 11)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/native-desktop-app]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform_name: macos
+          - os: windows-latest
+            platform_name: windows-11
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install backend + desktop dependencies
+        working-directory: backend
+        run: |
+          uv python install 3.12
+          uv sync --extra desktop
+
+      - name: Build desktop bundle (PyInstaller)
+        working-directory: backend
+        run: uv run pyinstaller 3d-print-assist.spec --noconfirm --clean
+
+      - name: Package macOS artifact
+        if: matrix.platform_name == 'macos'
+        run: |
+          mkdir -p release
+          ditto -c -k --sequesterRsrc --keepParent "backend/dist/3D Print Assist.app" "release/3D-Print-Assist-macOS.zip"
+
+      - name: Package Windows 11 artifact
+        if: matrix.platform_name == 'windows-11'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path "backend/dist/3DPrintAssist/*" -DestinationPath "release/3D-Print-Assist-Windows11.zip" -Force
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 3d-print-assist-${{ matrix.platform_name }}
+          path: release/*.zip

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -76,11 +77,7 @@ class MessagesClient(Protocol):
 ENV_FILE = Path(__file__).resolve().parents[3] / ".env"  # backend/.env
 
 
-def load_env_key(env: Path = ENV_FILE) -> None:
-    """Read API keys and configuration from backend/.env unless the shell set them.
-
-    Called before every AI request, so a key added to the file works without restarting the backend.
-    """
+def _read_env_file(env: Path) -> None:
     if not env.exists():
         return
     for line in env.read_text(encoding="utf-8").splitlines():
@@ -88,6 +85,18 @@ def load_env_key(env: Path = ENV_FILE) -> None:
         k = k.removeprefix("export ").strip()
         if sep and k in ENV_KEYS and k not in _SHELL_ENV:
             os.environ[k] = v.strip().strip('"').strip("'")
+
+
+def load_env_key(env: Path = ENV_FILE) -> None:
+    """Read API keys and configuration from backend/.env (and desktop data_root/.env) unless the shell set them.
+
+    Called before every AI request, so a key added to the file works without restarting the backend.
+    """
+    _read_env_file(env)
+    if env == ENV_FILE and os.environ.get("PRINT_ASSIST_DESKTOP") == "1":
+        from ..project import data_root
+
+        _read_env_file(data_root() / ".env")
 
 
 ENV_KEYS = (
@@ -108,9 +117,22 @@ def find_agy_bin() -> str | None:
     found = shutil.which("agy")
     if found:
         return found
-    local_bin = Path.home() / ".local" / "bin" / "agy"
-    if local_bin.is_file():
-        return str(local_bin)
+    candidates = [
+        Path.home() / ".local" / "bin" / "agy",
+        Path("/opt/homebrew/bin/agy"),
+        Path("/usr/local/bin/agy"),
+    ]
+    if sys.platform == "win32":
+        local_app = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        candidates = [
+            Path.home() / ".local" / "bin" / "agy.exe",
+            Path.home() / ".local" / "bin" / "agy.cmd",
+            local_app / "Programs" / "Antigravity" / "bin" / "agy.exe",
+            local_app / "Programs" / "Antigravity" / "bin" / "agy.cmd",
+        ]
+    for p in candidates:
+        if p.is_file():
+            return str(p)
     return None
 
 

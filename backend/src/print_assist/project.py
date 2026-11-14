@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -29,7 +30,14 @@ DEFAULT_ROOT = Path.home() / "Projects" / "3DPrinting" / "designs"
 
 
 def data_root() -> Path:
-    return Path(os.environ.get("PRINT_ASSIST_DATA", DEFAULT_ROOT)).expanduser()
+    if env := os.environ.get("PRINT_ASSIST_DATA"):
+        return Path(env).expanduser()
+    if os.environ.get("PRINT_ASSIST_DESKTOP") == "1":
+        if sys.platform == "darwin":
+            return Path.home() / "Library" / "Application Support" / "3D Print Assist"
+        if sys.platform == "win32":
+            return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "3D Print Assist"
+    return DEFAULT_ROOT.expanduser()
 
 
 class Settings(BaseModel):
