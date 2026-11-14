@@ -199,3 +199,19 @@ def test_upload_reference_image(client):
     assert r2.status_code == 200
     assert r2.json()["file"].endswith(".jpg")
     assert client.get(f"/api/images/{r2.json()['id']}").content[:2] == b"\xff\xd8"
+
+
+def test_mcp_endpoint_refuses_foreign_host_names():
+    """DNS rebinding guard: the /mcp endpoint only answers to this machine's names."""
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+    hdr = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+    from fastapi.testclient import TestClient
+
+    from print_assist.app import app
+
+    with TestClient(app, base_url="http://127.0.0.1:8010") as c:  # runs the lifespan that starts the MCP session manager
+        bad = c.post("/mcp/", json=body, headers={**hdr, "Host": "evil.example:8010"})
+        good = c.post("/mcp/", json=body, headers=hdr)
+    assert bad.status_code == 421, bad.text
+    assert good.status_code == 200, good.text

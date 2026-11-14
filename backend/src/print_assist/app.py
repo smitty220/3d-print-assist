@@ -1298,11 +1298,18 @@ def ai_chat_reset() -> dict:
 from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
 from print_assist_mcp.server import mcp as _mcp_server  # noqa: E402
 
+# Only this machine's names are accepted by default, so a web page can't reach the tools through DNS rebinding.
+# A hosted copy (Docker) lists the names it is reached by in PRINT_ASSIST_ALLOWED_HOSTS ("nas.local:8010,192.168.1.20:8010").
+_mcp_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"] + [
+    h.strip() for h in os.environ.get("PRINT_ASSIST_ALLOWED_HOSTS", "").split(",") if h.strip()]
 app.mount(
     "/mcp",
     _mcp_server.streamable_http_app(
         streamable_http_path="/",
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        transport_security=TransportSecuritySettings(
+            allowed_hosts=_mcp_hosts,
+            allowed_origins=[f"http://{h}" for h in _mcp_hosts] + [f"https://{h}" for h in _mcp_hosts],
+        ),
     ),
 )
 

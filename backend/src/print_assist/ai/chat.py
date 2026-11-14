@@ -268,25 +268,16 @@ class Chat:
         if model:
             cmd.extend(["--model", model])
 
-        repo_root = Path(__file__).resolve().parents[4]
-        if os.environ.get("PRINT_ASSIST_DESKTOP") == "1" or not (repo_root / "mcp").is_dir():
-            from ..project import data_root
+        # agy runs without permission prompts, so it works in the designs folder (never this app's source code)
+        # and reaches the app's tools over the /mcp endpoint.
+        from ..project import data_root
 
-            work_dir = data_root()
-            work_dir.mkdir(parents=True, exist_ok=True)
-            port = os.environ.get("PRINT_ASSIST_PORT", "8010")
-            mcp_cfg = {
-                "mcpServers": {
-                    "3d-print-assist": {
-                        "type": "http",
-                        "url": f"http://127.0.0.1:{port}/mcp/",
-                    }
-                }
-            }
-            (work_dir / ".mcp.json").write_text(json.dumps(mcp_cfg, indent=2), encoding="utf-8")
-            cwd: str | None = str(work_dir)
-        else:
-            cwd = str(repo_root)
+        work_dir = data_root()
+        work_dir.mkdir(parents=True, exist_ok=True)
+        port = os.environ.get("PRINT_ASSIST_PORT", "8010")
+        mcp_cfg = {"mcpServers": {"3d-print-assist": {"type": "http", "url": f"http://127.0.0.1:{port}/mcp/"}}}
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp_cfg, indent=2), encoding="utf-8")
+        cwd = str(work_dir)
         popen_kw: dict[str, Any] = {
             "cwd": cwd,
             "stdin": subprocess.DEVNULL,

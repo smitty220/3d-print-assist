@@ -10,6 +10,8 @@ services:
       - ./data:/data
     environment:
       - PRINT_ASSIST_DATA=/data
+      # Host names the MCP endpoint (/mcp) answers to besides localhost, e.g. tower.local:8010,192.168.1.20:8010
+      - PRINT_ASSIST_ALLOWED_HOSTS=${PRINT_ASSIST_ALLOWED_HOSTS:-}
       # Set your API key(s) for In-App Chat (Gemini / Claude):
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

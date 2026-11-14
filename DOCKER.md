@@ -19,6 +19,8 @@ ss -tulpn | grep :8010 || docker ps --format '{{.Names}}\t{{.Ports}}'
 ```
 If `8010` is taken, pick any free host port (for example `PRINT_ASSIST_PORT=8310 docker compose up -d --build`). The in-app `PRINT_ASSIST_URL` helper automatically uses whichever host port you open in your browser.
 
+To connect an MCP client to `http://<server>:<port>/mcp/` from another machine, list the names you reach the server by in `PRINT_ASSIST_ALLOWED_HOSTS` (for example `PRINT_ASSIST_ALLOWED_HOSTS=tower.local:8010,192.168.1.20:8010`); by default the endpoint only answers to localhost, which blocks DNS-rebinding attacks from web pages.
+
 To persist designs across container rebuilds, map `/data` to an Unraid appdata folder (for example `/mnt/user/appdata/3d-print-assist/data:/data` in `compose.yaml`).
 
 ---
