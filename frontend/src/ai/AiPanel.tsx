@@ -110,6 +110,9 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
       return
     }
     const parts = [t]
+    if (concept && (conceptOpen || concept.status === 'revise')) {
+      parts.push(`(Active concept ${concept.id} "${concept.title}" [${concept.status}] — call look_at_concept("${concept.id}") to inspect its spec and drawing.)`)
+    }
     if (attached.length) parts.push(`(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`)
     if (context) parts.push(`(The user has ${context} selected.)`)
     onSend(parts.join('\n\n'))

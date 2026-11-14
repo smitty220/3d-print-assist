@@ -253,8 +253,9 @@ class Chat:
         prompt = user_text if self._agy_conv else (
             "You are the CAD assistant inside 3D Print Assist. Do NOT inspect or edit repository source files; "
             "ONLY use the `3d-print-assist` MCP tools (such as get_guide, get_model, get_feature_catalog, "
-            "apply_changes, render_preview, run_checks, propose_concept, wait_for_concept, create_design) "
-            "to inspect and modify the currently open design in the running app.\n\nUser request: " + user_text
+            "apply_changes, render_preview, run_checks, propose_concept, wait_for_concept, look_at_concept, create_design) "
+            "to inspect and modify the currently open design in the running app. If the 3D model is empty or the user "
+            "refers to a proposed design/concept, call look_at_concept to inspect existing concepts in the project.\n\nUser request: " + user_text
         )
         cmd = [
             client.binary,
