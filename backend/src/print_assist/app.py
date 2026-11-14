@@ -605,6 +605,7 @@ def list_concepts(drawings: bool = True) -> list[dict]:
     """The design's concepts, newest first; `drawings=false` leaves out the SVGs."""
     from .images import inline
 
+    ws().concepts.sync()
     out = [c.model_dump() for c in reversed(ws().concepts.items)]
     for c in out:
         if drawings:
@@ -617,6 +618,9 @@ def list_concepts(drawings: bool = True) -> list[dict]:
 @app.get("/api/concepts/{cid}")
 def get_concept(cid: str) -> dict:
     c = ws().concepts.get(cid)
+    if c is None:
+        ws().concepts.sync()
+        c = ws().concepts.get(cid)
     if c is None:
         raise HTTPException(404, f"No concept {cid!r}")
     from .images import inline

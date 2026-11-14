@@ -157,7 +157,10 @@ export default function App() {
     }
     wasChatRunning.current = running
     if (!running) return
-    const t = setInterval(() => api.aiStatus().then(setAi).catch(() => {}), 1000)
+    const t = setInterval(() => {
+      api.aiStatus().then(setAi).catch(() => {})
+      api.concepts().then(setConcepts).catch(() => {})
+    }, 1000)
     return () => clearInterval(t)
   }, [ai?.chat.running])
 
@@ -179,6 +182,15 @@ export default function App() {
 
   // A concept waiting for an answer opens by itself (until put aside); any concept opens from the AI panel.
   const waitingConcept = concepts.find((c) => c.status === 'pending')
+  const prevWaitingId = useRef<string | null>(null)
+  useEffect(() => {
+    const wid = waitingConcept?.id ?? null
+    if (wid && wid !== prevWaitingId.current) {
+      setConceptHidden(null)
+      if (conceptOpen) setConceptOpen(wid)
+    }
+    prevWaitingId.current = wid
+  }, [waitingConcept?.id, conceptOpen])
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
     ?? (ai?.mode === 'mcp' && waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
 

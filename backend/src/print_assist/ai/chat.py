@@ -270,12 +270,12 @@ class Chat:
             cmd.extend(["--model", model])
 
         repo_root = Path(__file__).resolve().parents[4]
+        port = os.environ.get("PRINT_ASSIST_PORT", "8010")
         if os.environ.get("PRINT_ASSIST_DESKTOP") == "1" or not (repo_root / "mcp").is_dir():
             from ..project import data_root
 
             work_dir = data_root()
             work_dir.mkdir(parents=True, exist_ok=True)
-            port = os.environ.get("PRINT_ASSIST_PORT", "8010")
             mcp_cfg = {
                 "mcpServers": {
                     "3d-print-assist": {
@@ -298,13 +298,15 @@ class Chat:
             "errors": "replace",
             "bufsize": 1,
         }
+        env = os.environ.copy()
+        env["PRINT_ASSIST_PORT"] = port
+        env["PRINT_ASSIST_URL"] = f"http://127.0.0.1:{port}"
         if sys.platform == "win32":
             popen_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
-            env = os.environ.copy()
             extra = [str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"]
             env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
-            popen_kw["env"] = env
+        popen_kw["env"] = env
         proc = subprocess.Popen(cmd, **popen_kw)
 
         import queue
