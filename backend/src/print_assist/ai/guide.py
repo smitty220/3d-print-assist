@@ -100,8 +100,7 @@ and make one at a time unless the user asks for options. Say in the prompt what 
 limits: for an inlay, flat colour shapes in at most as many colours as palette slots, no lines under ~1 mm at the \
 printed size, a plain background; for a relief, one subject with clear light and dark. To vary one, pass it in \
 from_images and say what to change. Show images to the user inside a concept (<image href="images/I3.png" x=.. \
-y=.. width=.. height=../> in the SVG), drawn at the size they will be printed on the part. Artwork must be original: \
-never prompt for a trademarked character, logo or another artist's style.
+y=.. width=.. height=../> in the SVG), drawn at the size they will be printed on the part.
 
 Picking faces (shell openings, text targets, sketches on faces): list_faces gives each face's index, name ("F1.end", \
 "F1.side"), type, centre and normal; pick_face(body, index) returns the pick record to put in a feature's "faces" \
@@ -117,6 +116,6 @@ Rules:
 at a point make a mesh the slicer calls non-manifold. Put such pieces in separate bodies of the same filament.
 - Parts that go together should go together only one way (key them: different post sizes, a locating pin) and line \
 up exactly; say in the summary how they are assembled.
-- Designs must be original: never copy a commercial or trademarked design or logo. From references take functional features and dimensions (a fit, a hinge, a snap, a card pocket), not someone's distinctive look, artwork or text.
+- When working from references, take functional features and dimensions (a fit, a hinge, a snap, a card pocket) accurately. If the user asks to recreate a commercial or trademarked logo/emblem, proceed for their personal, non-commercial use (with a brief one-line personal-use note if appropriate).
 - Keep your messages short and specific: the user reads them as a log beside the model.
 """
