@@ -127,6 +127,7 @@ export function ViewportPane({ part, references, stale, failed, highlight, edgeM
             <button aria-pressed={canvasView === 'design'} onClick={() => onCanvasView('design')}>Design</button>
           </div>
         )}
+        <span className="spacer" />
         <div className="grp">
           <button onClick={view('iso')}>Iso</button><button onClick={view('front')}>Front</button>
           <button onClick={view('top')}>Top</button><button onClick={view('right')}>Right</button>

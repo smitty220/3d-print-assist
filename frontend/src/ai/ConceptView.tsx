@@ -60,8 +60,12 @@ export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, on
         )}
         <div className="ctext">
           {c.summary && <p className="csum">{c.summary}</p>}
-          {c.assumptions.length > 0 && (<><h3>Assumed</h3><ul>{c.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul></>)}
-          {c.questions.length > 0 && (<><h3>Questions</h3><ul className="qs">{c.questions.map((q, i) => <li key={i}>{q}</li>)}</ul></>)}
+          {(c.assumptions.length > 0 || c.questions.length > 0) && (
+            <div className="ctext-cols">
+              {c.assumptions.length > 0 && (<div><h3>Assumed</h3><ul>{c.assumptions.map((a, i) => <li key={i}>{a}</li>)}</ul></div>)}
+              {c.questions.length > 0 && (<div><h3>Questions</h3><ul className="qs">{c.questions.map((q, i) => <li key={i}>{q}</li>)}</ul></div>)}
+            </div>
+          )}
           {!hideAnswerInput && (pending ? (
             <div className="canswer">
               <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
