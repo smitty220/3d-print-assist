@@ -366,6 +366,9 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .concept .cpane.is-full { flex: 1 1 0; }
 .concept .cpane.is-collapsed { flex: 0 0 auto; }
 .concept .cpane-bar { display: flex; align-items: center; gap: 8px; padding: 4px 12px; background: var(--panel-2, #181b20); border-bottom: 1px solid var(--line-2); flex-shrink: 0; }
+.concept .cpane-drag { cursor: row-resize; user-select: none; border-top: 2px solid var(--line); }
+.concept .cpane-drag:hover { border-top-color: var(--accent); }
+.concept .cpane-caret { padding: 1px 7px; font-size: 11px; line-height: 1.4; }
 .concept .cpane-title { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
 .concept .cdraw { flex: 1; background: #f7f7f4; display: flex; align-items: center; justify-content: center; padding: 6px; min-height: 0; overflow: auto; }
 .concept .cdraw img { width: 100%; height: 100%; object-fit: contain; }

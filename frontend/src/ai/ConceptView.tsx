@@ -1,6 +1,6 @@
 // A concept the AI proposes before it builds: its drawing, what it will make, what it assumed and what it asks.
 // Shown large over the 3D view while it waits; the user approves it or says what to change.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Concept } from '../api'
 
@@ -18,8 +18,28 @@ interface Props {
 export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState(false)
-  const [focusPane, setFocusPane] = useState<'both' | 'draw' | 'spec'>('both')
+  const [split, setSplit] = useState(0.62) // fraction of cbody height for Drawing (0 = spec full, 1 = drawing full)
+  const bodyRef = useRef<HTMLDivElement>(null)
   const pending = c.status === 'pending'
+
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button')) return
+    e.preventDefault()
+    const body = bodyRef.current
+    if (!body) return
+    const rect = body.getBoundingClientRect()
+    const onMove = (ev: PointerEvent) => {
+      if (rect.height <= 0) return
+      const next = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height))
+      setSplit(next < 0.08 ? 0 : next > 0.92 ? 1 : next)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
 
   useEffect(() => {
     if (!expanded) return
@@ -45,16 +65,25 @@ export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, on
         <button className="btn" onClick={fullScreen} title="Show the drawing full screen (Esc to come back; or double-click the drawing)">⛶ Full screen</button>
         <button className="x" onClick={onClose} aria-label={pending ? 'Hide for now' : 'Close'} title={pending ? 'Hide for now (it stays in the AI panel)' : 'Close'}>×</button>
       </div>
-      <div className="cbody">
-        <div className={`cpane cdraw-pane${focusPane === 'draw' ? ' is-full' : focusPane === 'spec' ? ' is-collapsed' : ''}`}>
+      <div className="cbody" ref={bodyRef}>
+        <div
+          className={`cpane cdraw-pane${split >= 0.99 ? ' is-full' : split <= 0.01 ? ' is-collapsed' : ''}`}
+          style={split > 0.01 && split < 0.99 ? { flex: `${split} 1 0` } : undefined}
+        >
           <div className="cpane-bar">
             <span className="cpane-title">Drawing</span>
             <span className="spacer" />
-            <button type="button" className="btn sm" onClick={() => setFocusPane(focusPane === 'draw' ? 'both' : 'draw')}>
-              {focusPane === 'draw' ? 'Restore' : 'Expand'}
+            <button
+              type="button"
+              className="btn sm cpane-caret"
+              title={split >= 0.99 ? 'Restore split' : 'Expand drawing'}
+              aria-label={split >= 0.99 ? 'Restore split' : 'Expand drawing'}
+              onClick={() => setSplit(split >= 0.99 ? 0.62 : 1)}
+            >
+              {split >= 0.99 ? '▲' : '▼'}
             </button>
           </div>
-          {focusPane !== 'spec' && (
+          {split > 0.01 && (
             <div className="cdraw" onDoubleClick={fullScreen} title="Double-click for full screen">
               <img src={svgUrl(c.svg)} alt={`Concept drawing: ${c.title}`} />
             </div>
@@ -69,15 +98,29 @@ export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, on
           </div>,
           document.body,
         )}
-        <div className={`cpane ctext-pane${focusPane === 'spec' ? ' is-full' : focusPane === 'draw' ? ' is-collapsed' : ''}`}>
-          <div className="cpane-bar">
+        <div
+          className={`cpane ctext-pane${split <= 0.01 ? ' is-full' : split >= 0.99 ? ' is-collapsed' : ''}`}
+          style={split > 0.01 && split < 0.99 ? { flex: `${1 - split} 1 0` } : undefined}
+        >
+          <div
+            className="cpane-bar cpane-drag"
+            onPointerDown={startDrag}
+            onDoubleClick={() => setSplit(0.62)}
+            title="Drag up/down to resize (double-click to reset)"
+          >
             <span className="cpane-title">Spec, Assumptions &amp; Questions</span>
             <span className="spacer" />
-            <button type="button" className="btn sm" onClick={() => setFocusPane(focusPane === 'spec' ? 'both' : 'spec')}>
-              {focusPane === 'spec' ? 'Restore' : 'Expand'}
+            <button
+              type="button"
+              className="btn sm cpane-caret"
+              title={split <= 0.01 ? 'Restore split' : 'Expand spec'}
+              aria-label={split <= 0.01 ? 'Restore split' : 'Expand spec'}
+              onClick={() => setSplit(split <= 0.01 ? 0.62 : 0)}
+            >
+              {split <= 0.01 ? '▼' : '▲'}
             </button>
           </div>
-          {focusPane !== 'draw' && (
+          {split < 0.99 && (
             <div className="ctext">
               {c.summary && <p className="csum">{c.summary}</p>}
               {(c.assumptions.length > 0 || c.questions.length > 0) && (
