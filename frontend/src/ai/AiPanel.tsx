@@ -17,6 +17,7 @@ interface Props {
   concept: Concept | null // the newest
   conceptOpen?: boolean
   onAnswerConcept?: (id: string, decision: 'approve' | 'revise', note: string) => void
+  onBuildConcept?: (concept: Concept, note: string) => void
   layout: PanelLayout
   zIndex?: number
   onFocusPanel?: () => void
@@ -64,7 +65,7 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
@@ -262,7 +263,7 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
         )}
       </div>
       {context && <div className="ctx">Context: {context}</div>}
-      {concept && !conceptOpen && (
+      {mode === 'mcp' && concept && !conceptOpen && (
         <div className="ccard">
           <div className="row">
             <b>{concept.id} · {concept.title}</b><span className="spacer" />
@@ -381,6 +382,55 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
                     : <div>{e.text}</div>}
               </div>
             ))}
+            {concept && (
+              <div className="entry assistant" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                  <b>{concept.id} · {concept.title}</b>
+                  <span className={`chip cstat ${concept.status}`}>
+                    {concept.status === 'pending' ? 'Waiting for you' : concept.status === 'approved' ? 'Approved' : 'Changes asked'}
+                  </span>
+                  <span className="spacer" />
+                  <button className="btn sm" onClick={() => onOpenConcept(concept.id)} title="Open drawing larger">Expand</button>
+                </div>
+                <img
+                  src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(concept.svg)}`}
+                  alt={`Concept drawing: ${concept.title}`}
+                  onClick={() => onOpenConcept(concept.id)}
+                  style={{ width: '100%', maxHeight: 200, objectFit: 'contain', background: '#f7f7f4', borderRadius: 6, cursor: 'pointer' }}
+                />
+                {concept.summary && <div style={{ fontSize: 13, lineHeight: 1.45 }}>{concept.summary}</div>}
+                {concept.assumptions.length > 0 && (
+                  <div style={{ fontSize: 12.5 }}>
+                    <div style={{ fontWeight: 600, opacity: 0.7, textTransform: 'uppercase', fontSize: 11, marginBottom: 2 }}>Assumed</div>
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {concept.assumptions.map((a, idx) => <li key={idx}>{a}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {concept.questions.length > 0 && (
+                  <div style={{ fontSize: 12.5 }}>
+                    <div style={{ fontWeight: 600, opacity: 0.7, textTransform: 'uppercase', fontSize: 11, marginBottom: 2 }}>Questions</div>
+                    <ul style={{ margin: 0, paddingLeft: 18, color: 'var(--accent)' }}>
+                      {concept.questions.map((q, idx) => <li key={idx}>{q}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {concept.status === 'pending' && onAnswerConcept ? (
+                  <div className="row" style={{ gap: 8, marginTop: 2 }}>
+                    <button className="btn primary sm" onClick={() => { onAnswerConcept(concept.id, 'approve', text.trim()); setText('') }}>
+                      Approve & build
+                    </button>
+                    <span className="dim" style={{ fontSize: 12 }}>or type changes below</span>
+                  </div>
+                ) : onBuildConcept ? (
+                  <div className="row" style={{ gap: 8, marginTop: 2 }}>
+                    <button className="btn primary sm" disabled={chat?.running} onClick={() => { onBuildConcept(concept, text.trim()); setText('') }}>
+                      Approve & build
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            )}
             {chat?.running && (() => {
               const lastTool = !rawTools ? [...(chat.log ?? [])].reverse().find((e) => e.role === 'tool')?.tool : null
               const hint = lastTool ? TOOL_LABELS[lastTool] ?? lastTool : null

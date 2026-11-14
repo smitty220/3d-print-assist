@@ -89,13 +89,17 @@ export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, on
               {c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
               {onBuild && (
                 <div className="canswer">
-                  <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
-                  <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
-                    placeholder="Optional notes before building this concept…"
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
+                  {!hideAnswerInput && (
+                    <>
+                      <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
+                      <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+                        placeholder="Optional notes before building this concept…"
+                        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
+                    </>
+                  )}
                   <div className="row">
                     <span className="spacer" />
-                    <button className="btn primary" onClick={() => onBuild(note)}>Approve and build</button>
+                    <button className="btn primary" onClick={() => onBuild(hideAnswerInput ? '' : note)}>Approve and build</button>
                   </div>
                 </div>
               )}

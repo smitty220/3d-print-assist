@@ -180,7 +180,7 @@ export default function App() {
   // A concept waiting for an answer opens by itself (until put aside); any concept opens from the AI panel.
   const waitingConcept = concepts.find((c) => c.status === 'pending')
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
-    ?? (waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
+    ?? (ai?.mode === 'mcp' && waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
 
   // ---------- File menu ----------
 
@@ -638,6 +638,15 @@ export default function App() {
             run(() => api.answerConcept(id, decision, note)).then((c) => {
               if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
             })
+          }}
+          onBuildConcept={(c, note) => {
+            const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
+            const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept("${c.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
+            setConceptOpen(null)
+            run(async () => {
+              if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+              await api.chat(msg)
+            }).then(() => api.aiStatus().then(setAi))
           }}
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
