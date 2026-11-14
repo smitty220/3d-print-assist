@@ -41,6 +41,33 @@ def _wait_for_server(port: int, server_thread: threading.Thread, timeout: float 
     raise TimeoutError(f"Backend server did not start on port {port} within {timeout}s")
 
 
+def _configure_macos_window(window: object) -> None:
+    """Enable native macOS green-button fullscreen and HTML5 element fullscreen in WKWebView."""
+    if sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+        from PyObjCTools import AppHelper
+
+        def _apply() -> None:
+            ns_window = getattr(window, "native", None)
+            if ns_window is None:
+                return
+            primary = getattr(AppKit, "NSWindowCollectionBehaviorFullScreenPrimary", 1 << 7)
+            ns_window.setCollectionBehavior_(ns_window.collectionBehavior() | primary)
+            content_view = ns_window.contentView()
+            if content_view is not None and hasattr(content_view, "subviews"):
+                for sub in content_view.subviews():
+                    if hasattr(sub, "configuration"):
+                        prefs = sub.configuration().preferences()
+                        if hasattr(prefs, "setElementFullscreenEnabled_"):
+                            prefs.setElementFullscreenEnabled_(True)
+
+        AppHelper.callAfter(_apply)
+    except Exception:
+        pass
+
+
 def main() -> None:
     os.environ.setdefault("PRINT_ASSIST_DESKTOP", "1")
     static_dir = _static_dir()
@@ -62,14 +89,14 @@ def main() -> None:
     _wait_for_server(port, thread)
 
     try:
-        webview.create_window(
+        window = webview.create_window(
             "3D Print Assist",
             f"http://127.0.0.1:{port}",
             width=1440,
             height=900,
             min_size=(1024, 680),
         )
-        webview.start()
+        webview.start(_configure_macos_window, window)
     finally:
         server.should_exit = True
         thread.join(timeout=3.0)
