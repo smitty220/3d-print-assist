@@ -104,7 +104,10 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
     const t = text.trim()
     if (!t) return
     if (pendingConcept && onAnswerConcept) {
-      onAnswerConcept(pendingConcept.id, 'revise', t)
+      const note = attached.length
+        ? `${t}\n\n(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`
+        : t
+      onAnswerConcept(pendingConcept.id, 'revise', note)
       setText('')
       setAttached([])
       return
@@ -463,10 +466,10 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
                   }
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }} />
-              {chat?.running && !pendingConcept ? (
+              {chat?.running ? (
                 <div className="col" style={{ gap: 4 }}>
                   <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}
-                    title="Send follow-up instructions (queued if AI is busy)">
+                    title={pendingConcept ? 'Send feedback on this concept' : 'Send follow-up instructions (queued if AI is busy)'}>
                     <Icon name="send" size={18} width={2} />
                   </button>
                   <button className="btn sm" onClick={onCancel}>Stop</button>

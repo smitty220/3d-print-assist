@@ -211,7 +211,7 @@ export default function App() {
         await api.answerConcept(c.id, 'approve', note)
         api.concepts().then(setConcepts).catch(() => {})
       }
-      if (!ai?.chat.running) {
+      if (ai?.mode === 'api' || !ai?.chat.running) {
         if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
         await api.chat(msg)
       }
@@ -228,7 +228,7 @@ export default function App() {
       if (!answered) return
       setConceptOpen(null)
       api.concepts().then(setConcepts).catch(() => {})
-      if (!ai?.chat.running && note.trim()) {
+      if (note.trim() && (ai?.mode === 'api' || !ai?.chat.running)) {
         if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
         await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept("${c.id}") first, then propose a revised concept.`)
       }

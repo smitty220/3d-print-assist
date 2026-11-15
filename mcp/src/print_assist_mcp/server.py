@@ -215,12 +215,13 @@ def propose_concept(title: str, svg: str, summary: str = "", assumptions: list[s
 
 
 @mcp.tool()
-def wait_for_concept(id: str, timeout_s: int = 600) -> str:
-    """Wait for the user's answer on a concept: "approved" (build it, minding any note) or "revise" (their note says
-    what to change: propose a new concept). If it times out still "pending", call it again or ask the user."""
+def wait_for_concept(id: str, timeout_s: int = 45) -> str:
+    """Wait briefly for the user's answer on a concept: "approved" (build it, minding any note) or "revise" (their
+    note says what to change: propose a new concept). If it times out still "pending", end your turn and let the user
+    reply — NEVER loop or spawn shell/background scripts to keep polling."""
     import time
 
-    deadline = time.time() + max(5, min(int(timeout_s), 3600))
+    deadline = time.time() + max(5, min(int(timeout_s), 90))
     while True:
         r = _call("GET", "/api/concepts", params={"drawings": False})
         if isinstance(r, dict):
