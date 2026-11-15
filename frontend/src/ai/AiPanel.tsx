@@ -410,20 +410,25 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
               const toolEntries = (chat.log ?? []).filter((e) => e.role === 'tool')
               const lastEntry = toolEntries.at(-1)
               const activeKey = chat.current_step || lastEntry?.tool || null
-              const activeLabel = activeKey ? (TOOL_LABELS[activeKey] ?? activeKey) : 'Thinking'
+              const waitingOnUser = activeKey === 'wait_for_concept' || Boolean(pendingConcept && !chat.current_step)
+              const activeLabel = waitingOnUser
+                ? `Waiting for your approval${pendingConcept ? ` on ${pendingConcept.id}` : ''}`
+                : (activeKey ? (TOOL_LABELS[activeKey] ?? activeKey) : 'Thinking')
               const elapsed = chat.elapsed_s ?? 0
               const idle = chat.idle_s ?? 0
               const steps = chat.steps ?? toolEntries.length
               const fmtTime = (s: number) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
-              const stalled = idle >= 30
+              const stalled = !waitingOnUser && idle >= 30
               return (
                 <div className={`entry assistant working${stalled ? ' stalled' : ''}`}>
                   <div className="work-row">
                     <span className={`work-dot${stalled ? ' stalled' : ''}`} aria-hidden="true" />
-                    <b>{activeLabel}…</b>
+                    <b>{waitingOnUser ? activeLabel : `${activeLabel}…`}</b>
                     <span className="work-meta">
                       {steps > 0 ? `Step ${steps} · ` : ''}{fmtTime(elapsed)}
-                      {idle >= 5 ? ` · ${stalled ? `no activity ${fmtTime(idle)}` : `active ${fmtTime(idle)} ago`}` : ' · active'}
+                      {waitingOnUser
+                        ? ' · click Approve & build or reply below'
+                        : (idle >= 5 ? ` · ${stalled ? `no activity ${fmtTime(idle)}` : `active ${fmtTime(idle)} ago`}` : ' · active')}
                       {(chat.queued ?? 0) > 0 ? ` · ${chat.queued} queued` : ''}
                     </span>
                   </div>
