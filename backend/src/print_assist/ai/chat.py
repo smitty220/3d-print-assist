@@ -12,20 +12,62 @@ import html
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .client import AgyClient, MessagesClient, model_name
 from .guide import GUIDE
 
 MAX_TURNS = 40
 GEMINI_TIMEOUT = 180  # seconds
-SKIP_TOOLS = {"get_guide"}  # the guide is the system prompt
+AGY_PRINT_TIMEOUT = "10m"
+AGY_IDLE_TIMEOUT = 180  # seconds without any stream event before killing a stalled turn
+AGY_TOTAL_TIMEOUT = 600  # hard cap (seconds) for a single agy turn
+SKIP_TOOLS = {"get_guide", "wait_for_concept"}  # guide is system prompt; UI handles concept approval turns
+
+_IN_APP_DIRECTIVES = (
+    "\n\nDIRECTIVES FOR IN-APP CHAT (FOLLOW THESE STRICTLY):\n"
+    "- Direct building: When the user requests a specific shape, part, or geometry change with explicit dimensions or parameters "
+    "(e.g., 'make me a 20mm cube', 'cylinder 30mm diameter and 15mm tall', 'chamfer top edge 1mm', 'change wall thickness to 2mm'), "
+    "this is a change they spelled out exactly. SKIP propose_concept entirely! "
+    "Call apply_changes directly to build the geometry, then render_preview and run_checks.\n"
+    "- Concept approval workflow: Only call propose_concept for high-level, creative, or open-ended requests where dimensions "
+    "or styling must be explored. Immediately after propose_concept, END YOUR TURN with a brief summary so the user can review "
+    "and click Approve & build or reply — do NOT call wait_for_concept and do NOT poll or wait.\n"
+    "- Efficiency & error recovery: Batch related ops into a single apply_changes call; inspect list_faces before pick_face. "
+    "If an approach fails twice, switch to a simpler construction or explain the blocker instead of looping.\n"
+    "- Conversational responses: Always provide clear, concise natural language describing what changes you made, "
+    "how they were checked, and any decisions for the user.\n"
+)
+
+_AGY_SYSTEM_PREAMBLE = (
+    "You are the CAD assistant inside 3D Print Assist.\n"
+    "STRICT TOOL RULES:\n"
+    "1. ONLY call tools from the `3d-print-assist` MCP server (get_guide, get_model, get_feature_catalog, "
+    "apply_changes, update, render_preview, run_checks, print_layout, list_faces, pick_face, list_fonts, "
+    "propose_concept, look_at_concept, generate_image, list_images, look_at_image, list_references, "
+    "look_at_reference, section_reference, add_reference, open_design, create_design, list_designs, export).\n"
+    "2. NEVER inspect or edit files, and NEVER use run_command, shell scripts, python/uv commands, "
+    "invoke_subagent, schedule, timers, or background tasks.\n"
+    "3. CONCEPT APPROVAL: After calling propose_concept, NEVER call wait_for_concept and NEVER run scripts or "
+    "background tasks to wait for approval. End your turn immediately with a concise summary — the app resumes you "
+    "automatically when the user clicks Approve & build or replies.\n"
+    "4. Skip propose_concept when the user asks for specific dimensions/parameters or edits an existing part directly.\n"
+    "5. Batch related ops in one apply_changes call. If the 3D model is empty or the user refers to a concept, "
+    "call look_at_concept. If an approach fails twice, switch strategy instead of looping.\n\n"
+    "User request: "
+)
+
+_AGY_TURN_REMINDER = (
+    "\n\n[System rule: Use ONLY `3d-print-assist` MCP tools. Never use shell/run_command, python, "
+    "subagents, background tasks, or wait_for_concept — end your turn right after propose_concept or edits.]"
+)
 
 
 @dataclass
@@ -179,6 +221,52 @@ def _call(name: str, args: dict, cancel: threading.Event | None = None) -> tuple
     return out, ok
 
 
+def _kill_proc(proc: Any) -> None:
+    """Terminate a subprocess and its process group cleanly so background tasks cannot linger."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    pid = getattr(proc, "pid", None)
+    if os.name == "posix" and isinstance(pid, int) and pid > 0:
+        try:
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=2)
+                return
+            except subprocess.TimeoutExpired:
+                os.killpg(pgid, signal.SIGKILL)
+                return
+        except OSError:
+            pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _format_agy_error(raw: str) -> str:
+    """Turn internal CLI timeout / background-task noise into a clean user-facing message."""
+    cleaned = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw or "").strip()
+    low = cleaned.lower()
+    if "print timeout" in low or ("background task" in low and ("terminated" in low or "waiting" in low)):
+        return (
+            "The assistant timed out while waiting on a background step, so the stalled task was "
+            "automatically cleaned up. Please resend your instruction (or try switching models)."
+        )
+    if len(cleaned) > 600:
+        cleaned = cleaned[:600].rstrip() + "…"
+    return cleaned or "The assistant encountered an unexpected error."
+
+
 def _block(b) -> dict:
     if b.type == "text":
         return {"type": "text", "text": b.text}
@@ -197,89 +285,164 @@ class Chat:
         self.running = False
         self.cancel = threading.Event()
         self.tokens = {"input": 0, "output": 0, "cache_read": 0}
+        self.started_at: float | None = None
+        self.last_event_at: float | None = None
+        self.current_step: str | None = None
+        self.steps = 0
+        self._lock = threading.Lock()
+        self._queue: list[tuple[str, Any, str]] = []
         self._thread: threading.Thread | None = None
         self._gemini_last: str | None = None  # Gemini keeps the conversation server side; continue from here
         self._agy_conv: str | None = None  # Antigravity CLI conversation_id
+        self._active_proc: Any = None  # currently running subprocess (for immediate kill on stop/shutdown)
 
     def to_dict(self) -> dict:
-        return {"running": self.running, "log": [asdict(e) for e in self.log], "tokens": dict(self.tokens)}
+        now = time.time()
+        elapsed_s = max(0, int(now - self.started_at)) if self.running and self.started_at else 0
+        idle_s = max(0, int(now - self.last_event_at)) if self.running and self.last_event_at else 0
+        with self._lock:
+            queued = len(self._queue)
+        return {
+            "running": self.running,
+            "log": [asdict(e) for e in self.log],
+            "tokens": dict(self.tokens),
+            "elapsed_s": elapsed_s,
+            "idle_s": idle_s,
+            "current_step": self.current_step,
+            "steps": self.steps,
+            "queued": queued,
+        }
+
+    def _touch(self, step: str | None = None) -> None:
+        self.last_event_at = time.time()
+        if step is not None:
+            self.current_step = step
+
+    def _record_tool(self, tool: str, text: str, ok: bool = True) -> None:
+        self.steps += 1
+        self.last_event_at = time.time()
+        self.current_step = None
+        self.log.append(Entry("tool", text, tool=tool, ok=ok))
+
+    def stop(self) -> None:
+        """Cancel the active turn and immediately terminate any active subprocess."""
+        with self._lock:
+            self.cancel.set()
+            self._queue.clear()
+            proc = self._active_proc
+        if proc is not None:
+            _kill_proc(proc)
 
     def reset(self) -> None:
         if self.running:
             raise RuntimeError("the AI is still working; stop it first")
+        with self._lock:
+            self._queue.clear()
         self.messages, self.log = [], []
+        self.started_at = None
+        self.last_event_at = None
+        self.current_step = None
+        self.steps = 0
         self._gemini_last = None
         self._agy_conv = None
 
+    def _drain_queue(self) -> list[str]:
+        with self._lock:
+            items = [t for t, _, _ in self._queue]
+            self._queue.clear()
+        return items
+
     def send(self, text: str, client: Any, model: str | None = None, wait: bool = False) -> None:
-        if self.running:
-            raise RuntimeError("the AI is still working on the last message")
-        self.running = True
-        self.cancel.clear()
-        self.log.append(Entry("user", text))
-        self.messages.append({"role": "user", "content": text})
-        self._thread = threading.Thread(target=self._run, args=(client, model or model_name()), daemon=True)
-        self._thread.start()
-        if wait:
+        chosen_model = model or model_name()
+        with self._lock:
+            self.log.append(Entry("user", text))
+            if self.running:
+                self._queue.append((text, client, chosen_model))
+                return
+            self.running = True
+            now = time.time()
+            self.started_at = now
+            self.last_event_at = now
+            self.current_step = "Thinking"
+            self.steps = 0
+            self.cancel.clear()
+            self.messages.append({"role": "user", "content": text})
+            self._thread = threading.Thread(target=self._run, args=(client, chosen_model), daemon=True)
+            self._thread.start()
+        if wait and self._thread is not None:
             self._thread.join()
 
     def _run(self, client: Any, model: str) -> None:
-        try:
-            if isinstance(client, AgyClient):
-                self._run_agy(client, model)
-            elif hasattr(client, "interactions"):
-                self._run_gemini(client, model)
-            else:
-                self._run_claude(client, model)
-        except Exception as exc:  # noqa: BLE001 - API or unexpected failure: report it in the panel
-            msg = str(exc)
-            if hasattr(client, "interactions") and ("limit: 0" in msg or "too_many_requests" in msg):
-                msg = (
-                    f"Rate limit for {model}: this model is restricted or has a 0 token/min limit on the Free Tier. "
-                    "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
-                    "or upgrade your Google AI Studio tier."
-                )
-            elif "timed out" in msg.lower() or "timeout" in msg.lower():
-                msg = (
-                    f"Request timed out for {model}. Google's servers took longer than {GEMINI_TIMEOUT}s to respond. "
-                    "Please try sending your message again, or switch models in the dropdown."
-                )
-            self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
-        finally:
-            self.running = False
+        while True:
+            try:
+                if isinstance(client, AgyClient):
+                    self._run_agy(client, model)
+                elif hasattr(client, "interactions"):
+                    self._run_gemini(client, model)
+                else:
+                    self._run_claude(client, model)
+            except Exception as exc:  # noqa: BLE001 - API or unexpected failure: report it in the panel
+                msg = str(exc)
+                if hasattr(client, "interactions") and ("limit: 0" in msg or "too_many_requests" in msg):
+                    msg = (
+                        f"Rate limit for {model}: this model is restricted or has a 0 token/min limit on the Free Tier. "
+                        "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
+                        "or upgrade your Google AI Studio tier."
+                    )
+                elif "timed out" in msg.lower() or "timeout" in msg.lower():
+                    msg = (
+                        f"Request timed out for {model}. Google's servers took longer than {GEMINI_TIMEOUT}s to respond. "
+                        "Please try sending your message again, or switch models in the dropdown."
+                    )
+                self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
+            with self._lock:
+                if self.cancel.is_set() or not self._queue:
+                    self._queue.clear()
+                    self.running = False
+                    self.current_step = None
+                    return
+                next_text, client, model = self._queue.pop(0)
+                self.messages.append({"role": "user", "content": next_text})
+                self.last_event_at = time.time()
+                self.current_step = "Thinking"
 
     def _run_agy(self, client: AgyClient, model: str) -> None:
         user_text = str(self.messages[-1]["content"])
-        prompt = user_text if self._agy_conv else (
-            "You are the CAD assistant inside 3D Print Assist. Do NOT inspect or edit repository source files; "
-            "ONLY use the `3d-print-assist` MCP tools (such as get_guide, get_model, get_feature_catalog, "
-            "apply_changes, render_preview, run_checks, propose_concept, wait_for_concept, create_design) "
-            "to inspect and modify the currently open design in the running app.\n\nUser request: " + user_text
-        )
+        if self._agy_conv:
+            prompt = f"{user_text}{_AGY_TURN_REMINDER}"
+        else:
+            prompt = f"{_AGY_SYSTEM_PREAMBLE}{user_text}"
         cmd = [
             client.binary,
             "-p", prompt,
             "--output-format", "stream-json",
             "--dangerously-skip-permissions",
-            "--print-timeout", "30m",
+            "--disable-slash-commands",
+            "--print-timeout", AGY_PRINT_TIMEOUT,
         ]
         if self._agy_conv:
             cmd.extend(["--conversation", self._agy_conv])
         if model:
             cmd.extend(["--model", model])
 
-        # agy runs without permission prompts, so it works in the designs folder (never this app's source code)
-        # and reaches the app's tools over the /mcp endpoint.
+        port = os.environ.get("PRINT_ASSIST_PORT", "8010")
         from ..project import data_root
 
-        work_dir = data_root()
+        # Always run in an isolated workspace dir (not the repo root) so agy only sees MCP tools, not repo files/venv.
+        work_dir = data_root() / "ai_workspace"
         work_dir.mkdir(parents=True, exist_ok=True)
-        port = os.environ.get("PRINT_ASSIST_PORT", "8010")
-        mcp_cfg = {"mcpServers": {"3d-print-assist": {"type": "http", "url": f"http://127.0.0.1:{port}/mcp/"}}}
+        mcp_cfg = {
+            "mcpServers": {
+                "3d-print-assist": {
+                    "type": "http",
+                    "url": f"http://127.0.0.1:{port}/mcp/",
+                }
+            }
+        }
         (work_dir / ".mcp.json").write_text(json.dumps(mcp_cfg, indent=2), encoding="utf-8")
-        cwd = str(work_dir)
+
         popen_kw: dict[str, Any] = {
-            "cwd": cwd,
+            "cwd": str(work_dir),
             "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
@@ -288,14 +451,19 @@ class Chat:
             "errors": "replace",
             "bufsize": 1,
         }
+        env = os.environ.copy()
+        env["PRINT_ASSIST_PORT"] = port
+        env["PRINT_ASSIST_URL"] = f"http://127.0.0.1:{port}"
         if sys.platform == "win32":
             popen_kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         else:
-            env = os.environ.copy()
+            popen_kw["start_new_session"] = True
             extra = [str(Path.home() / ".local" / "bin"), "/opt/homebrew/bin", "/usr/local/bin"]
             env["PATH"] = os.pathsep.join([*extra, env.get("PATH", "")])
-            popen_kw["env"] = env
+        popen_kw["env"] = env
         proc = subprocess.Popen(cmd, **popen_kw)
+        with self._lock:
+            self._active_proc = proc
 
         import queue
 
@@ -324,10 +492,11 @@ class Chat:
                 return
             if ev.get("conversation_id"):
                 self._agy_conv = str(ev["conversation_id"])
+            self._touch()
             kind = ev.get("event")
             if kind == "step_update":
                 su = ev.get("step_update") or {}
-                if su.get("state") == "DONE" and su.get("step_type") == "tool":
+                if su.get("step_type") == "tool":
                     info = su.get("tool_info") or {}
                     tname = su.get("tool_name") or "tool"
                     params = info.get("parameters") or {}
@@ -335,61 +504,101 @@ class Chat:
                         tname = str(params["ToolName"])
                     elif tname == "read_file":
                         return  # skip noisy MCP schema reads
-                    out = str(info.get("output") or "").strip()
-                    self.log.append(Entry("tool", out[:400], tool=tname, ok=True))
-                elif su.get("state") == "DONE" and su.get("step_type") == "agent_response":
-                    td = (su.get("text_delta") or "").strip()
-                    if td:
-                        last_text = td
+                    if su.get("state") == "DONE":
+                        out = str(info.get("output") or "").strip()
+                        ok = not (
+                            out.startswith("Error")
+                            or '"error"' in out[:200]
+                            or "Refused:" in out[:200]
+                            or "409" in out[:120]
+                        )
+                        self._record_tool(tname, out[:400], ok=ok)
+                    else:
+                        self._touch(tname)
+                elif su.get("step_type") == "agent_response":
+                    if su.get("state") == "DONE":
+                        td = (su.get("text_delta") or "").strip()
+                        if td:
+                            last_text = td
+                        self._touch("Thinking")
+                    else:
+                        self._touch("Writing response")
             elif kind == "result":
                 result_data = ev.get("result") or {}
 
-        while True:
-            if self.cancel.is_set():
-                proc.terminate()
+        try:
+            turn_started = time.time()
+            last_stream_at = turn_started
+            while True:
+                if self.cancel.is_set():
+                    _kill_proc(proc)
+                    self.log.append(Entry("error", "Stopped.", ok=False))
+                    return
+                now = time.time()
+                if now - last_stream_at >= AGY_IDLE_TIMEOUT:
+                    _kill_proc(proc)
+                    self.log.append(Entry(
+                        "error",
+                        "Stopped automatically after 3 minutes of inactivity so background tasks would not hang. "
+                        "Please resend your instruction (or try another model).",
+                        ok=False,
+                    ))
+                    return
+                if now - turn_started >= AGY_TOTAL_TIMEOUT:
+                    _kill_proc(proc)
+                    self.log.append(Entry(
+                        "error",
+                        "Stopped automatically after the 10-minute turn limit and cleaned up background tasks. "
+                        "Please continue with a narrower instruction.",
+                        ok=False,
+                    ))
+                    return
                 try:
-                    proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                    line = lines_q.get(timeout=0.25)
+                except queue.Empty:
+                    if proc.poll() is not None and lines_q.empty():
+                        break
+                    continue
+                if line is None:
+                    break
+                last_stream_at = time.time()
+                _handle_line(line)
+
+            while not lines_q.empty():
+                rem = lines_q.get_nowait()
+                if rem is not None:
+                    _handle_line(rem)
+            stderr = proc.stderr.read() if proc.stderr is not None else ""
+            proc.wait()
+            if self.cancel.is_set():
                 self.log.append(Entry("error", "Stopped.", ok=False))
                 return
-            try:
-                line = lines_q.get(timeout=0.25)
-            except queue.Empty:
-                if proc.poll() is not None and lines_q.empty():
-                    break
-                continue
-            if line is None:
-                break
-            _handle_line(line)
 
-        while not lines_q.empty():
-            rem = lines_q.get_nowait()
-            if rem is not None:
-                _handle_line(rem)
-        stderr = proc.stderr.read() if proc.stderr is not None else ""
-        proc.wait()
-
-        if result_data is not None:
-            if result_data.get("conversation_id"):
-                self._agy_conv = str(result_data["conversation_id"])
-            u = result_data.get("usage") or {}
-            self.tokens["input"] += int(u.get("input_tokens") or 0)
-            self.tokens["output"] += int(u.get("output_tokens") or 0)
-            self.tokens["cache_read"] += int(u.get("cache_read_tokens") or 0)
-            if proc.returncode == 0 and result_data.get("status") == "SUCCESS":
-                reply = (result_data.get("response") or last_text or "").strip() or "(Done)"
-                self.log.append(Entry("assistant", reply))
+            if result_data is not None:
+                if result_data.get("conversation_id"):
+                    self._agy_conv = str(result_data["conversation_id"])
+                u = result_data.get("usage") or {}
+                self.tokens["input"] += int(u.get("input_tokens") or 0)
+                self.tokens["output"] += int(u.get("output_tokens") or 0)
+                self.tokens["cache_read"] += int(u.get("cache_read_tokens") or 0)
+                if proc.returncode == 0 and result_data.get("status") == "SUCCESS":
+                    reply = (result_data.get("response") or last_text or "").strip() or "(Done)"
+                    self.log.append(Entry("assistant", reply))
+                    return
+                err = result_data.get("error") or result_data.get("response") or stderr or f"agy exited with {proc.returncode}"
+                self.log.append(Entry("error", _format_agy_error(str(err)), ok=False))
                 return
-            err = result_data.get("error") or result_data.get("response") or stderr or f"agy exited with {proc.returncode}"
-            self.log.append(Entry("error", str(err).strip(), ok=False))
-            return
 
-        if proc.returncode != 0:
-            err = (stderr or f"agy exited with {proc.returncode}").strip()
-            self.log.append(Entry("error", err, ok=False))
-            return
-        self.log.append(Entry("assistant", last_text or "(Done)"))
+            if proc.returncode != 0:
+                err = stderr or f"agy exited with {proc.returncode}"
+                self.log.append(Entry("error", _format_agy_error(str(err)), ok=False))
+                return
+            self.log.append(Entry("assistant", last_text or "(Done)"))
+        finally:
+            with self._lock:
+                if self._active_proc is proc:
+                    self._active_proc = None
+            _kill_proc(proc)
 
     def _run_claude(self, client: Any, model: str) -> None:
         _wire_tools(actor="claude")
@@ -397,10 +606,14 @@ class Chat:
         from ..features.library import FEATURES
 
         catalog = json.dumps([f.describe() for f in FEATURES.values()], separators=(",", ":"))
-        system = [{"type": "text", "text": GUIDE + "\n\nFeature catalog:\n" + catalog, "cache_control": {"type": "ephemeral"}}]
+        system = [{
+            "type": "text",
+            "text": GUIDE + _IN_APP_DIRECTIVES + "\n\nFeature catalog:\n" + catalog,
+            "cache_control": {"type": "ephemeral"},
+        }]
         for _ in range(MAX_TURNS):
             if self.cancel.is_set():
-                self.log.append(Entry("error", "Stopped."))
+                self.log.append(Entry("error", "Stopped.", ok=False))
                 return
             resp = client.create(
                 model=model, max_tokens=16000, system=system, tools=tools, messages=self.messages,
@@ -429,11 +642,21 @@ class Chat:
                 return
             results = []
             for b in uses:
+                if self.cancel.is_set():
+                    self.log.append(Entry("error", "Stopped.", ok=False))
+                    return
+                self._touch(b.name)
                 content, ok = _call(b.name, b.input or {}, cancel=self.cancel)
+                if self.cancel.is_set():
+                    self.log.append(Entry("error", "Stopped.", ok=False))
+                    return
                 summary = content if isinstance(content, str) else "(image)"
-                self.log.append(Entry("tool", summary[:600], tool=b.name, ok=ok))
+                self._record_tool(b.name, summary[:600], ok=ok)
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": content, "is_error": not ok})
+            self._touch("Thinking")
             self.messages.append({"role": "user", "content": results})
+            for q_text in self._drain_queue():
+                self.messages.append({"role": "user", "content": q_text})
         self.log.append(Entry("error", "Stopped: too many steps in one turn.", ok=False))
 
     def _run_gemini(self, client: Any, model: str) -> None:
@@ -442,18 +665,7 @@ class Chat:
         from ..features.library import FEATURES
 
         catalog = json.dumps([f.describe() for f in FEATURES.values()], separators=(",", ":"))
-        gemini_directives = (
-            "\n\nDIRECTIVES FOR IN-APP CHAT (FOLLOW THESE STRICTLY):\n"
-            "- Direct building: When the user requests a specific shape, part, or geometry change with explicit dimensions or parameters "
-            "(e.g., 'make me a 20mm cube', 'cylinder 30mm diameter and 15mm tall', 'chamfer top edge 1mm', 'change wall thickness to 2mm'), "
-            "this is a change they spelled out exactly. You MUST SKIP propose_concept and wait_for_concept entirely! "
-            "Call apply_changes directly to build the geometry, then render_preview and run_checks.\n"
-            "- When to propose concepts: Only call propose_concept when the user's request is high-level, creative, ambiguous, or asks for open-ended "
-            "designs where dimensions and styling must be explored (e.g. 'design a phone stand', 'organizer for my desk', 'a case for my trimmer').\n"
-            "- Conversational responses: Always provide clear, concise natural language in your reply describing what changes you made, "
-            "how they were checked, and any decisions for the user, just like a helpful CAD engineering colleague.\n"
-        )
-        system_text = GUIDE + gemini_directives + "\n\nFeature catalog:\n" + catalog
+        system_text = GUIDE + _IN_APP_DIRECTIVES + "\n\nFeature catalog:\n" + catalog
 
         interaction_tools = [
             {
@@ -509,7 +721,7 @@ class Chat:
 
         for _ in range(MAX_TURNS):
             if self.cancel.is_set():
-                self.log.append(Entry("error", "Stopped."))
+                self.log.append(Entry("error", "Stopped.", ok=False))
                 return
 
             self._gemini_last = getattr(interaction, "id", None) or self._gemini_last
@@ -554,20 +766,22 @@ class Chat:
             results = []
             for fc in fc_steps:
                 if self.cancel.is_set():
-                    self.log.append(Entry("error", "Stopped."))
+                    self.log.append(Entry("error", "Stopped.", ok=False))
                     return
 
                 fc_name = getattr(fc, "name", None) or (fc.get("name") if isinstance(fc, dict) else "")
                 fc_args = getattr(fc, "arguments", None) or (fc.get("arguments") if isinstance(fc, dict) else {})
                 fc_id = getattr(fc, "id", None) or (fc.get("id") if isinstance(fc, dict) else "")
 
+                self._touch(fc_name)
                 content, ok = _call(fc_name, fc_args or {}, cancel=self.cancel)
                 if self.cancel.is_set():
-                    self.log.append(Entry("error", "Stopped."))
+                    self.log.append(Entry("error", "Stopped.", ok=False))
                     return
 
                 summary = content if isinstance(content, str) else "(image)"
-                self.log.append(Entry("tool", summary[:600], tool=fc_name, ok=ok))
+                self._record_tool(fc_name, summary[:600], ok=ok)
+                self._touch("Thinking")
 
                 if isinstance(content, list) and content and isinstance(content[0], dict) and content[0].get("type") == "image":
                     src = content[0].get("source", {})
@@ -581,6 +795,9 @@ class Chat:
                     "name": fc_name,
                     "result": fn_result,
                 })
+
+            for q_text in self._drain_queue():
+                results.append({"type": "text", "text": q_text})
 
             interaction = _safe_create(
                 model=model,

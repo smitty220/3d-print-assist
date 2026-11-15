@@ -157,7 +157,17 @@ export default function App() {
     }
     wasChatRunning.current = running
     if (!running) return
-    const t = setInterval(() => api.aiStatus().then(setAi).catch(() => {}), 1000)
+    let ticks = 0
+    const t = setInterval(() => {
+      ticks += 1
+      api.aiStatus().then(setAi).catch(() => {})
+      api.concepts().then(setConcepts).catch(() => {})
+      if (ticks % 3 === 0) {
+        api.tree().then(setTree).catch(() => {})
+        api.part().then(setPart).catch(() => {})
+        api.activity().then(setActivity).catch(() => {})
+      }
+    }, 1000)
     return () => clearInterval(t)
   }, [ai?.chat.running])
 
@@ -177,10 +187,53 @@ export default function App() {
     return { ...part, bodies: part.bodies.map((b) => ({ ...b, color: colors.has(b.id) ? colors.get(b.id)! : b.color })) }
   }, [part, bodyColors])
 
-  // A concept waiting for an answer opens by itself (until put aside); any concept opens from the AI panel.
+  // A concept waiting for an answer opens automatically (until put aside); any concept opens from the AI panel.
   const waitingConcept = concepts.find((c) => c.status === 'pending')
+  const prevWaitingId = useRef<string | null>(null)
+  useEffect(() => {
+    const wid = waitingConcept?.id ?? null
+    if (wid && wid !== prevWaitingId.current) {
+      setConceptHidden(null)
+      setConceptOpen(wid)
+    }
+    prevWaitingId.current = wid
+  }, [waitingConcept?.id])
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
     ?? (waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
+
+  const buildConcept = (c: typeof concepts[number], note: string) => {
+    const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
+    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept("${c.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
+    setConceptOpen(null)
+    if (rightPanel.collapsed) rightPanel.setCollapsed(false)
+    run(async () => {
+      if (c.status === 'pending') {
+        await api.answerConcept(c.id, 'approve', note)
+        api.concepts().then(setConcepts).catch(() => {})
+      }
+      if (ai?.mode === 'api' || !ai?.chat.running) {
+        if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+        await api.chat(msg)
+      }
+    }).then(() => api.aiStatus().then(setAi))
+  }
+
+  const answerConcept = (c: typeof concepts[number], decision: 'approve' | 'revise', note: string) => {
+    if (decision === 'approve') {
+      buildConcept(c, note)
+      return
+    }
+    run(async () => {
+      const answered = await api.answerConcept(c.id, decision, note)
+      if (!answered) return
+      setConceptOpen(null)
+      api.concepts().then(setConcepts).catch(() => {})
+      if (note.trim() && (ai?.mode === 'api' || !ai?.chat.running)) {
+        if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+        await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept("${c.id}") first, then propose a revised concept.`)
+      }
+    }).then(() => api.aiStatus().then(setAi))
+  }
 
   // ---------- File menu ----------
 
@@ -583,6 +636,17 @@ export default function App() {
           <ViewportPane part={shownPart} references={tree.references} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
             highlight={highlight} picking={dialog?.type === 'feature' && mode !== 'plates' ? picking : null} onPick={onPick} onUpdate={update}
             plateMode={mode === 'plates'} plate={tree.print_layout?.items && plateMesh?.plate === plateNo ? plateMesh : null}
+            hasDesign={concepts.length > 0}
+            canvasView={shownConcept ? 'design' : 'model'}
+            onCanvasView={(v) => {
+              if (v === 'design' && concepts[0]) {
+                setConceptOpen(concepts[0].id)
+                setConceptHidden(null)
+              } else {
+                if (shownConcept?.status === 'pending') setConceptHidden(shownConcept.id)
+                setConceptOpen(null)
+              }
+            }}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
             {file.recovery && (
               <div className="recovery" role="alert">
@@ -592,22 +656,11 @@ export default function App() {
               </div>
             )}
             {shownConcept && (
-              <ConceptView key={shownConcept.id} concept={shownConcept}
-                onAnswer={(decision, note) => {
-                  run(() => api.answerConcept(shownConcept.id, decision, note)).then((c) => {
-                    if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
-                  })
-                }}
-                onBuild={(note) => {
-                  const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
-                  const msg = `Build concept ${shownConcept.id} ("${shownConcept.title}"). Call look_at_concept("${shownConcept.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
-                  setConceptOpen(null)
-                  if (rightPanel.collapsed) rightPanel.setCollapsed(false)
-                  run(async () => {
-                    if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
-                    await api.chat(msg)
-                  }).then(() => api.aiStatus().then(setAi))
-                }}
+              <ConceptView key={shownConcept.id} concept={shownConcept} concepts={concepts}
+                onSelectConcept={(id) => { setConceptHidden(null); setConceptOpen(id) }}
+                hideAnswerInput={ai?.mode !== 'mcp'}
+                onAnswer={(decision, note) => answerConcept(shownConcept, decision, note)}
+                onBuild={(note) => buildConcept(shownConcept, note)}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
             )}
             {feature && spec && (
@@ -633,6 +686,12 @@ export default function App() {
         )}
 
         <AiPanel status={ai} activity={activity} images={images} context={context} concept={concepts[0] ?? null}
+          conceptOpen={Boolean(shownConcept)}
+          onAnswerConcept={(id, decision, note) => {
+            const c = concepts.find((x) => x.id === id)
+            if (c) answerConcept(c, decision, note)
+          }}
+          onBuildConcept={(c, note) => buildConcept(c, note)}
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onUploadImage={async (f) => {

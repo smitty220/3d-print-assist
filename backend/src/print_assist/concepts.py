@@ -69,12 +69,31 @@ class Concepts:
     def __init__(self, folder: Path):
         self.folder = folder
         self.items: list[Concept] = []
-        if folder.is_dir():
-            for p in sorted(folder.glob("K*.json"), key=lambda p: int(p.stem[1:]) if p.stem[1:].isdigit() else 0):
-                try:
-                    self.items.append(Concept.model_validate_json(p.read_text(encoding="utf-8")))
-                except ValueError:
-                    continue
+        self.sync()
+
+    def sync(self) -> None:
+        """Merge any concept files added or updated on disk (e.g. by another process)."""
+        if not self.folder.is_dir():
+            return
+        by_id = {c.id: c for c in self.items}
+        changed = False
+        for p in sorted(self.folder.glob("K*.json"), key=lambda p: int(p.stem[1:]) if p.stem[1:].isdigit() else 0):
+            try:
+                disk = Concept.model_validate_json(p.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            existing = by_id.get(disk.id)
+            if existing is None:
+                by_id[disk.id] = disk
+                changed = True
+            elif existing.status != "pending" and disk != existing:
+                by_id[disk.id] = disk
+                changed = True
+        if changed:
+            self.items = sorted(
+                by_id.values(),
+                key=lambda c: int(c.id[1:]) if c.id.startswith("K") and c.id[1:].isdigit() else 0,
+            )
 
     def _save(self, c: Concept) -> None:
         self.folder.mkdir(parents=True, exist_ok=True)

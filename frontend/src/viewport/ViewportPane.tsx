@@ -21,10 +21,13 @@ interface Props {
   onUpdate: () => void
   plateMode?: boolean // the Plates tab: show a print plate instead of the assembly
   plate?: PlateMesh | null // the plate to show (null while it loads)
+  hasDesign?: boolean
+  canvasView?: 'model' | 'design'
+  onCanvasView?: (v: 'model' | 'design') => void
   children?: React.ReactNode // dialogs float over the view
 }
 
-export function ViewportPane({ part, references, stale, failed, highlight, edgeMarks, picking, onPick, onUpdate, plateMode = false, plate = null, children }: Props) {
+export function ViewportPane({ part, references, stale, failed, highlight, edgeMarks, picking, onPick, onUpdate, plateMode = false, plate = null, hasDesign = false, canvasView = 'model', onCanvasView, children }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const viewer = useRef<Viewer | null>(null)
   const fitted = useRef(false)
@@ -118,6 +121,13 @@ export function ViewportPane({ part, references, stale, failed, highlight, edgeM
   return (
     <section className={`vp${dim ? ' stale' : ''}${picking ? ' picking' : ''}`} ref={ref} aria-label="3D view">
       <div className="vtools">
+        {hasDesign && onCanvasView && (
+          <div className="grp" role="group" aria-label="Canvas view">
+            <button aria-pressed={canvasView !== 'design'} onClick={() => onCanvasView('model')}>Model</button>
+            <button aria-pressed={canvasView === 'design'} onClick={() => onCanvasView('design')}>Design</button>
+          </div>
+        )}
+        <span className="spacer" />
         <div className="grp">
           <button onClick={view('iso')}>Iso</button><button onClick={view('front')}>Front</button>
           <button onClick={view('top')}>Top</button><button onClick={view('right')}>Right</button>

@@ -67,6 +67,8 @@ def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfi
         m.add_meta_data("", "Title", title or "3D Print Assist design", "xs:string", False)
         m.add_meta_data("", "Application", "3D Print Assist", "xs:string", False)
         m.write(str(path))
+        if len(shapes) > 1:
+            _group_3mf_components(path, title or "3D Print Assist design")
     elif fmt == "stl":
         whole = shapes[0] if len(shapes) == 1 else Compound(children=shapes)
         if not export_stl(whole, str(path), tolerance=LINEAR, angular_tolerance=ANGULAR):
@@ -77,6 +79,61 @@ def export(parts: dict[str, Shape], names: dict[str, str], printer: PrinterProfi
         if not export_step(whole, str(path)):
             raise ExportError("STEP export failed")
     return path
+
+
+def _group_3mf_components(path: Path, title: str) -> None:
+    """Wrap multiple top-level `<build><item>`s into one multi-component `<object>` so slicers (e.g. PrusaSlicer)
+    treat all bodies as one multi-material assembly and don't drop elevated inlays/parts down to Z = 0."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    ns_core = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+    ns_prod = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06"
+    ET.register_namespace("", ns_core)
+    ET.register_namespace("p", ns_prod)
+    ET.register_namespace("m", "http://schemas.microsoft.com/3dmanufacturing/material/2015/02")
+
+    with zipfile.ZipFile(path, "r") as zin:
+        entries = [(info, zin.read(info.filename)) for info in zin.infolist()]
+
+    updated = False
+    out_entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    for info, data in entries:
+        if info.filename != "3D/3dmodel.model":
+            out_entries.append((info, data))
+            continue
+        root = ET.fromstring(data)
+        resources = root.find(f"{{{ns_core}}}resources")
+        build = root.find(f"{{{ns_core}}}build")
+        if resources is None or build is None:
+            out_entries.append((info, data))
+            continue
+        items = list(build.findall(f"{{{ns_core}}}item"))
+        if len(items) < 2:
+            out_entries.append((info, data))
+            continue
+        max_id = max(
+            (int(el.attrib["id"]) for el in resources.findall(f"{{{ns_core}}}object") if el.attrib.get("id", "").isdigit()),
+            default=0,
+        )
+        asm_id = str(max_id + 1)
+        asm = ET.SubElement(resources, f"{{{ns_core}}}object", {"id": asm_id, "name": title, "type": "model"})
+        comps = ET.SubElement(asm, f"{{{ns_core}}}components")
+        for it in items:
+            attrs = {"objectid": it.attrib["objectid"]}
+            if "transform" in it.attrib:
+                attrs["transform"] = it.attrib["transform"]
+            ET.SubElement(comps, f"{{{ns_core}}}component", attrs)
+            build.remove(it)
+        ET.SubElement(build, f"{{{ns_core}}}item", {"objectid": asm_id})
+        data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        updated = True
+        out_entries.append((info, data))
+
+    if updated:
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+            for info, data in out_entries:
+                zout.writestr(info.filename, data)
 
 
 def _bambu(ids: list[str], shapes: list[Shape], design: Design, printer: PrinterProfile, template: dict, path: Path,

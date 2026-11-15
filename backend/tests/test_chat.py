@@ -460,3 +460,117 @@ def test_agy_cli_chat_turn(monkeypatch):
     ch.send("fillet it", c, model="", wait=True)
     assert "--conversation" in calls[1]
     assert "conv-123" in calls[1]
+    assert "--disable-slash-commands" in calls[0]
+    assert "--print-timeout" in calls[0] and "10m" in calls[0]
+    assert "NEVER" in calls[0][calls[0].index("-p") + 1]
+    assert "System rule" in calls[1][calls[1].index("-p") + 1]
+
+
+def test_in_app_tools_exclude_wait_for_concept_and_clean_agy_errors(monkeypatch, tmp_path):
+    import io
+    from pathlib import Path
+    from print_assist.ai import chat as ai_chat, client as ai_client
+
+    tool_names = {t["name"] for t in ai_chat._tools()}
+    assert "wait_for_concept" not in tool_names
+    assert "propose_concept" in tool_names
+
+    class TimeoutProc:
+        returncode = 1
+        pid = None
+
+        def __init__(self, cmd, **kw):
+            self._kw = kw
+            ev = json.dumps({
+                "event": "result",
+                "result": {
+                    "status": "ERROR",
+                    "error": (
+                        "print timeout after 30m0s while the agent was waiting on 1 background task(s); "
+                        "the response may be incomplete; terminated ecf6eeec/task-106 (python -c 'wait_for_concept')"
+                    ),
+                },
+            }) + "\n"
+            self.stdout = io.StringIO(ev)
+            self.stderr = io.StringIO("")
+
+        def poll(self):
+            return 1
+
+        def wait(self, timeout=None):
+            return 1
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    seen_kw = []
+    monkeypatch.setenv("PRINT_ASSIST_DATA", str(tmp_path))
+    monkeypatch.setattr(ai_chat.subprocess, "Popen", lambda cmd, **kw: seen_kw.append(kw) or TimeoutProc(cmd, **kw))
+    monkeypatch.setattr(ai_client, "find_agy_bin", lambda: "/fake/agy")
+
+    ch = Chat()
+    ch.send("design something", ai_client.make_client("agy"), model="", wait=True)
+    assert Path(seen_kw[0]["cwd"]).name == "ai_workspace"
+    assert ch.log[-1].role == "error" and ch.log[-1].ok is False
+    assert "task-106" not in ch.log[-1].text
+    assert "automatically cleaned up" in ch.log[-1].text
+    assert ch._active_proc is None
+
+
+def test_agy_idle_watchdog_and_stop_kill_stalled_subprocess(monkeypatch, tmp_path):
+    import io
+    import threading
+    from print_assist.ai import chat as ai_chat, client as ai_client
+
+    killed = []
+
+    class HangingProc:
+        returncode = -15
+        pid = None
+
+        def __init__(self):
+            self.done = threading.Event()
+            self.stdout = self
+            self.stderr = io.StringIO("")
+
+        def __iter__(self):
+            self.done.wait(timeout=5)
+            return iter(())
+
+        def poll(self):
+            return -15 if self.done.is_set() else None
+
+        def wait(self, timeout=None):
+            self.done.wait(timeout=timeout or 1)
+            return -15
+
+        def terminate(self):
+            killed.append("terminate")
+            self.done.set()
+
+        def kill(self):
+            killed.append("kill")
+            self.done.set()
+
+    monkeypatch.setenv("PRINT_ASSIST_DATA", str(tmp_path))
+    monkeypatch.setattr(ai_chat, "AGY_IDLE_TIMEOUT", 0.3)
+    monkeypatch.setattr(ai_chat.subprocess, "Popen", lambda cmd, **kw: HangingProc())
+    monkeypatch.setattr(ai_client, "find_agy_bin", lambda: "/fake/agy")
+
+    ch = Chat()
+    ch.send("hang", ai_client.make_client("agy"), model="", wait=True)
+    assert "terminate" in killed
+    assert ch.log[-1].role == "error" and "inactivity" in ch.log[-1].text
+
+    killed.clear()
+    monkeypatch.setattr(ai_chat, "AGY_IDLE_TIMEOUT", 30)
+    ch2 = Chat()
+    ch2.send("stop me", ai_client.make_client("agy"), model="", wait=False)
+    threading.Timer(0.15, ch2.stop).start()
+    ch2._thread.join(timeout=5)
+    assert "terminate" in killed
+    assert not ch2.running
+    assert ch2.log[-1].role == "error" and ch2.log[-1].text == "Stopped."

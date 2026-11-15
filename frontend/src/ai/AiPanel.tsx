@@ -15,6 +15,9 @@ interface Props {
   images: ImageInfo[]
   context: string | null
   concept: Concept | null // the newest
+  conceptOpen?: boolean
+  onAnswerConcept?: (id: string, decision: 'approve' | 'revise', note: string) => void
+  onBuildConcept?: (concept: Concept, note: string) => void
   layout: PanelLayout
   zIndex?: number
   onFocusPanel?: () => void
@@ -62,8 +65,9 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, context, concept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
+  const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
   const [rawTools, setRawTools] = useState<boolean>(() => {
     try { return localStorage.getItem('pa.rawTools') === '1' } catch { return false }
@@ -99,7 +103,19 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
   const send = () => {
     const t = text.trim()
     if (!t) return
+    if (pendingConcept && onAnswerConcept) {
+      const note = attached.length
+        ? `${t}\n\n(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`
+        : t
+      onAnswerConcept(pendingConcept.id, 'revise', note)
+      setText('')
+      setAttached([])
+      return
+    }
     const parts = [t]
+    if (concept && (conceptOpen || concept.status === 'revise')) {
+      parts.push(`(Active concept ${concept.id} "${concept.title}" [${concept.status}] — call look_at_concept("${concept.id}") to inspect its spec and drawing.)`)
+    }
     if (attached.length) parts.push(`(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`)
     if (context) parts.push(`(The user has ${context} selected.)`)
     onSend(parts.join('\n\n'))
@@ -253,7 +269,7 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
         )}
       </div>
       {context && <div className="ctx">Context: {context}</div>}
-      {concept && (
+      {mode === 'mcp' && concept && !conceptOpen && (
         <div className="ccard">
           <div className="row">
             <b>{concept.id} · {concept.title}</b><span className="spacer" />
@@ -372,19 +388,76 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
                     : <div>{e.text}</div>}
               </div>
             ))}
+            {concept && (
+              <div className="entry assistant" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 600, fontSize: 12.5 }}>{concept.id} · {concept.title}</span>
+                <span className={`chip cstat ${concept.status}`}>
+                  {concept.status === 'pending' ? 'Waiting for you' : concept.status === 'approved' ? 'Approved' : 'Changes asked'}
+                </span>
+                <span className="spacer" />
+                <button className="btn sm" onClick={() => onOpenConcept(concept.id)}>
+                  {conceptOpen ? 'Viewing design' : 'View design'}
+                </button>
+                {concept.status === 'pending' && onAnswerConcept ? (
+                  <button className="btn primary sm" onClick={() => { onAnswerConcept(concept.id, 'approve', text.trim()); setText('') }}>
+                    Approve & build
+                  </button>
+                ) : onBuildConcept ? (
+                  <button className="btn primary sm" disabled={chat?.running} onClick={() => { onBuildConcept(concept, text.trim()); setText('') }}>
+                    {concept.status === 'approved' ? 'Build' : 'Approve & build'}
+                  </button>
+                ) : null}
+              </div>
+            )}
             {chat?.running && (() => {
-              const lastTool = !rawTools ? [...(chat.log ?? [])].reverse().find((e) => e.role === 'tool')?.tool : null
-              const hint = lastTool ? TOOL_LABELS[lastTool] ?? lastTool : null
-              return <div className="entry assistant working">{hint ? `Working (${hint})…` : 'Working…'}</div>
+              const toolEntries = (chat.log ?? []).filter((e) => e.role === 'tool')
+              const lastEntry = toolEntries.at(-1)
+              const activeKey = chat.current_step || lastEntry?.tool || null
+              const waitingOnUser = activeKey === 'wait_for_concept' || Boolean(pendingConcept && !chat.current_step)
+              const activeLabel = waitingOnUser
+                ? `Waiting for your approval${pendingConcept ? ` on ${pendingConcept.id}` : ''}`
+                : (activeKey ? (TOOL_LABELS[activeKey] ?? activeKey) : 'Thinking')
+              const elapsed = chat.elapsed_s ?? 0
+              const idle = chat.idle_s ?? 0
+              const steps = chat.steps ?? toolEntries.length
+              const fmtTime = (s: number) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
+              const stalled = !waitingOnUser && idle >= 30
+              return (
+                <div className={`entry assistant working${stalled ? ' stalled' : ''}`}>
+                  <div className="work-row">
+                    <span className={`work-dot${stalled ? ' stalled' : ''}`} aria-hidden="true" />
+                    <b>{waitingOnUser ? activeLabel : `${activeLabel}…`}</b>
+                    <span className="work-meta">
+                      {steps > 0 ? `Step ${steps} · ` : ''}{fmtTime(elapsed)}
+                      {waitingOnUser
+                        ? ' · click Approve & build or reply below'
+                        : (idle >= 5 ? ` · ${stalled ? `no activity ${fmtTime(idle)}` : `active ${fmtTime(idle)} ago`}` : ' · active')}
+                      {(chat.queued ?? 0) > 0 ? ` · ${chat.queued} queued` : ''}
+                    </span>
+                  </div>
+                  {lastEntry && !rawTools && (
+                    <div className="work-last">
+                      {lastEntry.ok ? '✓' : '✗'} {TOOL_LABELS[lastEntry.tool ?? ''] ?? lastEntry.tool}
+                      {lastEntry.text ? `: ${lastEntry.text.replace(/\s+/g, ' ').slice(0, 90)}` : ''}
+                    </div>
+                  )}
+                </div>
+              )
             })()}
             <div ref={end} />
           </div>
           {refStrip}
           <div className="aifoot col">
-            <label htmlFor="ai-msg" className="nm">Ask for a change</label>
+            <label htmlFor="ai-msg" className="nm">
+              {pendingConcept ? `Reply to concept ${pendingConcept.id} (or click Approve & build above)` : 'Ask for a change'}
+            </label>
             <div className="row">
-              <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={chat?.running}
-                placeholder="e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)"
+              <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)}
+                placeholder={pendingConcept
+                  ? 'Ask for changes to this concept, or click Approve & build above…'
+                  : chat?.running
+                    ? 'Send follow-up instructions or attach photos while the AI works…'
+                    : 'e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)'}
                 onPaste={(e) => {
                   const files = e.clipboardData?.files
                   if (files?.length && Array.from(files).some((f) => f.type.startsWith('image/'))) {
@@ -393,9 +466,17 @@ export function AiPanel({ status, activity, images, context, concept, layout, zI
                   }
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }} />
-              {chat?.running
-                ? <button className="btn" onClick={onCancel}>Stop</button>
-                : <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}><Icon name="send" size={18} width={2} /></button>}
+              {chat?.running ? (
+                <div className="col" style={{ gap: 4 }}>
+                  <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}
+                    title={pendingConcept ? 'Send feedback on this concept' : 'Send follow-up instructions (queued if AI is busy)'}>
+                    <Icon name="send" size={18} width={2} />
+                  </button>
+                  <button className="btn sm" onClick={onCancel}>Stop</button>
+                </div>
+              ) : (
+                <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}><Icon name="send" size={18} width={2} /></button>
+              )}
             </div>
             <div className="row nm">
               {chat ? `${Math.round(((chat.tokens.input ?? 0) + (chat.tokens.output ?? 0)) / 1000)}k tokens` : ''}

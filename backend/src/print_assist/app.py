@@ -10,6 +10,7 @@ MCP server, "claude" for the in-app chat); changes by anyone but the user are bu
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 from contextlib import asynccontextmanager
@@ -35,8 +36,11 @@ from .project import Projects, save_user_prefs
 async def _lifespan(_: FastAPI):
     from print_assist_mcp.server import mcp as _mcp
 
-    async with _mcp.session_manager.run():
-        yield
+    try:
+        async with _mcp.session_manager.run():
+            yield
+    finally:
+        _stop_all_chats()
 
 
 app = FastAPI(title="3D Print Assist", version="0.2.0", lifespan=_lifespan)
@@ -79,9 +83,11 @@ def project():
 def reset(root=None) -> None:
     """Forget the open design (tests point the registry at a temporary folder)."""
     global _projects, _ws, _closed
+    _stop_all_chats()
     _projects = Projects(root) if root is not None else None
     _ws = None
     _closed = False
+    _chats.clear()
 
 
 def _switch(w: Workspace | None) -> None:
@@ -605,6 +611,7 @@ def list_concepts(drawings: bool = True) -> list[dict]:
     """The design's concepts, newest first; `drawings=false` leaves out the SVGs."""
     from .images import inline
 
+    ws().concepts.sync()
     out = [c.model_dump() for c in reversed(ws().concepts.items)]
     for c in out:
         if drawings:
@@ -617,6 +624,9 @@ def list_concepts(drawings: bool = True) -> list[dict]:
 @app.get("/api/concepts/{cid}")
 def get_concept(cid: str) -> dict:
     c = ws().concepts.get(cid)
+    if c is None:
+        ws().concepts.sync()
+        c = ws().concepts.get(cid)
     if c is None:
         raise HTTPException(404, f"No concept {cid!r}")
     from .images import inline
@@ -1205,13 +1215,32 @@ def ai_guide() -> dict:
 # ---------------------------------------------------------------- AI chat (the panel's API mode)
 
 
+_chats: dict[str, Any] = {}
+
+
+def _stop_all_chats() -> None:
+    """Terminate all active in-app AI turns and their subprocesses cleanly."""
+    for c in list(_chats.values()):
+        stop_fn = getattr(c, "stop", None)
+        if callable(stop_fn):
+            stop_fn()
+        else:
+            c.cancel.set()
+
+
+atexit.register(_stop_all_chats)
+
+
 def chat():
     w = ws()
-    if not hasattr(w, "chat"):
+    slug = w.project.slug
+    c = _chats.get(slug)
+    if c is None:
         from .ai.chat import Chat
 
-        w.chat = Chat()
-    return w.chat
+        c = Chat()
+        _chats[slug] = c
+    return c
 
 
 AVAILABLE_MODELS = {
@@ -1279,7 +1308,7 @@ def ai_chat(body: ChatIn) -> dict:
 
 @app.post("/api/ai/chat/cancel")
 def ai_chat_cancel() -> dict:
-    chat().cancel.set()
+    chat().stop()
     ws().concepts.dismiss_pending("cancelled by user")
     return chat().to_dict()
 
