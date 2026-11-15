@@ -82,6 +82,7 @@ def reset(root=None) -> None:
     _projects = Projects(root) if root is not None else None
     _ws = None
     _closed = False
+    _chats.clear()
 
 
 def _switch(w: Workspace | None) -> None:
@@ -1209,13 +1210,19 @@ def ai_guide() -> dict:
 # ---------------------------------------------------------------- AI chat (the panel's API mode)
 
 
+_chats: dict[str, Any] = {}
+
+
 def chat():
     w = ws()
-    if not hasattr(w, "chat"):
+    slug = w.project.slug
+    c = _chats.get(slug)
+    if c is None:
         from .ai.chat import Chat
 
-        w.chat = Chat()
-    return w.chat
+        c = Chat()
+        _chats[slug] = c
+    return c
 
 
 AVAILABLE_MODELS = {

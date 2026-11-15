@@ -157,9 +157,16 @@ export default function App() {
     }
     wasChatRunning.current = running
     if (!running) return
+    let ticks = 0
     const t = setInterval(() => {
+      ticks += 1
       api.aiStatus().then(setAi).catch(() => {})
       api.concepts().then(setConcepts).catch(() => {})
+      if (ticks % 3 === 0) {
+        api.tree().then(setTree).catch(() => {})
+        api.part().then(setPart).catch(() => {})
+        api.activity().then(setActivity).catch(() => {})
+      }
     }, 1000)
     return () => clearInterval(t)
   }, [ai?.chat.running])
