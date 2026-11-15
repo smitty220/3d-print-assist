@@ -194,6 +194,40 @@ export default function App() {
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
     ?? (ai?.mode === 'mcp' && waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
 
+  const buildConcept = (c: typeof concepts[number], note: string) => {
+    const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
+    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept("${c.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
+    setConceptOpen(null)
+    if (rightPanel.collapsed) rightPanel.setCollapsed(false)
+    run(async () => {
+      if (c.status === 'pending') {
+        await api.answerConcept(c.id, 'approve', note)
+        api.concepts().then(setConcepts).catch(() => {})
+      }
+      if (!ai?.chat.running) {
+        if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+        await api.chat(msg)
+      }
+    }).then(() => api.aiStatus().then(setAi))
+  }
+
+  const answerConcept = (c: typeof concepts[number], decision: 'approve' | 'revise', note: string) => {
+    if (decision === 'approve') {
+      buildConcept(c, note)
+      return
+    }
+    run(async () => {
+      const answered = await api.answerConcept(c.id, decision, note)
+      if (!answered) return
+      setConceptOpen(null)
+      api.concepts().then(setConcepts).catch(() => {})
+      if (!ai?.chat.running && note.trim()) {
+        if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
+        await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept("${c.id}") first, then propose a revised concept.`)
+      }
+    }).then(() => api.aiStatus().then(setAi))
+  }
+
   // ---------- File menu ----------
 
   /** Run `fn` once unsaved changes are dealt with (Save / Don't save / Cancel). */
@@ -616,21 +650,8 @@ export default function App() {
             )}
             {shownConcept && (
               <ConceptView key={shownConcept.id} concept={shownConcept} hideAnswerInput={ai?.mode !== 'mcp'}
-                onAnswer={(decision, note) => {
-                  run(() => api.answerConcept(shownConcept.id, decision, note)).then((c) => {
-                    if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
-                  })
-                }}
-                onBuild={(note) => {
-                  const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
-                  const msg = `Build concept ${shownConcept.id} ("${shownConcept.title}"). Call look_at_concept("${shownConcept.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
-                  setConceptOpen(null)
-                  if (rightPanel.collapsed) rightPanel.setCollapsed(false)
-                  run(async () => {
-                    if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
-                    await api.chat(msg)
-                  }).then(() => api.aiStatus().then(setAi))
-                }}
+                onAnswer={(decision, note) => answerConcept(shownConcept, decision, note)}
+                onBuild={(note) => buildConcept(shownConcept, note)}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
             )}
             {feature && spec && (
@@ -658,19 +679,10 @@ export default function App() {
         <AiPanel status={ai} activity={activity} images={images} context={context} concept={concepts[0] ?? null}
           conceptOpen={Boolean(shownConcept)}
           onAnswerConcept={(id, decision, note) => {
-            run(() => api.answerConcept(id, decision, note)).then((c) => {
-              if (c) { setConceptOpen(null); api.concepts().then(setConcepts) }
-            })
+            const c = concepts.find((x) => x.id === id)
+            if (c) answerConcept(c, decision, note)
           }}
-          onBuildConcept={(c, note) => {
-            const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
-            const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept("${c.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
-            setConceptOpen(null)
-            run(async () => {
-              if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
-              await api.chat(msg)
-            }).then(() => api.aiStatus().then(setAi))
-          }}
+          onBuildConcept={(c, note) => buildConcept(c, note)}
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
           onUploadImage={async (f) => {

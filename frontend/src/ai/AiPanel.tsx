@@ -401,7 +401,7 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
                   </button>
                 ) : onBuildConcept ? (
                   <button className="btn primary sm" disabled={chat?.running} onClick={() => { onBuildConcept(concept, text.trim()); setText('') }}>
-                    Approve & build
+                    {concept.status === 'approved' ? 'Build' : 'Approve & build'}
                   </button>
                 ) : null}
               </div>
