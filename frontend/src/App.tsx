@@ -187,19 +187,19 @@ export default function App() {
     return { ...part, bodies: part.bodies.map((b) => ({ ...b, color: colors.has(b.id) ? colors.get(b.id)! : b.color })) }
   }, [part, bodyColors])
 
-  // A concept waiting for an answer opens by itself (until put aside); any concept opens from the AI panel.
+  // A concept waiting for an answer opens automatically (until put aside); any concept opens from the AI panel.
   const waitingConcept = concepts.find((c) => c.status === 'pending')
   const prevWaitingId = useRef<string | null>(null)
   useEffect(() => {
     const wid = waitingConcept?.id ?? null
     if (wid && wid !== prevWaitingId.current) {
       setConceptHidden(null)
-      if (conceptOpen) setConceptOpen(wid)
+      setConceptOpen(wid)
     }
     prevWaitingId.current = wid
-  }, [waitingConcept?.id, conceptOpen])
+  }, [waitingConcept?.id])
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
-    ?? (ai?.mode === 'mcp' && waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
+    ?? (waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
 
   const buildConcept = (c: typeof concepts[number], note: string) => {
     const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
@@ -656,7 +656,9 @@ export default function App() {
               </div>
             )}
             {shownConcept && (
-              <ConceptView key={shownConcept.id} concept={shownConcept} hideAnswerInput={ai?.mode !== 'mcp'}
+              <ConceptView key={shownConcept.id} concept={shownConcept} concepts={concepts}
+                onSelectConcept={(id) => { setConceptHidden(null); setConceptOpen(id) }}
+                hideAnswerInput={ai?.mode !== 'mcp'}
                 onAnswer={(decision, note) => answerConcept(shownConcept, decision, note)}
                 onBuild={(note) => buildConcept(shownConcept, note)}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />

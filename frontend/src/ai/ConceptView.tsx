@@ -9,13 +9,15 @@ const STATUS = { pending: 'Waiting for you', approved: 'Approved', revise: 'Chan
 
 interface Props {
   concept: Concept
+  concepts?: Concept[]
+  onSelectConcept?: (id: string) => void
   hideAnswerInput?: boolean
   onAnswer: (decision: 'approve' | 'revise', note: string) => void
   onBuild?: (note: string) => void
   onClose: () => void
 }
 
-export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, onClose }: Props) {
+export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerInput, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState(false)
   const [split, setSplit] = useState(0.62) // fraction of cbody height for Drawing (0 = spec full, 1 = drawing full)
@@ -59,7 +61,20 @@ export function ConceptView({ concept: c, hideAnswerInput, onAnswer, onBuild, on
   return (
     <section className="concept" role="dialog" aria-label={`Concept ${c.id}: ${c.title}`}>
       <div className="dhead">
-        <h2>{c.id} · {c.title}</h2>
+        {concepts && concepts.length > 1 && onSelectConcept ? (
+          <select
+            aria-label="Select concept"
+            value={c.id}
+            onChange={(e) => onSelectConcept(e.target.value)}
+            style={{ fontSize: 13, fontWeight: 600, padding: '2px 6px', maxWidth: 420 }}
+          >
+            {concepts.map((item) => (
+              <option key={item.id} value={item.id}>{item.id} · {item.title} ({STATUS[item.status]})</option>
+            ))}
+          </select>
+        ) : (
+          <h2>{c.id} · {c.title}</h2>
+        )}
         <span className={`chip cstat ${c.status}`}>{STATUS[c.status]}</span>
         <span className="spacer" />
         <button className="btn" onClick={fullScreen} title="Show the drawing full screen (Esc to come back; or double-click the drawing)">⛶ Full screen</button>
