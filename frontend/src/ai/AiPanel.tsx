@@ -407,9 +407,33 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
               </div>
             )}
             {chat?.running && (() => {
-              const lastTool = !rawTools ? [...(chat.log ?? [])].reverse().find((e) => e.role === 'tool')?.tool : null
-              const hint = lastTool ? TOOL_LABELS[lastTool] ?? lastTool : null
-              return <div className="entry assistant working">{hint ? `Working (${hint})…` : 'Working…'}</div>
+              const toolEntries = (chat.log ?? []).filter((e) => e.role === 'tool')
+              const lastEntry = toolEntries.at(-1)
+              const activeKey = chat.current_step || lastEntry?.tool || null
+              const activeLabel = activeKey ? (TOOL_LABELS[activeKey] ?? activeKey) : 'Thinking'
+              const elapsed = chat.elapsed_s ?? 0
+              const idle = chat.idle_s ?? 0
+              const steps = chat.steps ?? toolEntries.length
+              const fmtTime = (s: number) => s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`
+              const stalled = idle >= 30
+              return (
+                <div className={`entry assistant working${stalled ? ' stalled' : ''}`}>
+                  <div className="work-row">
+                    <span className={`work-dot${stalled ? ' stalled' : ''}`} aria-hidden="true" />
+                    <b>{activeLabel}…</b>
+                    <span className="work-meta">
+                      {steps > 0 ? `Step ${steps} · ` : ''}{fmtTime(elapsed)}
+                      {idle >= 5 ? ` · ${stalled ? `no activity ${fmtTime(idle)}` : `active ${fmtTime(idle)} ago`}` : ' · active'}
+                    </span>
+                  </div>
+                  {lastEntry && !rawTools && (
+                    <div className="work-last">
+                      {lastEntry.ok ? '✓' : '✗'} {TOOL_LABELS[lastEntry.tool ?? ''] ?? lastEntry.tool}
+                      {lastEntry.text ? `: ${lastEntry.text.replace(/\s+/g, ' ').slice(0, 90)}` : ''}
+                    </div>
+                  )}
+                </div>
+              )
             })()}
             <div ref={end} />
           </div>

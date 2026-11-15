@@ -192,7 +192,14 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .entry.tool .who, .entry .who { font-family: var(--mono); font-size: 11px; color: var(--sketch); margin-right: 6px; }
 .entry .when { font-size: 11px; color: var(--muted); }
 .entry.error { border-color: var(--bad); }
-.entry.working { color: var(--muted); }
+.entry.working { color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.entry.working.stalled { border-color: var(--warn); }
+.work-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; color: var(--fg); font-size: 12.5px; }
+.work-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; animation: work-pulse 1.4s ease-in-out infinite; }
+.work-dot.stalled { background: var(--warn); animation: none; }
+@keyframes work-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.8); } }
+.work-meta { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.work-last { font-size: 11.5px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .entry .md { white-space: normal; line-height: 1.45; }
 .entry .md > :first-child { margin-top: 0; }
 .entry .md > :last-child { margin-bottom: 0; }

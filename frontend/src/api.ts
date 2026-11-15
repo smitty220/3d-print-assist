@@ -277,7 +277,15 @@ export interface AiStatus {
   settings_provider?: string
   settings_model?: string
   available_models?: Record<string, ModelOption[]>
-  chat: { running: boolean; log: ChatEntry[]; tokens: Record<string, number> }
+  chat: {
+    running: boolean
+    log: ChatEntry[]
+    tokens: Record<string, number>
+    elapsed_s?: number
+    idle_s?: number
+    current_step?: string | null
+    steps?: number
+  }
 }
 
 export interface FontInfo { name: string; styles: string[]; license: string; source: string }

@@ -197,17 +197,47 @@ class Chat:
         self.running = False
         self.cancel = threading.Event()
         self.tokens = {"input": 0, "output": 0, "cache_read": 0}
+        self.started_at: float | None = None
+        self.last_event_at: float | None = None
+        self.current_step: str | None = None
+        self.steps = 0
         self._thread: threading.Thread | None = None
         self._gemini_last: str | None = None  # Gemini keeps the conversation server side; continue from here
         self._agy_conv: str | None = None  # Antigravity CLI conversation_id
 
     def to_dict(self) -> dict:
-        return {"running": self.running, "log": [asdict(e) for e in self.log], "tokens": dict(self.tokens)}
+        now = time.time()
+        elapsed_s = max(0, int(now - self.started_at)) if self.running and self.started_at else 0
+        idle_s = max(0, int(now - self.last_event_at)) if self.running and self.last_event_at else 0
+        return {
+            "running": self.running,
+            "log": [asdict(e) for e in self.log],
+            "tokens": dict(self.tokens),
+            "elapsed_s": elapsed_s,
+            "idle_s": idle_s,
+            "current_step": self.current_step,
+            "steps": self.steps,
+        }
+
+    def _touch(self, step: str | None = None) -> None:
+        self.last_event_at = time.time()
+        if step is not None:
+            self.current_step = step
+
+    def _record_tool(self, tool: str, text: str, ok: bool = True) -> None:
+        self.steps += 1
+        self.last_event_at = time.time()
+        self.current_step = None
+        self.log.append(Entry("tool", text, tool=tool, ok=ok))
 
     def reset(self) -> None:
         if self.running:
             raise RuntimeError("the AI is still working; stop it first")
         self.messages, self.log = [], []
+        self.started_at = None
+        self.last_event_at = None
+        self.current_step = None
+        self.steps = 0
         self._gemini_last = None
         self._agy_conv = None
 
@@ -215,6 +245,11 @@ class Chat:
         if self.running:
             raise RuntimeError("the AI is still working on the last message")
         self.running = True
+        now = time.time()
+        self.started_at = now
+        self.last_event_at = now
+        self.current_step = "Thinking"
+        self.steps = 0
         self.cancel.clear()
         self.log.append(Entry("user", text))
         self.messages.append({"role": "user", "content": text})
@@ -247,6 +282,7 @@ class Chat:
             self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
         finally:
             self.running = False
+            self.current_step = None
 
     def _run_agy(self, client: AgyClient, model: str) -> None:
         user_text = str(self.messages[-1]["content"])
@@ -336,10 +372,11 @@ class Chat:
                 return
             if ev.get("conversation_id"):
                 self._agy_conv = str(ev["conversation_id"])
+            self._touch()
             kind = ev.get("event")
             if kind == "step_update":
                 su = ev.get("step_update") or {}
-                if su.get("state") == "DONE" and su.get("step_type") == "tool":
+                if su.get("step_type") == "tool":
                     info = su.get("tool_info") or {}
                     tname = su.get("tool_name") or "tool"
                     params = info.get("parameters") or {}
@@ -347,12 +384,25 @@ class Chat:
                         tname = str(params["ToolName"])
                     elif tname == "read_file":
                         return  # skip noisy MCP schema reads
-                    out = str(info.get("output") or "").strip()
-                    self.log.append(Entry("tool", out[:400], tool=tname, ok=True))
-                elif su.get("state") == "DONE" and su.get("step_type") == "agent_response":
-                    td = (su.get("text_delta") or "").strip()
-                    if td:
-                        last_text = td
+                    if su.get("state") == "DONE":
+                        out = str(info.get("output") or "").strip()
+                        ok = not (
+                            out.startswith("Error")
+                            or '"error"' in out[:200]
+                            or "Refused:" in out[:200]
+                            or "409" in out[:120]
+                        )
+                        self._record_tool(tname, out[:400], ok=ok)
+                    else:
+                        self._touch(tname)
+                elif su.get("step_type") == "agent_response":
+                    if su.get("state") == "DONE":
+                        td = (su.get("text_delta") or "").strip()
+                        if td:
+                            last_text = td
+                        self._touch("Thinking")
+                    else:
+                        self._touch("Writing response")
             elif kind == "result":
                 result_data = ev.get("result") or {}
 
@@ -441,10 +491,12 @@ class Chat:
                 return
             results = []
             for b in uses:
+                self._touch(b.name)
                 content, ok = _call(b.name, b.input or {}, cancel=self.cancel)
                 summary = content if isinstance(content, str) else "(image)"
-                self.log.append(Entry("tool", summary[:600], tool=b.name, ok=ok))
+                self._record_tool(b.name, summary[:600], ok=ok)
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": content, "is_error": not ok})
+            self._touch("Thinking")
             self.messages.append({"role": "user", "content": results})
         self.log.append(Entry("error", "Stopped: too many steps in one turn.", ok=False))
 
@@ -573,13 +625,15 @@ class Chat:
                 fc_args = getattr(fc, "arguments", None) or (fc.get("arguments") if isinstance(fc, dict) else {})
                 fc_id = getattr(fc, "id", None) or (fc.get("id") if isinstance(fc, dict) else "")
 
+                self._touch(fc_name)
                 content, ok = _call(fc_name, fc_args or {}, cancel=self.cancel)
                 if self.cancel.is_set():
                     self.log.append(Entry("error", "Stopped."))
                     return
 
                 summary = content if isinstance(content, str) else "(image)"
-                self.log.append(Entry("tool", summary[:600], tool=fc_name, ok=ok))
+                self._record_tool(fc_name, summary[:600], ok=ok)
+                self._touch("Thinking")
 
                 if isinstance(content, list) and content and isinstance(content[0], dict) and content[0].get("type") == "image":
                     src = content[0].get("source", {})
