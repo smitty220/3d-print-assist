@@ -201,6 +201,8 @@ class Chat:
         self.last_event_at: float | None = None
         self.current_step: str | None = None
         self.steps = 0
+        self._lock = threading.Lock()
+        self._queue: list[tuple[str, Any, str]] = []
         self._thread: threading.Thread | None = None
         self._gemini_last: str | None = None  # Gemini keeps the conversation server side; continue from here
         self._agy_conv: str | None = None  # Antigravity CLI conversation_id
@@ -209,6 +211,8 @@ class Chat:
         now = time.time()
         elapsed_s = max(0, int(now - self.started_at)) if self.running and self.started_at else 0
         idle_s = max(0, int(now - self.last_event_at)) if self.running and self.last_event_at else 0
+        with self._lock:
+            queued = len(self._queue)
         return {
             "running": self.running,
             "log": [asdict(e) for e in self.log],
@@ -217,6 +221,7 @@ class Chat:
             "idle_s": idle_s,
             "current_step": self.current_step,
             "steps": self.steps,
+            "queued": queued,
         }
 
     def _touch(self, step: str | None = None) -> None:
@@ -233,6 +238,8 @@ class Chat:
     def reset(self) -> None:
         if self.running:
             raise RuntimeError("the AI is still working; stop it first")
+        with self._lock:
+            self._queue.clear()
         self.messages, self.log = [], []
         self.started_at = None
         self.last_event_at = None
@@ -241,48 +248,65 @@ class Chat:
         self._gemini_last = None
         self._agy_conv = None
 
+    def _drain_queue(self) -> list[str]:
+        with self._lock:
+            items = [t for t, _, _ in self._queue]
+            self._queue.clear()
+        return items
+
     def send(self, text: str, client: Any, model: str | None = None, wait: bool = False) -> None:
-        if self.running:
-            raise RuntimeError("the AI is still working on the last message")
-        self.running = True
-        now = time.time()
-        self.started_at = now
-        self.last_event_at = now
-        self.current_step = "Thinking"
-        self.steps = 0
-        self.cancel.clear()
-        self.log.append(Entry("user", text))
-        self.messages.append({"role": "user", "content": text})
-        self._thread = threading.Thread(target=self._run, args=(client, model or model_name()), daemon=True)
-        self._thread.start()
-        if wait:
+        chosen_model = model or model_name()
+        with self._lock:
+            self.log.append(Entry("user", text))
+            if self.running:
+                self._queue.append((text, client, chosen_model))
+                return
+            self.running = True
+            now = time.time()
+            self.started_at = now
+            self.last_event_at = now
+            self.current_step = "Thinking"
+            self.steps = 0
+            self.cancel.clear()
+            self.messages.append({"role": "user", "content": text})
+            self._thread = threading.Thread(target=self._run, args=(client, chosen_model), daemon=True)
+            self._thread.start()
+        if wait and self._thread is not None:
             self._thread.join()
 
     def _run(self, client: Any, model: str) -> None:
-        try:
-            if isinstance(client, AgyClient):
-                self._run_agy(client, model)
-            elif hasattr(client, "interactions"):
-                self._run_gemini(client, model)
-            else:
-                self._run_claude(client, model)
-        except Exception as exc:  # noqa: BLE001 - API or unexpected failure: report it in the panel
-            msg = str(exc)
-            if hasattr(client, "interactions") and ("limit: 0" in msg or "too_many_requests" in msg):
-                msg = (
-                    f"Rate limit for {model}: this model is restricted or has a 0 token/min limit on the Free Tier. "
-                    "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
-                    "or upgrade your Google AI Studio tier."
-                )
-            elif "timed out" in msg.lower() or "timeout" in msg.lower():
-                msg = (
-                    f"Request timed out for {model}. Google's servers took longer than {GEMINI_TIMEOUT}s to respond. "
-                    "Please try sending your message again, or switch models in the dropdown."
-                )
-            self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
-        finally:
-            self.running = False
-            self.current_step = None
+        while True:
+            try:
+                if isinstance(client, AgyClient):
+                    self._run_agy(client, model)
+                elif hasattr(client, "interactions"):
+                    self._run_gemini(client, model)
+                else:
+                    self._run_claude(client, model)
+            except Exception as exc:  # noqa: BLE001 - API or unexpected failure: report it in the panel
+                msg = str(exc)
+                if hasattr(client, "interactions") and ("limit: 0" in msg or "too_many_requests" in msg):
+                    msg = (
+                        f"Rate limit for {model}: this model is restricted or has a 0 token/min limit on the Free Tier. "
+                        "Please switch to 'Gemini 2.5 Flash' or 'Gemini 3 Flash' in the Model dropdown, "
+                        "or upgrade your Google AI Studio tier."
+                    )
+                elif "timed out" in msg.lower() or "timeout" in msg.lower():
+                    msg = (
+                        f"Request timed out for {model}. Google's servers took longer than {GEMINI_TIMEOUT}s to respond. "
+                        "Please try sending your message again, or switch models in the dropdown."
+                    )
+                self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
+            with self._lock:
+                if self.cancel.is_set() or not self._queue:
+                    self._queue.clear()
+                    self.running = False
+                    self.current_step = None
+                    return
+                next_text, client, model = self._queue.pop(0)
+                self.messages.append({"role": "user", "content": next_text})
+                self.last_event_at = time.time()
+                self.current_step = "Thinking"
 
     def _run_agy(self, client: AgyClient, model: str) -> None:
         user_text = str(self.messages[-1]["content"])
@@ -498,6 +522,8 @@ class Chat:
                 results.append({"type": "tool_result", "tool_use_id": b.id, "content": content, "is_error": not ok})
             self._touch("Thinking")
             self.messages.append({"role": "user", "content": results})
+            for q_text in self._drain_queue():
+                self.messages.append({"role": "user", "content": q_text})
         self.log.append(Entry("error", "Stopped: too many steps in one turn.", ok=False))
 
     def _run_gemini(self, client: Any, model: str) -> None:

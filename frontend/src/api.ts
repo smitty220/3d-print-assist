@@ -285,6 +285,7 @@ export interface AiStatus {
     idle_s?: number
     current_step?: string | null
     steps?: number
+    queued?: number
   }
 }
 

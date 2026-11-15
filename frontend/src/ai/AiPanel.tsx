@@ -424,6 +424,7 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
                     <span className="work-meta">
                       {steps > 0 ? `Step ${steps} · ` : ''}{fmtTime(elapsed)}
                       {idle >= 5 ? ` · ${stalled ? `no activity ${fmtTime(idle)}` : `active ${fmtTime(idle)} ago`}` : ' · active'}
+                      {(chat.queued ?? 0) > 0 ? ` · ${chat.queued} queued` : ''}
                     </span>
                   </div>
                   {lastEntry && !rawTools && (
@@ -443,10 +444,12 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
               {pendingConcept ? `Reply to concept ${pendingConcept.id} (or click Approve & build above)` : 'Ask for a change'}
             </label>
             <div className="row">
-              <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)} disabled={chat?.running && !pendingConcept}
+              <textarea id="ai-msg" rows={3} value={text} onChange={(e) => setText(e.target.value)}
                 placeholder={pendingConcept
                   ? 'Ask for changes to this concept, or click Approve & build above…'
-                  : 'e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)'}
+                  : chat?.running
+                    ? 'Send follow-up instructions or attach photos while the AI works…'
+                    : 'e.g. make the walls 2 mm and twist it 90° (paste or + Photo to attach reference images)'}
                 onPaste={(e) => {
                   const files = e.clipboardData?.files
                   if (files?.length && Array.from(files).some((f) => f.type.startsWith('image/'))) {
@@ -455,9 +458,17 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
                   }
                 }}
                 onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }} />
-              {chat?.running && !pendingConcept
-                ? <button className="btn" onClick={onCancel}>Stop</button>
-                : <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}><Icon name="send" size={18} width={2} /></button>}
+              {chat?.running && !pendingConcept ? (
+                <div className="col" style={{ gap: 4 }}>
+                  <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}
+                    title="Send follow-up instructions (queued if AI is busy)">
+                    <Icon name="send" size={18} width={2} />
+                  </button>
+                  <button className="btn sm" onClick={onCancel}>Stop</button>
+                </div>
+              ) : (
+                <button className="send" aria-label="Send" onClick={send} disabled={!text.trim()}><Icon name="send" size={18} width={2} /></button>
+              )}
             </div>
             <div className="row nm">
               {chat ? `${Math.round(((chat.tokens.input ?? 0) + (chat.tokens.output ?? 0)) / 1000)}k tokens` : ''}
