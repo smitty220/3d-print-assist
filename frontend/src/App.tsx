@@ -137,6 +137,7 @@ export default function App() {
         if (s.activity !== k.activity) {
           api.activity().then(setActivity).catch(() => {})
           api.concepts().then(setConcepts).catch(() => {}) // a concept proposed or answered is logged as activity
+          api.images().then(setImages).catch(() => {})
         }
         seen.current = { slug: s.slug ?? '', rev: s.rev, built: s.built_rev, activity: s.activity }
       }
@@ -215,7 +216,7 @@ export default function App() {
 
   const buildConcept = (c: typeof concepts[number], note: string) => {
     const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
-    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept("${c.id}") to read its full specification and build it now in 3D Print Assist.${extra}`
+    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its drawing and build it now in 3D Print Assist.${extra}`
     setConceptOpen(null)
     if (rightPanel.collapsed) rightPanel.setCollapsed(false)
     run(async () => {
@@ -242,7 +243,7 @@ export default function App() {
       api.concepts().then(setConcepts).catch(() => {})
       if (note.trim() && (ai?.mode === 'api' || !ai?.chat.running)) {
         if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
-        await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept("${c.id}") first, then propose a revised concept.`)
+        await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept(id="${c.id}") first, then propose a revised concept.`)
       }
     }).then(() => api.aiStatus().then(setAi))
   }

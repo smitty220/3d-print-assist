@@ -186,11 +186,16 @@ def export_batch(format: str = "3mf", rows: list[dict[str, str | None]] | None =
 
 @mcp.tool()
 def look_at_concept(svg: str = "", id: str = "", width: int = 1200) -> Image | str:
-    """See a concept picture as the user will: pass the svg you are about to propose (a draft) or the id of one you
-    proposed. Look before every propose_concept and fix overlapping or cramped labels, things off the canvas and
-    anything that does not match your numbers."""
-    if id:
-        r = _call("GET", f"/api/concepts/{id}/picture", params={"width": width})
+    """See a concept picture as the user will: pass `id` (e.g. "K1") for an existing concept, or `svg` for a draft
+    SVG you are about to propose. Look before every propose_concept and fix overlapping or cramped labels, things off
+    the canvas and anything that does not match your numbers."""
+    import re
+
+    cid = id.strip()
+    if not cid and svg and re.fullmatch(r"K\d+", svg.strip(), re.I):
+        cid = svg.strip().upper()
+    if cid:
+        r = _call("GET", f"/api/concepts/{cid}/picture", params={"width": width})
     else:
         r = _call("POST", "/api/concepts/picture", json={"svg": svg, "width": width})
     if isinstance(r, dict):

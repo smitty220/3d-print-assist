@@ -115,7 +115,7 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
     }
     const parts = [t]
     if (concept && (conceptOpen || concept.status === 'revise')) {
-      parts.push(`(Active concept ${concept.id} "${concept.title}" [${concept.status}] — call look_at_concept("${concept.id}") to inspect its spec and drawing.)`)
+      parts.push(`(Active concept ${concept.id} "${concept.title}" [${concept.status}] — call look_at_concept(id="${concept.id}") to inspect its drawing.)`)
     }
     if (attached.length) parts.push(`(Reference image(s) attached: ${attached.join(', ')} — inspect with look_at_image.)`)
     if (context) parts.push(`(The user has ${context} selected.)`)
@@ -159,6 +159,15 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
             >
               <img src={api.imageUrl(img.id)} alt={img.id} style={{ width: 18, height: 18, objectFit: 'cover', borderRadius: 3 }} />
               <span>{img.id}</span>
+            </button>
+            <button
+              type="button"
+              aria-label={`View ${img.id}`}
+              title={`View ${img.id}`}
+              onClick={(e) => { e.stopPropagation(); onOpenPhoto?.(img.id) }}
+              style={{ border: 0, background: 'transparent', color: 'var(--muted)', cursor: 'pointer', padding: '0 2px', display: 'inline-flex', alignItems: 'center' }}
+            >
+              <Icon name="eye" size={12} />
             </button>
             <button
               type="button"
