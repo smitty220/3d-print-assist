@@ -383,6 +383,10 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .cdraw-fullscreen { position: fixed; inset: 0; z-index: 99999; display: flex; align-items: center; justify-content: center; padding: 16px; background: #f7f7f4; }
 .cdraw-fullscreen img { width: 100%; height: 100%; object-fit: contain; }
 .cdraw-exit { position: fixed; top: 14px; right: 16px; z-index: 100000; background: #1f2329; color: #f8fafc; border-color: #475569; box-shadow: 0 4px 12px #0004; }
+.photo-view .photo-stage, .photo-fullscreen { background: #14171c; }
+.photo-view .photo-stage { cursor: zoom-in; }
+.photo-fullscreen { cursor: zoom-out; }
+.photo-view .photo-meta { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line-2); background: var(--panel-2, #181b20); font-size: 12px; color: var(--fg-2); flex-shrink: 0; }
 .concept .ctext { flex: 1; padding: 10px 14px; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
 .concept .ctext-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 18px; }
 .concept .ctext h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 3px; }

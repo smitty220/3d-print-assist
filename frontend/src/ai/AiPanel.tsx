@@ -22,6 +22,7 @@ interface Props {
   zIndex?: number
   onFocusPanel?: () => void
   onOpenConcept: (id: string) => void
+  onOpenPhoto?: (id: string) => void
   onUploadImage: (file: File) => Promise<ImageInfo | undefined>
   onDeleteImage: (id: string) => Promise<void>
   onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
@@ -65,7 +66,7 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
@@ -152,7 +153,8 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
               type="button"
               className="btn sm"
               onClick={() => mode !== 'mcp' && toggleAttach(img.id)}
-              title={mode === 'mcp' ? `${img.id}: ${img.prompt} (ask MCP client to look_at_image ${img.id})` : `${on ? 'Detach' : 'Attach'} ${img.id}: ${img.prompt}`}
+              onDoubleClick={() => onOpenPhoto?.(img.id)}
+              title={mode === 'mcp' ? `${img.id}: ${img.prompt || img.file} (double-click to view)` : `${on ? 'Detach' : 'Attach'} ${img.id}: ${img.prompt || img.file} (double-click to view)`}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 5px', border: 0, background: 'transparent' }}
             >
               <img src={api.imageUrl(img.id)} alt={img.id} style={{ width: 18, height: 18, objectFit: 'cover', borderRadius: 3 }} />

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView } from './ai/ConceptView'
+import { PhotoView } from './ai/PhotoView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
 import type { FileAction } from './layout/FileMenu'
@@ -48,6 +49,7 @@ export default function App() {
   const [images, setImages] = useState<ImageInfo[]>([])
   const [conceptOpen, setConceptOpen] = useState<string | null>(null) // shown on request
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
+  const [photoOpen, setPhotoOpen] = useState<string | null>(null) // reference photo shown in Photos tab
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const leftPanel = usePanelLayout({ storageKey: 'pa.left', side: 'left', defaultWidth: 300, minWidth: 180, maxWidth: 580 })
@@ -193,6 +195,7 @@ export default function App() {
   useEffect(() => {
     const wid = waitingConcept?.id ?? null
     if (wid && wid !== prevWaitingId.current) {
+      setPhotoOpen(null)
       setConceptHidden(null)
       setConceptOpen(wid)
     }
@@ -200,6 +203,15 @@ export default function App() {
   }, [waitingConcept?.id])
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
     ?? (waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
+  const shownPhoto = shownConcept ? null : (images.find((img) => img.id === photoOpen) ?? null)
+
+  const openPhoto = (id?: string) => {
+    const target = (id && images.find((x) => x.id === id)) || images[0]
+    if (!target) return
+    if (shownConcept?.status === 'pending') setConceptHidden(shownConcept.id)
+    setConceptOpen(null)
+    setPhotoOpen(target.id)
+  }
 
   const buildConcept = (c: typeof concepts[number], note: string) => {
     const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
@@ -240,7 +252,7 @@ export default function App() {
   /** Run `fn` once unsaved changes are dealt with (Save / Don't save / Cancel). */
   const guard = (fn: () => void) => (file?.dirty ? setFileModal({ type: 'unsaved', then: fn }) : fn())
   const reopen = async () => {
-    setSelected(null); setDialog(null); setMode('part'); setSketchId(null); setPicking(null)
+    setSelected(null); setDialog(null); setMode('part'); setSketchId(null); setPicking(null); setPhotoOpen(null)
     await run(loadAll)
   }
   const doSave = (message = '') => run(() => api.save(message)).then((f) => {
@@ -637,14 +649,19 @@ export default function App() {
             highlight={highlight} picking={dialog?.type === 'feature' && mode !== 'plates' ? picking : null} onPick={onPick} onUpdate={update}
             plateMode={mode === 'plates'} plate={tree.print_layout?.items && plateMesh?.plate === plateNo ? plateMesh : null}
             hasDesign={concepts.length > 0}
-            canvasView={shownConcept ? 'design' : 'model'}
+            hasPhotos={images.length > 0}
+            canvasView={shownConcept ? 'design' : shownPhoto ? 'photos' : 'model'}
             onCanvasView={(v) => {
               if (v === 'design' && concepts[0]) {
+                setPhotoOpen(null)
                 setConceptOpen(concepts[0].id)
                 setConceptHidden(null)
+              } else if (v === 'photos') {
+                openPhoto(photoOpen ?? images[0]?.id)
               } else {
                 if (shownConcept?.status === 'pending') setConceptHidden(shownConcept.id)
                 setConceptOpen(null)
+                setPhotoOpen(null)
               }
             }}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
@@ -657,11 +674,16 @@ export default function App() {
             )}
             {shownConcept && (
               <ConceptView key={shownConcept.id} concept={shownConcept} concepts={concepts}
-                onSelectConcept={(id) => { setConceptHidden(null); setConceptOpen(id) }}
+                onSelectConcept={(id) => { setPhotoOpen(null); setConceptHidden(null); setConceptOpen(id) }}
                 hideAnswerInput={ai?.mode !== 'mcp'}
                 onAnswer={(decision, note) => answerConcept(shownConcept, decision, note)}
                 onBuild={(note) => buildConcept(shownConcept, note)}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
+            )}
+            {shownPhoto && (
+              <PhotoView key={shownPhoto.id} image={shownPhoto} images={images}
+                onSelectImage={(id) => setPhotoOpen(id)}
+                onClose={() => setPhotoOpen(null)} />
             )}
             {feature && spec && (
               <FeatureDialog feature={feature} spec={spec} tree={tree} fonts={fonts} picking={picking} onPick={setPicking}
@@ -693,7 +715,8 @@ export default function App() {
           }}
           onBuildConcept={(c, note) => buildConcept(c, note)}
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
-          onOpenConcept={(id) => { setConceptOpen(id); setConceptHidden(null) }}
+          onOpenConcept={(id) => { setPhotoOpen(null); setConceptOpen(id); setConceptHidden(null) }}
+          onOpenPhoto={(id) => openPhoto(id)}
           onUploadImage={async (f) => {
             const img = await run(() => api.uploadImage(f))
             if (img) api.images().then(setImages).catch(() => {})
@@ -701,7 +724,11 @@ export default function App() {
           }}
           onDeleteImage={async (id) => {
             const ok = await run(() => api.deleteImage(id))
-            if (ok) api.images().then(setImages).catch(() => {})
+            if (ok) {
+              const next = await api.images().catch(() => images.filter((x) => x.id !== id))
+              setImages(next)
+              if (photoOpen === id) setPhotoOpen(next[0]?.id ?? null)
+            }
           }}
           onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
           onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
