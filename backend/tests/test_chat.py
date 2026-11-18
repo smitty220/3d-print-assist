@@ -461,7 +461,7 @@ def test_agy_cli_chat_turn(monkeypatch):
     assert "--conversation" in calls[1]
     assert "conv-123" in calls[1]
     assert "--disable-slash-commands" in calls[0]
-    assert "--print-timeout" in calls[0] and "10m" in calls[0]
+    assert "--print-timeout" in calls[0] and "25m" in calls[0]
     assert "NEVER" in calls[0][calls[0].index("-p") + 1]
     assert "System rule" in calls[1][calls[1].index("-p") + 1]
 
