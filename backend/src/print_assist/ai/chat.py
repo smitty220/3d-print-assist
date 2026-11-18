@@ -253,6 +253,26 @@ def _kill_proc(proc: Any) -> None:
             pass
 
 
+def _tool_output_ok(out: str) -> bool:
+    """Determine whether an MCP tool output represents success (avoiding false positives on `'error': null`)."""
+    s = out.strip()
+    if not s:
+        return True
+    if s.startswith("{"):
+        try:
+            data = json.loads(s)
+            if isinstance(data, dict):
+                if data.get("error"):
+                    return False
+                status = data.get("status")
+                if isinstance(status, int) and status >= 400:
+                    return False
+                return True
+        except json.JSONDecodeError:
+            pass
+    return not (s.startswith("Error") or s.startswith("Refused:"))
+
+
 def _format_agy_error(raw: str) -> str:
     """Turn internal CLI timeout / background-task noise into a clean user-facing message."""
     cleaned = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw or "").strip()
@@ -506,13 +526,7 @@ class Chat:
                         return  # skip noisy MCP schema reads
                     if su.get("state") == "DONE":
                         out = str(info.get("output") or "").strip()
-                        ok = not (
-                            out.startswith("Error")
-                            or '"error"' in out[:200]
-                            or "Refused:" in out[:200]
-                            or "409" in out[:120]
-                        )
-                        self._record_tool(tname, out[:400], ok=ok)
+                        self._record_tool(tname, out[:400], ok=_tool_output_ok(out))
                     else:
                         self._touch(tname)
                 elif su.get("step_type") == "agent_response":

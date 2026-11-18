@@ -574,3 +574,12 @@ def test_agy_idle_watchdog_and_stop_kill_stalled_subprocess(monkeypatch, tmp_pat
     assert "terminate" in killed
     assert not ch2.running
     assert ch2.log[-1].role == "error" and ch2.log[-1].text == "Stopped."
+
+
+def test_tool_output_ok_ignores_null_error_fields():
+    from print_assist.ai.chat import _tool_output_ok
+
+    assert _tool_output_ok('{"made":["total_length"],"tree":{"features":[{"id":"F1","status":"ok","error":null}]}}') is True
+    assert _tool_output_ok('{"error":"bad input","status":422}') is False
+    assert _tool_output_ok('{"status":409,"detail":"refused"}') is False
+    assert _tool_output_ok("Refused: locked") is False

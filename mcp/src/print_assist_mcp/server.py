@@ -192,12 +192,16 @@ def look_at_concept(svg: str = "", id: str = "", width: int = 1200) -> Image | s
     import re
 
     cid = id.strip()
-    if not cid and svg and re.fullmatch(r"K\d+", svg.strip(), re.I):
-        cid = svg.strip().upper()
+    if not cid and svg and "<svg" not in svg.lower():
+        m = re.search(r"\b(K\d+)\b", svg.strip(), re.I)
+        if m:
+            cid = m.group(1).upper()
     if cid:
         r = _call("GET", f"/api/concepts/{cid}/picture", params={"width": width})
-    else:
+    elif svg.strip():
         r = _call("POST", "/api/concepts/picture", json={"svg": svg, "width": width})
+    else:
+        return _text({"error": "pass id (e.g. id='K1') for an existing concept, or svg='<svg>...</svg>' for a draft", "status": 422})
     if isinstance(r, dict):
         return _text(r)
     return Image(data=r.content, format="png")

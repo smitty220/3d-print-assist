@@ -98,10 +98,12 @@ def _switch(w: Workspace | None) -> None:
 def _change(ops: list[dict], actor: str, message: str = "", base_rev: int | None = None) -> dict:
     try:
         made = ws().change(ops, actor=actor or USER, message=message, base_rev=base_rev)
-    except OpError as exc:
-        raise HTTPException(422, str(exc)) from exc
     except ChangeRefused as exc:
         raise HTTPException(409, str(exc)) from exc
+    except (OpError, ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface CAD/kernel failures cleanly instead of opaque 500
+        raise HTTPException(422, f"{type(exc).__name__}: {exc}") from exc
     return {"made": made, "tree": ws().tree()}
 
 
