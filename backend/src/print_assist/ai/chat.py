@@ -26,9 +26,9 @@ from .guide import GUIDE
 
 MAX_TURNS = 40
 GEMINI_TIMEOUT = 180  # seconds
-AGY_PRINT_TIMEOUT = "25m"
-AGY_IDLE_TIMEOUT = 180  # seconds without any stream event before killing a stalled turn
-AGY_TOTAL_TIMEOUT = 1500  # hard cap (seconds) for a single active agy turn (25m)
+AGY_PRINT_TIMEOUT = "60m"
+AGY_IDLE_TIMEOUT = 1800  # seconds (30m) without any stream event before killing a stalled turn
+AGY_TOTAL_TIMEOUT = 3600  # hard cap (seconds) for a single active agy turn (60m)
 SKIP_TOOLS = {"get_guide", "wait_for_concept"}  # guide is system prompt; UI handles concept approval turns
 
 _IN_APP_DIRECTIVES = (
@@ -539,7 +539,7 @@ class Chat:
                     _kill_proc(proc)
                     self.log.append(Entry(
                         "error",
-                        "Stopped automatically after 3 minutes of inactivity so background tasks would not hang. "
+                        "Stopped automatically after 30 minutes of inactivity so background tasks would not hang. "
                         "Please resend your instruction (or try another model).",
                         ok=False,
                     ))
@@ -548,7 +548,7 @@ class Chat:
                     _kill_proc(proc)
                     self.log.append(Entry(
                         "error",
-                        "Stopped automatically after the 25-minute active turn limit. "
+                        "Stopped automatically after the 60-minute active turn limit. "
                         "Any completed changes were kept — please continue with a follow-up instruction.",
                         ok=False,
                     ))
