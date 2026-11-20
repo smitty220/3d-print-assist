@@ -46,29 +46,32 @@ export function UnsavedModal({ name, onSave, onDiscard, onClose }: { name: strin
   )
 }
 
-export function OpenModal({ current, onOpen, onDelete, onClose }: { current: string | null; onOpen: (slug: string) => void; onDelete: (d: DesignInfo) => void; onClose: () => void }) {
+export function OpenModal({ current, busySlug, onOpen, onDelete, onClose }: { current: string | null; busySlug?: string | null; onOpen: (slug: string) => void; onDelete: (d: DesignInfo) => void; onClose: () => void }) {
   const [list, setList] = useState<DesignInfo[] | null>(null)
   useEffect(() => { api.projects().then(setList).catch(() => setList([])) }, [])
   return (
     <Modal title="Open design" onClose={onClose} wide>
-      <div className="dbody"><DesignGrid list={list} current={current} onOpen={onOpen} onDelete={onDelete} /></div>
+      <div className="dbody">
+        {busySlug && <p className="note">Opening design…</p>}
+        <DesignGrid list={list} current={current} busySlug={busySlug} onOpen={onOpen} onDelete={onDelete} />
+      </div>
     </Modal>
   )
 }
 
-export function DesignGrid({ list, current, onOpen, onDelete }: { list: DesignInfo[] | null; current: string | null; onOpen: (slug: string) => void; onDelete?: (d: DesignInfo) => void }) {
+export function DesignGrid({ list, current, busySlug, onOpen, onDelete }: { list: DesignInfo[] | null; current: string | null; busySlug?: string | null; onOpen: (slug: string) => void; onDelete?: (d: DesignInfo) => void }) {
   if (!list) return <p className="note">Loading…</p>
   if (!list.length) return <p className="note">No designs yet.</p>
   return (
     <ul className="grid">
       {list.map((d) => (
         <li key={d.slug} className={d.slug === current ? 'cur' : ''}>
-          <button className="card" onClick={() => onOpen(d.slug)} disabled={d.slug === current}>
+          <button type="button" className="card" onClick={() => onOpen(d.slug)} disabled={d.slug === current || Boolean(busySlug)}>
             {d.thumbnail ? <img src={api.thumbnailUrl(d.slug, d.modified)} alt="" /> : <span className="noimg">no picture until saved</span>}
-            <b>{d.name}</b>
+            <b>{d.slug === busySlug ? `${d.name} (Opening…)` : d.name}</b>
             <span className="nm">{new Date(d.modified * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{d.recovery ? ' · unsaved changes kept' : ''}</span>
           </button>
-          {onDelete && d.slug !== current && <button className="link danger" onClick={() => onDelete(d)}>Move to Trash</button>}
+          {onDelete && d.slug !== current && <button type="button" className="link danger" disabled={Boolean(busySlug)} onClick={() => onDelete(d)}>Move to Trash</button>}
         </li>
       ))}
     </ul>

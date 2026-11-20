@@ -128,8 +128,10 @@ class Workspace:
                 raise ChangeRefused(f"the design changed since revision {base_rev} (now {self.rev}); read it again")
             waiting = self.concepts.pending() if actor != design_ops.USER else None
             if waiting is not None:
-                raise ChangeRefused(f"concept {waiting.id} ({waiting.title}) is waiting for the user's answer: call "
-                                    "wait_for_concept, then build what they approved")
+                raise ChangeRefused(
+                    f"concept {waiting.id} ({waiting.title}) is waiting for the user's answer in the app "
+                    "before changing the model"
+                )
             trial = self.design.model_copy(deep=True)
             made = [design_ops.apply(trial, op, actor) for op in ops]
             if actor != design_ops.USER:

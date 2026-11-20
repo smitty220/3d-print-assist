@@ -26,9 +26,9 @@ from .guide import GUIDE
 
 MAX_TURNS = 40
 GEMINI_TIMEOUT = 180  # seconds
-AGY_PRINT_TIMEOUT = "10m"
-AGY_IDLE_TIMEOUT = 180  # seconds without any stream event before killing a stalled turn
-AGY_TOTAL_TIMEOUT = 600  # hard cap (seconds) for a single agy turn
+AGY_PRINT_TIMEOUT = "60m"
+AGY_IDLE_TIMEOUT = 1800  # seconds (30m) without any stream event before killing a stalled turn
+AGY_TOTAL_TIMEOUT = 3600  # hard cap (seconds) for a single active agy turn (60m)
 SKIP_TOOLS = {"get_guide", "wait_for_concept"}  # guide is system prompt; UI handles concept approval turns
 
 _IN_APP_DIRECTIVES = (
@@ -51,7 +51,7 @@ _AGY_SYSTEM_PREAMBLE = (
     "STRICT TOOL RULES:\n"
     "1. ONLY call tools from the `3d-print-assist` MCP server (get_guide, get_model, get_feature_catalog, "
     "apply_changes, update, render_preview, run_checks, print_layout, list_faces, pick_face, list_fonts, "
-    "propose_concept, look_at_concept, generate_image, list_images, look_at_image, list_references, "
+    "list_concepts, propose_concept, look_at_concept, generate_image, list_images, look_at_image, list_references, "
     "look_at_reference, section_reference, add_reference, open_design, create_design, list_designs, export).\n"
     "2. NEVER inspect or edit files, and NEVER use run_command, shell scripts, python/uv commands, "
     "invoke_subagent, schedule, timers, or background tasks.\n"
@@ -59,8 +59,9 @@ _AGY_SYSTEM_PREAMBLE = (
     "background tasks to wait for approval. End your turn immediately with a concise summary — the app resumes you "
     "automatically when the user clicks Approve & build or replies.\n"
     "4. Skip propose_concept when the user asks for specific dimensions/parameters or edits an existing part directly.\n"
-    "5. Batch related ops in one apply_changes call. If the 3D model is empty or the user refers to a concept, "
-    "call look_at_concept. If an approach fails twice, switch strategy instead of looping.\n\n"
+    "5. Batch related ops in one apply_changes call. If the user refers to a concept or you want to check existing "
+    "concepts, call list_concepts first, then look_at_concept(id=...) on an existing ID. If an approach fails twice, "
+    "switch strategy instead of looping.\n\n"
     "User request: "
 )
 
@@ -251,6 +252,26 @@ def _kill_proc(proc: Any) -> None:
             proc.kill()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _tool_output_ok(out: str) -> bool:
+    """Determine whether an MCP tool output represents success (avoiding false positives on `'error': null`)."""
+    s = out.strip()
+    if not s:
+        return True
+    if s.startswith("{"):
+        try:
+            data = json.loads(s)
+            if isinstance(data, dict):
+                if data.get("error"):
+                    return False
+                status = data.get("status")
+                if isinstance(status, int) and status >= 400:
+                    return False
+                return True
+        except json.JSONDecodeError:
+            pass
+    return not (s.startswith("Error") or s.startswith("Refused:"))
 
 
 def _format_agy_error(raw: str) -> str:
@@ -506,13 +527,7 @@ class Chat:
                         return  # skip noisy MCP schema reads
                     if su.get("state") == "DONE":
                         out = str(info.get("output") or "").strip()
-                        ok = not (
-                            out.startswith("Error")
-                            or '"error"' in out[:200]
-                            or "Refused:" in out[:200]
-                            or "409" in out[:120]
-                        )
-                        self._record_tool(tname, out[:400], ok=ok)
+                        self._record_tool(tname, out[:400], ok=_tool_output_ok(out))
                     else:
                         self._touch(tname)
                 elif su.get("step_type") == "agent_response":
@@ -539,7 +554,7 @@ class Chat:
                     _kill_proc(proc)
                     self.log.append(Entry(
                         "error",
-                        "Stopped automatically after 3 minutes of inactivity so background tasks would not hang. "
+                        "Stopped automatically after 30 minutes of inactivity so background tasks would not hang. "
                         "Please resend your instruction (or try another model).",
                         ok=False,
                     ))
@@ -548,8 +563,8 @@ class Chat:
                     _kill_proc(proc)
                     self.log.append(Entry(
                         "error",
-                        "Stopped automatically after the 10-minute turn limit and cleaned up background tasks. "
-                        "Please continue with a narrower instruction.",
+                        "Stopped automatically after the 60-minute active turn limit. "
+                        "Any completed changes were kept — please continue with a follow-up instruction.",
                         ok=False,
                     ))
                     return

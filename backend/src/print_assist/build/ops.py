@@ -277,11 +277,31 @@ def _set_rollback(d: Design, op: dict, actor: str):
 # ---------------------------------------------------------------- sketches
 
 
+def _normalize_entities(raw: Any) -> list[dict]:
+    if not isinstance(raw, list):
+        raise OpError("sketch entities must be a list")
+    out: list[dict] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise OpError(f"sketch entity #{i + 1} must be an object")
+        d = dict(item)
+        if "kind" not in d and isinstance(d.get("type"), str):
+            d["kind"] = d.pop("type")
+        if "kind" not in d:
+            raise OpError(
+                f"sketch entity #{i + 1} ({d.get('id', '?')}) is missing 'kind' "
+                "(expected 'point', 'line', 'circle', 'arc', or 'spline')"
+            )
+        out.append(d)
+    return out
+
+
 def _add_sketch(d: Design, op: dict, actor: str):
     sid = op.get("id") or d.next_sketch_id()
     if d.sketch(sid):
         raise OpError(f"sketch id {sid} is taken")
-    sk = Sketch(id=sid, name=op.get("name") or f"Sketch{sid[1:]}", entities=op.get("entities", []),
+    entities = _normalize_entities(op.get("entities", []))
+    sk = Sketch(id=sid, name=op.get("name") or f"Sketch{sid[1:]}", entities=entities,
                 constraints=op.get("constraints", []), placement=Placement.model_validate(op.get("placement", {})),
                 after=op.get("after"))
     d.sketches.append(_solve_sketch(d, sk))
@@ -293,7 +313,8 @@ def _edit_sketch(d: Design, op: dict, actor: str):
     for f in d.features:
         if old.id in f.refs.values():
             _guard(f, actor)
-    sk = Sketch(id=old.id, name=op.get("name", old.name), entities=op.get("entities", [e.model_dump() for e in old.entities]),
+    entities = _normalize_entities(op["entities"]) if "entities" in op else [e.model_dump() for e in old.entities]
+    sk = Sketch(id=old.id, name=op.get("name", old.name), entities=entities,
                 constraints=[Constraint.model_validate(c) for c in op.get("constraints", [c.model_dump() for c in old.constraints])],
                 placement=Placement.model_validate(op["placement"]) if "placement" in op else old.placement,
                 after=op.get("after", old.after))

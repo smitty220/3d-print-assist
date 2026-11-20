@@ -461,7 +461,7 @@ def test_agy_cli_chat_turn(monkeypatch):
     assert "--conversation" in calls[1]
     assert "conv-123" in calls[1]
     assert "--disable-slash-commands" in calls[0]
-    assert "--print-timeout" in calls[0] and "10m" in calls[0]
+    assert "--print-timeout" in calls[0] and "60m" in calls[0]
     assert "NEVER" in calls[0][calls[0].index("-p") + 1]
     assert "System rule" in calls[1][calls[1].index("-p") + 1]
 
@@ -574,3 +574,12 @@ def test_agy_idle_watchdog_and_stop_kill_stalled_subprocess(monkeypatch, tmp_pat
     assert "terminate" in killed
     assert not ch2.running
     assert ch2.log[-1].role == "error" and ch2.log[-1].text == "Stopped."
+
+
+def test_tool_output_ok_ignores_null_error_fields():
+    from print_assist.ai.chat import _tool_output_ok
+
+    assert _tool_output_ok('{"made":["total_length"],"tree":{"features":[{"id":"F1","status":"ok","error":null}]}}') is True
+    assert _tool_output_ok('{"error":"bad input","status":422}') is False
+    assert _tool_output_ok('{"status":409,"detail":"refused"}') is False
+    assert _tool_output_ok("Refused: locked") is False
