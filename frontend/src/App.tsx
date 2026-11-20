@@ -50,6 +50,7 @@ export default function App() {
   const [conceptOpen, setConceptOpen] = useState<string | null>(null) // shown on request
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [photoOpen, setPhotoOpen] = useState<string | null>(null) // reference photo shown in Photos tab
+  const [openingSlug, setOpeningSlug] = useState<string | null>(null)
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const leftPanel = usePanelLayout({ storageKey: 'pa.left', side: 'left', defaultWidth: 300, minWidth: 180, maxWidth: 580 })
@@ -253,11 +254,26 @@ export default function App() {
   /** Run `fn` once unsaved changes are dealt with (Save / Don't save / Cancel). */
   const guard = (fn: () => void) => (file?.dirty ? setFileModal({ type: 'unsaved', then: fn }) : fn())
   const reopen = async () => {
-    setSelected(null); setDialog(null); setMode('part'); setSketchId(null); setPicking(null); setPhotoOpen(null)
+    setSelected(null); setDialog(null); setMode('part'); setSketchId(null); setPicking(null)
+    setConcepts([]); setConceptOpen(null); setConceptHidden(null)
+    setImages([]); setPhotoOpen(null); setActivity([]); setChecks(null); setAi(null)
     await run(loadAll)
   }
+  const openSlug = async (slug: string) => {
+    setOpeningSlug(slug)
+    try {
+      const opened = await run(() => api.openProject(slug))
+      if (opened) {
+        setFileModal(null)
+        await reopen()
+      }
+    } finally {
+      setOpeningSlug(null)
+    }
+  }
   const doSave = (message = '') => run(() => api.save(message)).then((f) => {
-    if (f) { setFile(f); say(message ? `Saved version “${message}”` : `Saved “${f.name}”`) }
+    if (f) { setFile(f); say(message ? `Saved version “${message}”` : `Saved “${f.name}”`); return true }
+    return false
   })
   async function doExport(fmt: ExportFormat) {
     const r = await run(() => api.exportFile(fmt))
@@ -317,7 +333,7 @@ export default function App() {
     else if (a === 'rename') setFileModal({ type: 'name', purpose: 'rename' })
     else if (a === 'revert') setFileModal({ type: 'revert' })
     else if (a === 'history') setFileModal({ type: 'history' })
-    else if (a === 'close') guard(() => { run(api.close).then(reopen) })
+    else if (a === 'close') guard(() => { run(api.close).then((r) => r && reopen()) })
     else if (a === 'delete' && file?.slug) setFileModal({ type: 'delete', design: { slug: file.slug, name: file.name ?? file.slug } })
     else if (a === 'export') setFileModal({ type: 'export' })
     else if (a === 'reveal') run(api.reveal).then((r) => r && say(`Shown in Finder: ${r.path}`))
@@ -480,12 +496,12 @@ export default function App() {
       )}
       {fileModal?.type === 'unsaved' && (
         <UnsavedModal name={file?.name ?? 'this design'} onClose={() => setFileModal(null)}
-          onSave={() => { const then = fileModal.then; setFileModal(null); doSave().then(then) }}
-          onDiscard={() => { const then = fileModal.then; setFileModal(null); run(() => api.recover(false)).then(then) }} />
+          onSave={() => { const then = fileModal.then; setFileModal(null); doSave().then((ok) => ok && then()) }}
+          onDiscard={() => { const then = fileModal.then; setFileModal(null); run(() => api.recover(false)).then((r) => r && then()) }} />
       )}
       {fileModal?.type === 'open' && (
-        <OpenModal current={file?.slug ?? null} onClose={() => setFileModal(null)}
-          onOpen={(slug) => { setFileModal(null); run(() => api.openProject(slug)).then(reopen) }}
+        <OpenModal current={file?.slug ?? null} busySlug={openingSlug} onClose={() => !openingSlug && setFileModal(null)}
+          onOpen={openSlug}
           onDelete={(d) => setFileModal({ type: 'delete', design: d })} />
       )}
       {fileModal?.type === 'history' && (
@@ -521,7 +537,7 @@ export default function App() {
               title="A new design with a STEP, STL or 3MF file beside it, to look at and copy features from">{updating ? 'Loading…' : 'New with reference…'}</button>
             <button className="btn" onClick={() => pickImport(true)} disabled={updating} title="A new design starting from a STEP file's solid">New from STEP…</button>
             <button className="btn primary" onClick={() => setFileModal({ type: 'name', purpose: 'new' })}>New design</button></div>
-          <DesignGrid list={designs} current={null} onOpen={(slug) => { run(() => api.openProject(slug)).then(reopen) }}
+          <DesignGrid list={designs} current={null} busySlug={openingSlug} onOpen={openSlug}
             onDelete={(d) => setFileModal({ type: 'delete', design: d })} />
           {error && <p className="err">{error}</p>}
         </main>
@@ -646,7 +662,7 @@ export default function App() {
               onChanged={setTree} onExit={() => { setMode('part'); setSketchId(null) }} />
           </section>
         ) : (
-          <ViewportPane part={shownPart} references={tree.references} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
+          <ViewportPane key={project?.slug ?? 'none'} part={shownPart} references={tree.references} stale={tree.pending_count} failed={failedAt ? `${failedAt.id}: ${failedAt.error}` : null}
             highlight={highlight} picking={dialog?.type === 'feature' && mode !== 'plates' ? picking : null} onPick={onPick} onUpdate={update}
             plateMode={mode === 'plates'} plate={tree.print_layout?.items && plateMesh?.plate === plateNo ? plateMesh : null}
             hasDesign={concepts.length > 0}

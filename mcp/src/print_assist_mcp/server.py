@@ -185,10 +185,19 @@ def export_batch(format: str = "3mf", rows: list[dict[str, str | None]] | None =
 
 
 @mcp.tool()
+def list_concepts() -> str:
+    """List the design's proposed concepts (id, title, status, summary, note), newest first."""
+    r = _call("GET", "/api/concepts", params={"drawings": False})
+    if isinstance(r, dict):
+        return _text(r)
+    return _text([{k: c.get(k) for k in ("id", "title", "status", "summary", "note")} for c in r])
+
+
+@mcp.tool()
 def look_at_concept(svg: str = "", id: str = "", width: int = 1200) -> Image | str:
     """See a concept picture as the user will: pass `id` (e.g. "K1") for an existing concept, or `svg` for a draft
-    SVG you are about to propose. Look before every propose_concept and fix overlapping or cramped labels, things off
-    the canvas and anything that does not match your numbers."""
+    SVG you are about to propose. Omit both to inspect the newest concept if one exists. Look before every
+    propose_concept and fix overlapping or cramped labels, things off the canvas and anything that does not match your numbers."""
     import re
 
     cid = id.strip()
@@ -196,12 +205,17 @@ def look_at_concept(svg: str = "", id: str = "", width: int = 1200) -> Image | s
         m = re.search(r"\b(K\d+)\b", svg.strip(), re.I)
         if m:
             cid = m.group(1).upper()
+    if not cid and not svg.strip():
+        existing = _call("GET", "/api/concepts", params={"drawings": False})
+        if isinstance(existing, dict):
+            return _text(existing)
+        if not existing:
+            return _text({"concepts": [], "message": "No concepts have been proposed in this design yet."})
+        cid = existing[0]["id"]
     if cid:
         r = _call("GET", f"/api/concepts/{cid}/picture", params={"width": width})
-    elif svg.strip():
-        r = _call("POST", "/api/concepts/picture", json={"svg": svg, "width": width})
     else:
-        return _text({"error": "pass id (e.g. id='K1') for an existing concept, or svg='<svg>...</svg>' for a draft", "status": 422})
+        r = _call("POST", "/api/concepts/picture", json={"svg": svg, "width": width})
     if isinstance(r, dict):
         return _text(r)
     return Image(data=r.content, format="png")

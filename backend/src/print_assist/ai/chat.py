@@ -51,7 +51,7 @@ _AGY_SYSTEM_PREAMBLE = (
     "STRICT TOOL RULES:\n"
     "1. ONLY call tools from the `3d-print-assist` MCP server (get_guide, get_model, get_feature_catalog, "
     "apply_changes, update, render_preview, run_checks, print_layout, list_faces, pick_face, list_fonts, "
-    "propose_concept, look_at_concept, generate_image, list_images, look_at_image, list_references, "
+    "list_concepts, propose_concept, look_at_concept, generate_image, list_images, look_at_image, list_references, "
     "look_at_reference, section_reference, add_reference, open_design, create_design, list_designs, export).\n"
     "2. NEVER inspect or edit files, and NEVER use run_command, shell scripts, python/uv commands, "
     "invoke_subagent, schedule, timers, or background tasks.\n"
@@ -59,8 +59,9 @@ _AGY_SYSTEM_PREAMBLE = (
     "background tasks to wait for approval. End your turn immediately with a concise summary — the app resumes you "
     "automatically when the user clicks Approve & build or replies.\n"
     "4. Skip propose_concept when the user asks for specific dimensions/parameters or edits an existing part directly.\n"
-    "5. Batch related ops in one apply_changes call. If the 3D model is empty or the user refers to a concept, "
-    "call look_at_concept. If an approach fails twice, switch strategy instead of looping.\n\n"
+    "5. Batch related ops in one apply_changes call. If the user refers to a concept or you want to check existing "
+    "concepts, call list_concepts first, then look_at_concept(id=...) on an existing ID. If an approach fails twice, "
+    "switch strategy instead of looping.\n\n"
     "User request: "
 )
 

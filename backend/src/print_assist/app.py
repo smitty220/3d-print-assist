@@ -674,7 +674,11 @@ def concept_picture(cid: str, width: int = 1200) -> Response:
 
     c = ws().concepts.get(cid)
     if c is None:
-        raise HTTPException(404, f"No concept {cid!r}")
+        ws().concepts.sync()
+        c = ws().concepts.get(cid)
+    if c is None:
+        available = ", ".join(x.id for x in ws().concepts.items) or "none yet"
+        raise HTTPException(404, f"No concept {cid!r} (available: {available})")
     from .images import inline
 
     return Response(picture(inline(c.svg, ws().images), width), media_type="image/png")
