@@ -315,7 +315,7 @@ export default function App() {
   }
   const importPicker = (
     <>
-      <input ref={importInput} type="file" accept=".step,.stp" hidden onChange={(e) => onImportFile(e.target.files?.[0], false)} />
+      <input ref={importInput} type="file" accept=".step,.stp,.stl,.3mf" hidden onChange={(e) => onImportFile(e.target.files?.[0], false)} />
       <input ref={refInput} type="file" accept=".step,.stp,.stl,.3mf" hidden onChange={(e) => onImportFile(e.target.files?.[0], true)} />
     </>
   )

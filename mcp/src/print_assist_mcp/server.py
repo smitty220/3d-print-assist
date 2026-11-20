@@ -347,6 +347,27 @@ def add_reference(path: str, plate: int | None = None) -> str:
 
 
 @mcp.tool()
+def import_file(path: str, plate: int | None = None, new_design: bool = False) -> str:
+    """Import a STEP, STL or 3MF file from the user's computer (an absolute path) as a solid to edit: an Import feature
+    in its own body (the first body of an empty design). STEP is exact; a mesh is sewn into a solid (it must be
+    closed), flat areas becoming real faces. plate: which plate of a multi-plate Bambu project (default the first).
+    new_design: start a new design named after the file first. Use add_reference instead to only look and measure."""
+    from pathlib import Path
+
+    p = Path(path).expanduser()
+    if not p.is_file():
+        return _text({"error": f"no file at {p}"})
+    params: dict[str, Any] = {"new_design": new_design}
+    if plate:
+        params["plate"] = plate
+    with p.open("rb") as fh:
+        r = _call("POST", "/api/import", params=params, files={"file": (p.name, fh)}, headers=ACTOR)
+    if isinstance(r, dict) and "tree" in r:
+        return _text({"made": r.get("made"), "features": r["tree"].get("features"), "bodies": r["tree"].get("bodies")})
+    return _text(r)
+
+
+@mcp.tool()
 def save_design(message: str = "") -> str:
     """Save the design to disk and record a version with an optional message. Only save when the user asks you to;
     otherwise leave your changes unsaved for them to review (the app shows they are unsaved)."""

@@ -1,5 +1,8 @@
-"""Files from elsewhere: STEP as an exact solid (the Import feature), and STEP / STL / 3MF as reference meshes the user
-and the AI look at, measure and slice, but never print (`Design.references`).
+"""Files from elsewhere: STEP, STL and 3MF as solids to edit (the Import feature), and as reference meshes the user and
+the AI look at, measure and slice, but never print (`Design.references`).
+
+A mesh imported as a solid is sewn from its triangles, then coplanar triangles are merged into one face, so flat
+areas are real planes to sketch, cut and put text on; curved areas stay faceted, as they are in the file.
 
 Reference meshes stay triangles (nothing is sewn into a solid), so any size loads quickly. 3MF parts keep their
 names and placement: build items and nested components with their transforms (including Bambu Studio's components in
@@ -31,9 +34,67 @@ class ImportError_(ValueError):
     pass
 
 
-# ---------------------------------------------------------------- STEP solids (the Import feature)
+# ---------------------------------------------------------------- solids (the Import feature)
 
 _solids: dict[tuple[str, float], Shape] = {}
+
+
+def load_solid(path: Path, plate: int | None = None) -> Shape:
+    """A STEP, STL or 3MF file as a solid (a compound when there are several): STEP exactly, a mesh sewn from its
+    triangles. Every mesh part must be closed. Kept in memory per file, modification time and plate."""
+    if path.suffix.lower() in STEP:
+        return load_step(path)
+    if path.suffix.lower() not in MESH:
+        raise ImportError_(f"{path.name}: the Import feature takes STEP, STL or 3MF files")
+    if not path.exists():
+        raise ImportError_(f"{path.name} is missing from the design's references folder")
+    key = (str(path), path.stat().st_mtime, plate)
+    if key not in _mesh_solids:
+        solids = [mesh_solid(p) for p in read_mesh(path, plate).parts]
+        if len(_mesh_solids) > 8:
+            _mesh_solids.clear()
+        _mesh_solids[key] = solids[0] if len(solids) == 1 else Compound(children=solids)
+    return _mesh_solids[key]
+
+
+_mesh_solids: dict[tuple[str, float, int | None], Shape] = {}
+
+
+def mesh_solid(part: MeshPart) -> Shape:
+    """One closed triangle mesh as an OpenCascade solid: triangles sewn into a shell, oriented outward, and coplanar
+    neighbours merged into single faces."""
+    from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon, BRepBuilderAPI_MakeSolid,
+                                    BRepBuilderAPI_Sewing)
+    from OCP.gp import gp_Pnt
+    from OCP.ShapeFix import ShapeFix_Solid
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+    from OCP.TopAbs import TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    if part.volume() is None:
+        raise ImportError_(f"{part.name} is not a closed mesh (it has holes or loose edges), so it can't be a solid; "
+                           "repair it in the slicer or add it as a reference")
+    sew = BRepBuilderAPI_Sewing(1e-4)
+    pts = [gp_Pnt(*map(float, v)) for v in part.points]
+    for a, b, c in part.tris:
+        face = BRepBuilderAPI_MakeFace(BRepBuilderAPI_MakePolygon(pts[a], pts[b], pts[c], True).Wire(), True)
+        if face.IsDone():
+            sew.Add(face.Face())
+    sew.Perform()
+    make = BRepBuilderAPI_MakeSolid()
+    shells = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    while shells.More():
+        make.Add(TopoDS.Shell(shells.Current()))
+        shells.Next()
+    fix = ShapeFix_Solid(make.Solid())
+    fix.Perform()
+    unify = ShapeUpgrade_UnifySameDomain(fix.Solid(), True, True, False)
+    unify.Build()
+    solid = Shape.cast(unify.Shape())
+    if not solid.is_valid or solid.volume <= 0:
+        raise ImportError_(f"{part.name} could not be made into a valid solid")
+    return solid
 
 
 def load_step(path: Path) -> Shape:

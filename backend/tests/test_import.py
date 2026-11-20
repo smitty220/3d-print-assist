@@ -87,9 +87,52 @@ def test_step_import_feature_placement(tmp_path):
     assert r.parts["B1"].volume == pytest.approx(800 * 8)  # exact, not faceted
     apply(d, {"op": "edit_feature", "id": "F1", "params": {"file": "../secrets.step"}})
     assert "references folder" in build_design(d, references_dir=folder).features[0].error
-    export_stl(Box(1, 1, 1), str(folder / "m.stl"))
-    apply(d, {"op": "edit_feature", "id": "F1", "params": {"file": "m.stl"}})
-    assert "references" in build_design(d, references_dir=folder).features[0].error
+    (folder / "notes.txt").write_text("x", encoding="utf-8")
+    apply(d, {"op": "edit_feature", "id": "F1", "params": {"file": "notes.txt"}})
+    assert "STEP, STL or 3MF" in build_design(d, references_dir=folder).features[0].error
+
+
+def test_mesh_import_feature_sews_a_solid_with_flat_faces(tmp_path):
+    """A 10 mm cube from a 3MF (12 triangles) becomes a 1000 mm^3 solid with 6 flat faces, which edits like any body:
+    a 4 x 4 x 20 mm hole through it leaves 1000 - 4*4*10 = 840 mm^3."""
+    from print_assist.build.ops import apply
+    from print_assist.features.design import build_design
+    from print_assist.features.model import Design
+
+    folder = tmp_path / "references"
+    folder.mkdir()
+    plain_3mf(folder / "cube.3mf", "1 0 0 0 1 0 0 0 1 50 60 70")
+    export_stl(Box(30, 20, 2), str(folder / "lid.stl"))
+    d = Design()
+    apply(d, {"op": "add_feature", "kind": "import", "params": {"file": "cube.3mf"}})
+    r = build_design(d, references_dir=folder)
+    assert r.complete, [f.error for f in r.features]
+    s = r.parts["B1"]
+    assert s.volume == pytest.approx(1000) and len(s.faces()) == 6  # coplanar triangles merged
+    bb = s.bounding_box()
+    assert (bb.min.X, bb.min.Y, bb.min.Z, bb.max.Z) == pytest.approx((-5, -5, 0, 10))  # on the bed, centred
+    export_step(Box(4, 4, 20), str(folder / "hole.step"))
+    apply(d, {"op": "add_feature", "kind": "import", "params": {"file": "hole.step", "op": "cut"}})
+    assert build_design(d, references_dir=folder).parts["B1"].volume == pytest.approx(840)
+    apply(d, {"op": "edit_feature", "id": "F1", "params": {"file": "lid.stl"}})
+    assert build_design(d, references_dir=folder).parts["B1"].volume == pytest.approx(30 * 20 * 2 - 4 * 4 * 2)
+
+
+def test_mesh_import_refuses_an_open_mesh(tmp_path):
+    from print_assist.geometry.meshio import load_solid
+
+    folder = tmp_path / "references"
+    folder.mkdir()
+    open_tris = CUBE_T[:-2]  # the cube without its last side: 10 edges with one triangle
+    vs = "".join(f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in CUBE_V)
+    ts = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in open_tris)
+    model = ('<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+             f'<resources><object id="1" type="model"><mesh><vertices>{vs}</vertices><triangles>{ts}</triangles></mesh>'
+             '</object></resources><build><item objectid="1"/></build></model>')
+    with zipfile.ZipFile(folder / "open.3mf", "w") as z:
+        z.writestr("3D/3dmodel.model", model)
+    with pytest.raises(ImportError_, match="not a closed mesh"):
+        load_solid(folder / "open.3mf")
 
 
 def test_import_and_references_through_the_api(tmp_path):
@@ -102,7 +145,14 @@ def test_import_and_references_through_the_api(tmp_path):
     tree = c.post("/api/update").json()
     assert tree["exportable"] and c.get("/api/part").json()["volume"] == pytest.approx(800)
     r = c.post("/api/import", files={"file": ("lid.stl", b"solid x\nendsolid x\n")})
-    assert r.status_code == 422 and "reference" in r.text  # meshes are references
+    assert r.status_code == 422 and "STL" in r.text  # an unreadable mesh is refused, and not kept
+    cube = plain_3mf(tmp_path / "Cube.3mf", "1 0 0 0 1 0 0 0 1 0 0 0")
+    r = c.post("/api/import", files={"file": ("Cube.3mf", cube.read_bytes())})
+    assert r.status_code == 200, r.text
+    feats = r.json()["tree"]["features"]
+    assert feats[-1]["kind"] == "import" and len(r.json()["tree"]["bodies"]) == 2  # a body of its own
+    assert c.post("/api/update").json()["exportable"]
+    c.post("/api/ops", json={"ops": [{"op": "delete_feature", "id": feats[-1]["id"]}]})
 
     stl = tmp_path / "Lid.stl"
     export_stl(Box(30, 20, 2), str(stl))
@@ -128,7 +178,7 @@ def test_import_and_references_through_the_api(tmp_path):
     assert c.post("/api/references", files={"file": ("x.obj", b"o")}).status_code == 422
     assert c.post("/api/references", files={"file": ("Broken.3mf", b"not a zip")}).status_code == 422
     refs = sorted(p.name for p in (tmp_path / "designs" / "peg" / "references").iterdir())
-    assert refs == ["Lid.stl", "Peg.step"]  # the broken file is not kept
+    assert refs == ["Cube.3mf", "Lid.stl", "Peg.step"]  # the broken files are not kept
     c.post("/api/ops", json={"ops": [{"op": "delete_reference", "id": "R1"}]})
     assert c.get("/api/references").json() == []
 

@@ -441,11 +441,13 @@ class Import(Feature):
     kind = "import"
     label = "Import"
     group = "Create"
-    summary = ("An exact solid from a STEP file kept in the design's references folder (File > Import STEP puts it "
-               "there): add, cut or intersect. Placed on the bed, centred, or where the file puts it; then scaled, "
-               "turned about Z and moved. Meshes (STL, 3MF) are references, not imports.")
+    summary = ("A solid from a STEP, STL or 3MF file kept in the design's references folder (File > Import puts it "
+               "there): add, cut or intersect. STEP is exact; a mesh is sewn from its triangles (flat areas become "
+               "real faces, curves stay faceted) and must be closed. Placed on the bed, centred, or where the file "
+               "puts it; then scaled, turned about Z and moved.")
     params = (
-        P("file", "File", "text", "", help="a STEP file in the design's references folder"),
+        P("file", "File", "text", "", help="a STEP, STL or 3MF file in the design's references folder"),
+        P("plate", "Plate", "count", 0, 0, 999, help="a Bambu project's plate to take (0: the first)"),
         P("op", "Operation", "choice", "add", choices=OPS),
         P("place", "Placement", "choice", "on_bed", choices=("on_bed", "as_in_file"),
           help="on_bed: centred on the origin, lowest point on the bed"),
@@ -459,15 +461,15 @@ class Import(Feature):
     def build(self, ctx, p, refs):
         from pathlib import Path
 
-        from ..geometry.meshio import ImportError_, load_step
+        from ..geometry.meshio import ImportError_, load_solid
 
         name = p["file"].strip()
         if not name:
-            raise FeatureError("no file: use File > Import STEP, or name a STEP file in the references folder")
+            raise FeatureError("no file: use File > Import, or name a STEP, STL or 3MF file in the references folder")
         if ctx.references_dir is None or Path(name).name != name:
             raise FeatureError("the file must be in the design's references folder")
         try:
-            shape = load_step(Path(ctx.references_dir) / name)
+            shape = load_solid(Path(ctx.references_dir) / name, int(p["plate"]) or None)
         except ImportError_ as exc:
             raise FeatureError(str(exc)) from exc
         except Exception as exc:  # a malformed file: say which, not a stack trace

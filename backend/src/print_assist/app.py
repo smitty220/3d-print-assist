@@ -812,18 +812,17 @@ def _unreadable(path, exc: Exception, fresh: bool) -> HTTPException:
 
 
 @app.post("/api/import")
-async def import_file(file: UploadFile, new_design: bool = False, x_actor: str = Header(default=USER)) -> dict:
-    """Bring a STEP file in as an exact solid: it is kept in the design's references folder and added as an Import
-    feature in a body of its own (the first body, when the design is still empty). `new_design` starts a design named
-    after the file first. Meshes (STL, 3MF) are references instead: POST /api/references."""
-    from .geometry.meshio import STEP, load_step
+async def import_file(file: UploadFile, new_design: bool = False, plate: int | None = None,
+                      x_actor: str = Header(default=USER)) -> dict:
+    """Bring a STEP, STL or 3MF file in as a solid to edit: it is kept in the design's references folder and added as
+    an Import feature in a body of its own (the first body, when the design is still empty). STEP is exact; a mesh is
+    sewn into a solid (it must be closed). `plate`: which plate of a multi-plate Bambu project (default the first).
+    `new_design` starts a design named after the file first."""
+    from .geometry.meshio import FORMATS, load_solid
 
-    if (file.filename or "").lower().endswith((".stl", ".3mf")):
-        raise HTTPException(422, "STL and 3MF files are meshes: add them as references (File › Add reference) to look "
-                                 "at, measure and copy features from; import STEP files to edit")
-    w, path, stem, fresh = await _store(file, STEP, new_design)
+    w, path, stem, fresh = await _store(file, FORMATS, new_design)
     try:
-        await asyncio.to_thread(load_step, path)  # read it once here, so a bad file is refused before the tree
+        await asyncio.to_thread(load_solid, path, plate)  # read it once here, so a bad file is refused before the tree
     except Exception as exc:
         raise _unreadable(path, exc, fresh) from exc
     d = w.design
@@ -833,7 +832,10 @@ async def import_file(file: UploadFile, new_design: bool = False, x_actor: str =
     else:
         body = d.next_body_id()
         ops = [{"op": "add_body", "name": stem}]
-    ops.append({"op": "add_feature", "kind": "import", "body": body, "params": {"file": path.name}})
+    params: dict[str, Any] = {"file": path.name}
+    if plate:
+        params["plate"] = plate
+    ops.append({"op": "add_feature", "kind": "import", "body": body, "params": params})
     return _change(ops, x_actor, f"Import {path.name}")
 
 

@@ -9,8 +9,8 @@ const MAC = /Mac|iPhone|iPad/.test(navigator.platform)
 const K = (k: string) => (MAC ? `⌘${k}` : `Ctrl+${k}`)
 const ITEMS: ({ id: FileAction; label: string; key?: string; needsDirty?: boolean } | null)[] = [
   { id: 'new', label: 'New…' }, { id: 'open', label: 'Open…', key: K('O') }, null,
-  { id: 'reference', label: 'Add reference file…' }, { id: 'import', label: 'Import STEP as a solid…' },
-  { id: 'reference-new', label: 'New design with reference…' }, { id: 'import-new', label: 'New design from STEP…' }, null,
+  { id: 'reference', label: 'Add reference file…' }, { id: 'import', label: 'Import as a solid (STEP, STL, 3MF)…' },
+  { id: 'reference-new', label: 'New design with reference…' }, { id: 'import-new', label: 'New design from a file (STEP, STL, 3MF)…' }, null,
   { id: 'save', label: 'Save', key: K('S') }, { id: 'save-version', label: 'Save version…' }, { id: 'save-as', label: 'Save as…', key: `⇧${K('S')}` },
   { id: 'revert', label: 'Revert to saved', needsDirty: true }, null,
   { id: 'rename', label: 'Rename…' }, { id: 'history', label: 'Saved versions…' }, { id: 'reveal', label: 'Show in Finder' }, null,
