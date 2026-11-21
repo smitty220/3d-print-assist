@@ -85,3 +85,24 @@ def test_project_parts_meshes_and_placement(tmp_path):
 def test_bad_filament_is_refused(tmp_path):
     with pytest.raises(BambuError, match="filament 4"):
         write_project([Part("Box", Box(1, 1, 1), 4)], palette([]), A1, template(), tmp_path / "x.3mf", "x")
+
+
+def test_x2d_template_two_nozzles(tmp_path):
+    """The X2D template (a Bambu Studio X2D project's settings, supports off): a black body on the left nozzle and a
+    white inlay on the right one write a project the X2D opens with each filament mapped to its nozzle."""
+    x2d = profiles()["bambu_x2d"]
+    t = load_template(x2d)
+    assert t["printer_model"] == "Bambu Lab X2D" and t["enable_support"] == "0" and len(x2d.nozzles) == 2
+    assert x2d.bed == (256, 256, 261)
+    fs = [Filament(slot=1, color="#000000"), Filament(slot=2, color="#ffffff", nozzle=1)]
+    s = project_settings(t, fs, x2d)
+    assert s["filament_map"] == ["1", "2"] and s["filament_map_mode"] == "Manual"
+    assert s["filament_settings_id"] == ["Bambu PLA Basic @BBL X2D 0.4 nozzle"] * 2
+    assert len(s["different_settings_to_system"]) == 4  # process, two filaments, printer
+    parts = [Part("Body", Location((100, 100, 0)) * Box(20, 20, 5), 1),
+             Part("Text", Location((100, 100, 3)) * Box(10, 4, 1), 2)]
+    path = write_project(parts, fs, x2d, t, tmp_path / "x2d.3mf", "X2D test")
+    with zipfile.ZipFile(path) as z:
+        conf = z.read("Metadata/project_settings.config").decode()
+    assert '"printer_model": "Bambu Lab X2D"' in conf
+
