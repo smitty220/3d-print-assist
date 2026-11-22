@@ -185,7 +185,7 @@ class EngineInstaller:
     """Manages on-demand local Character Mode engine installation with progress and cancellation."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._state = InstallState()
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
@@ -271,7 +271,7 @@ class EngineInstaller:
                 headers["Range"] = f"bytes={existing}-"
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=20) as resp:
                     status = getattr(resp, "status", 200)
                     content_len = int(resp.headers.get("Content-Length") or 0)
                     if status == 206 and existing > 0:
