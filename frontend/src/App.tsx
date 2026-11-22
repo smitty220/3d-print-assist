@@ -2,9 +2,9 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type Concept, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type CreationMode, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type MlStatus, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
-import { ConceptView } from './ai/ConceptView'
+import { ConceptView, type CharacterBuildOptions } from './ai/ConceptView'
 import { PhotoView } from './ai/PhotoView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
@@ -51,6 +51,8 @@ export default function App() {
   const [conceptHidden, setConceptHidden] = useState<string | null>(null) // a waiting one the user put aside
   const [photoOpen, setPhotoOpen] = useState<string | null>(null) // reference photo shown in Photos tab
   const [openingSlug, setOpeningSlug] = useState<string | null>(null)
+  const [mlStatus, setMlStatus] = useState<MlStatus | null>(null)
+  const [sculpting, setSculpting] = useState(false)
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const leftPanel = usePanelLayout({ storageKey: 'pa.left', side: 'left', defaultWidth: 300, minWidth: 180, maxWidth: 580 })
@@ -203,23 +205,65 @@ export default function App() {
     }
     prevWaitingId.current = wid
   }, [waitingConcept?.id])
+  const creationMode: CreationMode = ai?.creation_mode ?? project?.settings.creation_mode ?? tree?.creation_mode ?? 'engineer'
+  const directBuild = Boolean(ai?.direct_build ?? project?.settings.direct_build ?? tree?.direct_build)
+
+  useEffect(() => {
+    if (creationMode !== 'character' && !mlStatus?.installing) return
+    api.mlStatus().then(setMlStatus).catch(() => {})
+    if (!mlStatus?.installing) return
+    const t = setInterval(() => { api.mlStatus().then(setMlStatus).catch(() => {}) }, 1200)
+    return () => clearInterval(t)
+  }, [creationMode, mlStatus?.installing])
+
+  // Photos tab is strictly for user-uploaded reference photos (AI-generated images never appear here).
+  const uploadedPhotos = useMemo(() => images.filter((img) => img.model === 'upload'), [images])
   const shownConcept = concepts.find((c) => c.id === conceptOpen)
     ?? (waitingConcept && waitingConcept.id !== conceptHidden ? waitingConcept : undefined)
-  const shownPhoto = shownConcept ? null : (images.find((img) => img.id === photoOpen) ?? null)
+  const shownPhoto = shownConcept ? null : (uploadedPhotos.find((img) => img.id === photoOpen) ?? null)
 
   const openPhoto = (id?: string) => {
-    const target = (id && images.find((x) => x.id === id)) || images[0]
+    const target = (id && uploadedPhotos.find((x) => x.id === id)) || uploadedPhotos[0]
     if (!target) return
     if (shownConcept?.status === 'pending') setConceptHidden(shownConcept.id)
     setConceptOpen(null)
     setPhotoOpen(target.id)
   }
 
-  const buildConcept = (c: typeof concepts[number], note: string) => {
-    const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
-    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its drawing and build it now in 3D Print Assist.${extra}`
+  const buildConcept = (c: typeof concepts[number], note: string, charOpts?: CharacterBuildOptions) => {
     setConceptOpen(null)
     if (rightPanel.collapsed) rightPanel.setCollapsed(false)
+    if (c.mode === 'character' || Boolean(c.image_file)) {
+      setSculpting(true)
+      run(async () => {
+        if (c.status === 'pending') {
+          await api.answerConcept(c.id, 'approve', note)
+          api.concepts().then(setConcepts).catch(() => {})
+        }
+        const res = await api.characterSculpt({
+          concept_id: c.id,
+          name: c.title,
+          target_height_mm: charOpts?.target_height_mm ?? 80,
+          flatten_bottom_mm: charOpts?.flatten_bottom_mm ?? 0.4,
+          base_style: charOpts?.base_style ?? 'none',
+          keychain_loop: charOpts?.keychain_loop ?? false,
+          multicolor: charOpts?.multicolor ?? Boolean(ai?.character_multicolor),
+        })
+        if (res) {
+          setTree(res.tree)
+          await Promise.all([
+            api.part().then(setPart).catch(() => {}),
+            api.checks().then(setChecks).catch(() => {}),
+            api.activity().then(setActivity).catch(() => {}),
+            api.file().then(setFile).catch(() => {}),
+          ])
+          say(`Sculpted “${res.sculpt.name}” (${res.sculpt.triangles.toLocaleString()} tris)`)
+        }
+      }).finally(() => setSculpting(false))
+      return
+    }
+    const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
+    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its drawing and build it now in 3D Print Assist.${extra}`
     run(async () => {
       if (c.status === 'pending') {
         await api.answerConcept(c.id, 'approve', note)
@@ -232,9 +276,9 @@ export default function App() {
     }).then(() => api.aiStatus().then(setAi))
   }
 
-  const answerConcept = (c: typeof concepts[number], decision: 'approve' | 'revise', note: string) => {
+  const answerConcept = (c: typeof concepts[number], decision: 'approve' | 'revise', note: string, charOpts?: CharacterBuildOptions) => {
     if (decision === 'approve') {
-      buildConcept(c, note)
+      buildConcept(c, note, charOpts)
       return
     }
     run(async () => {
@@ -244,7 +288,10 @@ export default function App() {
       api.concepts().then(setConcepts).catch(() => {})
       if (note.trim() && (ai?.mode === 'api' || !ai?.chat.running)) {
         if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
-        await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept(id="${c.id}") first, then propose a revised concept.`)
+        const toolHint = (c.mode === 'character' || Boolean(c.image_file))
+          ? 'propose_character_design'
+          : 'propose_concept'
+        await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept(id="${c.id}") first, then call ${toolHint} with the revised design.`)
       }
     }).then(() => api.aiStatus().then(setAi))
   }
@@ -339,9 +386,9 @@ export default function App() {
     else if (a === 'reveal') run(api.reveal).then((r) => r && say(`Shown in Finder: ${r.path}`))
   }
 
-  async function onName(purpose: NamePurpose, name: string) {
+  async function onName(purpose: NamePurpose, name: string, chosenMode?: CreationMode) {
     setFileModal(null)
-    if (purpose === 'new') { if (await run(() => api.createProject(name))) await reopen() }
+    if (purpose === 'new') { if (await run(() => api.createProject(name, chosenMode ?? 'engineer'))) await reopen() }
     else if (purpose === 'save-as') { if (await run(() => api.saveAs(name))) { await reopen(); say(`Saved as “${name}”`) } }
     else if (purpose === 'rename') { const f = await run(() => api.rename(name)); if (f) { setFile(f); api.tree().then(setTree); say(`Renamed to “${f.name}”`) } }
     else await doSave(name)
@@ -492,7 +539,9 @@ export default function App() {
   const modals = (
     <>
       {fileModal?.type === 'name' && (
-        <NameModal key={fileModal.purpose} {...NAMES[fileModal.purpose]} onClose={() => setFileModal(null)} onOk={(v) => onName(fileModal.purpose, v)} />
+        <NameModal key={fileModal.purpose} {...NAMES[fileModal.purpose]}
+          showModePicker={fileModal.purpose === 'new'}
+          onClose={() => setFileModal(null)} onOk={(v, m) => onName(fileModal.purpose, v, m)} />
       )}
       {fileModal?.type === 'unsaved' && (
         <UnsavedModal name={file?.name ?? 'this design'} onClose={() => setFileModal(null)}
@@ -666,7 +715,7 @@ export default function App() {
             highlight={highlight} picking={dialog?.type === 'feature' && mode !== 'plates' ? picking : null} onPick={onPick} onUpdate={update}
             plateMode={mode === 'plates'} plate={tree.print_layout?.items && plateMesh?.plate === plateNo ? plateMesh : null}
             hasDesign={concepts.length > 0}
-            hasPhotos={images.length > 0}
+            hasPhotos={uploadedPhotos.length > 0}
             canvasView={shownConcept ? 'design' : shownPhoto ? 'photos' : 'model'}
             onCanvasView={(v) => {
               if (v === 'design' && concepts[0]) {
@@ -674,7 +723,7 @@ export default function App() {
                 setConceptOpen(concepts[0].id)
                 setConceptHidden(null)
               } else if (v === 'photos') {
-                openPhoto(photoOpen ?? images[0]?.id)
+                openPhoto(photoOpen ?? uploadedPhotos[0]?.id)
               } else {
                 if (shownConcept?.status === 'pending') setConceptHidden(shownConcept.id)
                 setConceptOpen(null)
@@ -693,12 +742,14 @@ export default function App() {
               <ConceptView key={shownConcept.id} concept={shownConcept} concepts={concepts}
                 onSelectConcept={(id) => { setPhotoOpen(null); setConceptHidden(null); setConceptOpen(id) }}
                 hideAnswerInput={ai?.mode !== 'mcp'}
-                onAnswer={(decision, note) => answerConcept(shownConcept, decision, note)}
-                onBuild={(note) => buildConcept(shownConcept, note)}
+                defaultMulticolor={Boolean(ai?.character_multicolor)}
+                hasMultiSlotPrinter={(printers.find((p) => p.id === activePrinter)?.nozzles.reduce((s, n) => s + n.slots, 0) ?? 1) > 1}
+                onAnswer={(decision, note, charOpts) => answerConcept(shownConcept, decision, note, charOpts)}
+                onBuild={(note, charOpts) => buildConcept(shownConcept, note, charOpts)}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
             )}
             {shownPhoto && (
-              <PhotoView key={shownPhoto.id} image={shownPhoto} images={images}
+              <PhotoView key={shownPhoto.id} image={shownPhoto} images={uploadedPhotos}
                 onSelectImage={(id) => setPhotoOpen(id)}
                 onClose={() => setPhotoOpen(null)} />
             )}
@@ -724,7 +775,9 @@ export default function App() {
           </ViewportPane>
         )}
 
-        <AiPanel status={ai} activity={activity} images={images} context={context} concept={concepts[0] ?? null}
+        <AiPanel status={ai} activity={activity} images={uploadedPhotos} sculpts={tree.sculpts ?? []}
+          mlStatus={mlStatus} creationMode={creationMode} directBuild={directBuild} sculpting={sculpting}
+          context={context} concept={concepts[0] ?? null}
           conceptOpen={Boolean(shownConcept)}
           onAnswerConcept={(id, decision, note) => {
             const c = concepts.find((x) => x.id === id)
@@ -734,6 +787,17 @@ export default function App() {
           layout={rightPanel} zIndex={frontPanel === 'right' ? 42 : 41} onFocusPanel={() => setFrontPanel('right')}
           onOpenConcept={(id) => { setPhotoOpen(null); setConceptOpen(id); setConceptHidden(null) }}
           onOpenPhoto={(id) => openPhoto(id)}
+          onSetupMl={() => { run(() => api.mlSetup()).then((s) => s && setMlStatus(s)) }}
+          onCancelMl={() => { run(() => api.mlCancel()).then((s) => s && setMlStatus(s)) }}
+          onUpdateSculptPrep={(id, patch) => {
+            run(() => api.updateSculptPrep(id, patch)).then((r) => {
+              if (!r) return
+              setTree(r.tree)
+              api.part().then(setPart).catch(() => {})
+              api.checks().then(setChecks).catch(() => {})
+              refreshFile()
+            })
+          }}
           onUploadImage={async (f) => {
             const img = await run(() => api.uploadImage(f))
             if (img) api.images().then(setImages).catch(() => {})
@@ -744,10 +808,17 @@ export default function App() {
             if (ok) {
               const next = await api.images().catch(() => images.filter((x) => x.id !== id))
               setImages(next)
-              if (photoOpen === id) setPhotoOpen(next[0]?.id ?? null)
+              const nextUploads = next.filter((x) => x.model === 'upload')
+              if (photoOpen === id) setPhotoOpen(nextUploads[0]?.id ?? null)
             }
           }}
-          onSettings={(patch) => { run(() => api.settings(patch)).then(() => api.aiStatus().then(setAi)) }}
+          onSettings={(patch) => {
+            run(() => api.settings(patch)).then(() => Promise.all([
+              api.aiStatus().then(setAi).catch(() => {}),
+              api.project().then(setProject).catch(() => {}),
+              api.tree().then(setTree).catch(() => {}),
+            ]))
+          }}
           onSend={(t) => { run(() => api.chat(t)).then(() => api.aiStatus().then(setAi)) }}
           onCancel={() => { run(api.chatCancel) }} onReset={() => { run(api.chatReset).then(() => api.aiStatus().then(setAi)) }}
           onRevert={() => { run(api.revertAi).then((r) => { if (r) setTree(r.tree) }) }} />

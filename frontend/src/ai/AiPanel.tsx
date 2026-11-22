@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { api, type Activity, type AiStatus, type Concept, type ImageInfo } from '../api'
+import { api, type Activity, type AiStatus, type Concept, type CreationMode, type ImageInfo, type MlStatus, type SculptMesh, type SculptPrep } from '../api'
 import { Icon } from '../ui/icons'
 import type { usePanelLayout } from '../ui/usePanelLayout'
 
@@ -13,6 +13,11 @@ interface Props {
   status: AiStatus | null
   activity: Activity[]
   images: ImageInfo[]
+  sculpts?: SculptMesh[]
+  mlStatus?: MlStatus | null
+  creationMode?: CreationMode
+  directBuild?: boolean
+  sculpting?: boolean
   context: string | null
   concept: Concept | null // the newest
   conceptOpen?: boolean
@@ -25,7 +30,10 @@ interface Props {
   onOpenPhoto?: (id: string) => void
   onUploadImage: (file: File) => Promise<ImageInfo | undefined>
   onDeleteImage: (id: string) => Promise<void>
-  onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string }) => void
+  onSetupMl?: () => void
+  onCancelMl?: () => void
+  onUpdateSculptPrep?: (id: string, patch: Partial<SculptPrep>) => void
+  onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string; creation_mode?: CreationMode; direct_build?: boolean; character_multicolor?: boolean }) => void
   onSend: (text: string) => void
   onCancel: () => void
   onReset: () => void
@@ -59,6 +67,11 @@ const TOOL_LABELS: Record<string, string> = {
   render_preview: 'rendering preview',
   run_checks: 'running print checks',
   propose_concept: 'preparing concept',
+  propose_character_design: 'creating character design',
+  sculpt_character: 'molding 3D clay',
+  update_mesh_prep: 'preparing print mesh',
+  set_creation_mode: 'switching mode',
+  list_concepts: 'checking designs',
   wait_for_concept: 'waiting for concept approval',
   generate_image: 'generating image',
   look_at_image: 'inspecting image',
@@ -66,7 +79,7 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, sculpts = [], mlStatus, creationMode = 'engineer', directBuild = false, sculpting = false, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSetupMl, onCancelMl, onUpdateSculptPrep, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
@@ -279,6 +292,90 @@ export function AiPanel({ status, activity, images, context, concept, conceptOpe
           </div>
         )}
       </div>
+      <div className="row sm" style={{ padding: '6px 12px', gap: 8, borderBottom: '1px solid var(--line)', background: 'var(--panel)', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="seg sm" role="group" aria-label="Creation mode">
+          <button type="button" aria-pressed={creationMode === 'engineer'}
+            onClick={() => onSettings?.({ creation_mode: 'engineer' })}
+            title="Engineer Mode: parametric CAD extrusions, sketches & exact dimensions">
+            Engineer
+          </button>
+          <button type="button" aria-pressed={creationMode === 'character'}
+            onClick={() => onSettings?.({ creation_mode: 'character' })}
+            title="Character Mode: local 2D turnaround + organic 3D clay sculpting">
+            Character
+          </button>
+        </div>
+        <span className="spacer" />
+        <label className="row sm" style={{ gap: 4, cursor: 'pointer', fontSize: 11.5 }}
+          title="Bypass the Design File approval gate and build the 3D model directly from prompts">
+          <input type="checkbox" checked={directBuild}
+            onChange={(e) => onSettings?.({ direct_build: e.target.checked })} />
+          <span>Direct build</span>
+        </label>
+      </div>
+      {creationMode === 'character' && mlStatus && !mlStatus.ready && (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--line)', background: 'color-mix(in srgb, var(--accent) 10%, var(--panel-2))', fontSize: 12 }}>
+          <div className="row sm" style={{ gap: 8, alignItems: 'center' }}>
+            <b>Local Character Engine (Free)</b>
+            <span className="spacer" />
+            <span className="nm" style={{ fontSize: 11 }}>{mlStatus.hardware.gpu_name} · {mlStatus.hardware.ram_gb} GB</span>
+          </div>
+          {mlStatus.installing ? (
+            <div style={{ marginTop: 6 }}>
+              <div className="row sm" style={{ gap: 6, marginBottom: 4 }}>
+                <span>{mlStatus.stage || 'Installing…'} ({mlStatus.progress_pct}%)</span>
+                <span className="spacer" />
+                <button type="button" className="btn sm" onClick={onCancelMl}>Cancel</button>
+              </div>
+              <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden' }}>
+                <div style={{ width: `${mlStatus.progress_pct}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.3s' }} />
+              </div>
+              {mlStatus.detail && <div className="nm" style={{ marginTop: 3, fontSize: 11 }}>{mlStatus.detail}</div>}
+            </div>
+          ) : (
+            <div style={{ marginTop: 6 }}>
+              <div className="nm" style={{ fontSize: 11.5, marginBottom: 6 }}>
+                One-time free download (~{mlStatus.hardware.estimated_download_gb} GB) into your shared <code>ml-engine</code> folder ({mlStatus.hardware.sculptor_label}).
+              </div>
+              {mlStatus.error && <div style={{ color: 'var(--bad)', fontSize: 11.5, marginBottom: 6 }}>{mlStatus.error}</div>}
+              <button type="button" className="btn primary sm" onClick={onSetupMl}>Set up Character Engine</button>
+            </div>
+          )}
+        </div>
+      )}
+      {sculpting && (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', fontSize: 12 }}>
+          <b>Molding 3D clay &amp; repairing watertight mesh…</b>
+        </div>
+      )}
+      {sculpts.length > 0 && onUpdateSculptPrep && (() => {
+        const s = sculpts[sculpts.length - 1]
+        return (
+          <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', fontSize: 11.5, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            <b>{s.id} Prep:</b>
+            <label className="row sm" style={{ gap: 3 }}>
+              <span>H</span>
+              <input type="number" min={15} max={300} defaultValue={s.prep.target_height_mm} key={`${s.id}-h-${s.prep.target_height_mm}`}
+                onBlur={(e) => { const v = Number(e.target.value); if (v > 0 && v !== s.prep.target_height_mm) onUpdateSculptPrep(s.id, { target_height_mm: v }) }}
+                style={{ width: 52, fontSize: 11.5, padding: '1px 4px' }} />
+              <span>mm</span>
+            </label>
+            <select aria-label="Sculpt display base" value={s.prep.base_style}
+              onChange={(e) => onUpdateSculptPrep(s.id, { base_style: e.target.value as SculptPrep['base_style'] })}
+              style={{ fontSize: 11.5, padding: '1px 4px' }}>
+              <option value="none">No base</option>
+              <option value="round">Round base</option>
+              <option value="oval">Oval base</option>
+              <option value="square">Square base</option>
+            </select>
+            <label className="row sm" style={{ gap: 3, cursor: 'pointer' }}>
+              <input type="checkbox" checked={s.prep.keychain_loop}
+                onChange={(e) => onUpdateSculptPrep(s.id, { keychain_loop: e.target.checked })} />
+              <span>Loop</span>
+            </label>
+          </div>
+        )
+      })()}
       {context && <div className="ctx">Context: {context}</div>}
       {mode === 'mcp' && concept && !conceptOpen && (
         <div className="ccard">

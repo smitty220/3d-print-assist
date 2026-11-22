@@ -124,6 +124,37 @@ class PrintItem(BaseModel):
     settings: dict[str, str] = Field(default_factory=dict)  # slicer settings for this object only ("sparse_infill_density": "8%")
 
 
+class SculptPrep(BaseModel):
+    """Print-readiness and finishing settings for a Character Mode organic 3D mesh."""
+
+    target_height_mm: float = Field(default=80.0, ge=0.0, le=500.0)
+    flatten_bottom_mm: float = Field(default=0.4, ge=0.0, le=10.0)
+    base_style: Literal["none", "round", "oval", "square"] = "none"
+    base_height_mm: float = Field(default=3.0, ge=1.0, le=20.0)
+    base_margin_mm: float = Field(default=4.0, ge=0.0, le=30.0)
+    keychain_loop: bool = False
+    keychain_hole_mm: float = Field(default=4.5, ge=2.0, le=15.0)
+    rotate_x: float = 0.0
+    rotate_y: float = 0.0
+    rotate_z: float = 0.0
+    max_colors: int = Field(default=1, ge=1, le=8)
+
+
+class SculptMesh(BaseModel):
+    """A printable organic 3D sculpt ("molding clay") stored in the design's `sculpts/` folder."""
+
+    id: str  # "M1", "M2", ...
+    name: str = "Sculpt"
+    source_file: str  # filename inside `sculpts/` (e.g. "M1_raw.glb" or "M1_raw.stl")
+    concept_id: str = ""
+    filament: int | None = None
+    color: str | None = "#b8c2cc"
+    prep: SculptPrep = Field(default_factory=SculptPrep)
+    watertight: bool = True
+    triangles: int = 0
+    volume_mm3: float = 0.0
+
+
 def _default_bodies() -> list[Body]:
     return [Body(id="B1", name="Body")]
 
@@ -132,6 +163,7 @@ class Design(BaseModel):
     parameters: list[Parameter] = Field(default_factory=list)
     bodies: list[Body] = Field(default_factory=_default_bodies)
     features: list[FeatureInstance] = Field(default_factory=list)
+    sculpts: list[SculptMesh] = Field(default_factory=list)
     rollback: int | None = None  # features[rollback:] are past the end-of-part bar and not built
     sketches: list[Sketch] = Field(default_factory=list)  # consumed by pad / sketch_pocket features
     filaments: list[Filament] = Field(default_factory=list)
@@ -169,6 +201,16 @@ class Design(BaseModel):
 
     def body(self, bid: str) -> Body | None:
         return next((b for b in self.bodies if b.id == bid), None)
+
+    def sculpt(self, sid: str) -> SculptMesh | None:
+        return next((s for s in self.sculpts if s.id == sid), None)
+
+    def next_sculpt_id(self) -> str:
+        used = {int(s.id[1:]) for s in self.sculpts if s.id.startswith("M") and s.id[1:].isdigit()}
+        n = 1
+        while n in used:
+            n += 1
+        return f"M{n}"
 
     def next_sketch_id(self) -> str:
         used = {int(s.id[1:]) for s in self.sketches if s.id[1:].isdigit()}

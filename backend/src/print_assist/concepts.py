@@ -24,6 +24,10 @@ class Concept(BaseModel):
     title: str
     summary: str = ""
     svg: str = ""
+    mode: Literal["engineer", "character"] = "engineer"
+    image_file: str = ""  # Character Mode turnaround PNG kept in concepts/ (never in Photos/images)
+    reference_photos: list[str] = Field(default_factory=list)
+    views: list[str] = Field(default_factory=list)  # e.g. ["front", "side", "back"]
     assumptions: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     actor: str = "claude-code"
@@ -111,19 +115,55 @@ class Concepts:
                 c.status, c.note, c.answered = "revise", note, time.time()
                 self._save(c)
 
-    def propose(self, title: str, svg: str, summary: str = "", assumptions: list[str] | None = None,
-                questions: list[str] | None = None, actor: str = "claude-code") -> Concept:
+    def image_path(self, cid: str) -> Path | None:
+        c = self.get(cid)
+        if c is None or not c.image_file:
+            return None
+        p = self.folder / c.image_file
+        return p if p.is_file() else None
+
+    def propose(self, title: str, svg: str = "", summary: str = "", assumptions: list[str] | None = None,
+                questions: list[str] | None = None, actor: str = "claude-code",
+                mode: Literal["engineer", "character"] = "engineer",
+                image_bytes: bytes | None = None, image_ext: str = ".png",
+                reference_photos: list[str] | None = None,
+                views: list[str] | None = None) -> Concept:
         if not title.strip():
             raise ConceptError("a concept needs a title")
-        drawing = check_svg(svg)
+        n = max((int(c.id[1:]) for c in self.items if c.id[1:].isdigit()), default=0) + 1
+        cid = f"K{n}"
+        image_file = ""
+        if image_bytes is not None:
+            import base64
+            import io
+            from PIL import Image as PILImage
+
+            self.folder.mkdir(parents=True, exist_ok=True)
+            ext = image_ext if image_ext in (".png", ".jpg", ".webp") else ".png"
+            image_file = f"{cid}{ext}"
+            (self.folder / image_file).write_bytes(image_bytes)
+            with PILImage.open(io.BytesIO(image_bytes)) as im:
+                iw, ih = im.size
+            mime = "image/jpeg" if ext == ".jpg" else "image/webp" if ext == ".webp" else "image/png"
+            b64 = base64.b64encode(image_bytes).decode()
+            drawing = (
+                f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {iw} {ih}" width="{iw}" height="{ih}">'
+                f'<image href="data:{mime};base64,{b64}" width="{iw}" height="{ih}"/></svg>'
+            )
+        else:
+            drawing = check_svg(svg)
         for old in self.items:  # a new concept replaces one still waiting
             if old.status == "pending":
                 old.status, old.note, old.answered = "revise", "replaced by a newer concept", time.time()
                 self._save(old)
-        n = max((int(c.id[1:]) for c in self.items if c.id[1:].isdigit()), default=0) + 1
-        c = Concept(id=f"K{n}", title=title.strip(), summary=summary.strip(), svg=drawing,
-                    assumptions=[a for a in (assumptions or []) if a.strip()],
-                    questions=[q for q in (questions or []) if q.strip()], actor=actor)
+        c = Concept(
+            id=cid, title=title.strip(), summary=summary.strip(), svg=drawing,
+            mode=mode, image_file=image_file,
+            reference_photos=list(reference_photos or []),
+            views=list(views or []),
+            assumptions=[a for a in (assumptions or []) if a.strip()],
+            questions=[q for q in (questions or []) if q.strip()], actor=actor,
+        )
         self.items.append(c)
         self._save(c)
         return c

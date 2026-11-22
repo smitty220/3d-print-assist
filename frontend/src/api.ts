@@ -119,6 +119,60 @@ export interface DesignInfo { slug: string; name: string; modified: number; thum
 
 export interface Version { id: string; at: string; message: string }
 
+export type CreationMode = 'engineer' | 'character'
+
+export interface SculptPrep {
+  target_height_mm: number
+  flatten_bottom_mm: number
+  base_style: 'none' | 'round' | 'oval' | 'square'
+  base_height_mm: number
+  base_margin_mm: number
+  keychain_loop: boolean
+  keychain_hole_mm: number
+  rotate_x: number
+  rotate_y: number
+  rotate_z: number
+  max_colors: number
+}
+
+export interface SculptMesh {
+  id: string
+  name: string
+  source_file: string
+  concept_id: string
+  filament: number | null
+  color: string | null
+  prep: SculptPrep
+  watertight: boolean
+  triangles: number
+  volume_mm3: number
+}
+
+export interface MlStatus {
+  ready: boolean
+  painter_ready: boolean
+  sculptor_ready: boolean
+  engine_dir: string
+  disk_gb: number
+  installing: boolean
+  stage: string
+  progress_pct: number
+  detail: string
+  error: string
+  hardware: {
+    os_name: string
+    arch: string
+    accelerator: 'cuda' | 'mps' | 'vulkan' | 'cpu'
+    gpu_name: string
+    ram_gb: number
+    vram_gb: number
+    tier: 'high' | 'balanced' | 'fast'
+    painter_label: string
+    sculptor_label: string
+    estimated_download_gb: number
+  }
+}
+
 export interface Tree {
   name: string
   slug: string
@@ -128,6 +182,8 @@ export interface Tree {
   rev: number
   built_rev: number
   mode: 'manual' | 'auto'
+  creation_mode?: CreationMode
+  direct_build?: boolean
   pending: string[]
   pending_count: number
   stale: boolean
@@ -138,6 +194,7 @@ export interface Tree {
   features: FeatureNode[]
   sketches: SketchNode[]
   bodies: BodyNode[]
+  sculpts?: SculptMesh[]
   errors: Record<string, string>
   filaments: Filament[]
   variants: Variant[]
@@ -152,6 +209,10 @@ export interface Concept {
   title: string
   summary: string
   svg: string
+  mode?: CreationMode
+  image_file?: string
+  reference_photos?: string[]
+  views?: string[]
   assumptions: string[]
   questions: string[]
   actor: string
@@ -273,6 +334,9 @@ export interface AiStatus {
   model: string
   key: boolean
   mode: 'mcp' | 'api'
+  creation_mode?: CreationMode
+  direct_build?: boolean
+  character_multicolor?: boolean
   provider?: string
   settings_provider?: string
   settings_model?: string
@@ -305,6 +369,9 @@ export interface Project {
     ai_mode: 'mcp' | 'api'
     ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'
     ai_model?: string
+    creation_mode?: CreationMode
+    direct_build?: boolean
+    character_multicolor?: boolean
   }
   design: { sketches: (Sketch & { report?: SolveReport | null })[] }
 }
@@ -348,7 +415,8 @@ export const api = {
   undo: () => send<{ undone: string; tree: Tree }>('POST', '/undo'),
   redo: () => send<{ redone: string; tree: Tree }>('POST', '/redo'),
   restoreVersion: (id: string) => send<{ tree: Tree }>('POST', `/history/${id}/restore`),
-  createProject: (name: string) => send<Project>('POST', '/projects', { name }),
+  createProject: (name: string, creation_mode: CreationMode = 'engineer') =>
+    send<Project>('POST', '/projects', { name, creation_mode }),
   openProject: (slug: string) => send<Project>('POST', `/projects/${encodeURIComponent(slug)}/open`),
   history: () => get<Version[]>('/history'),
   printers: () => get<Printer[]>('/printers'),
@@ -386,8 +454,36 @@ export const api = {
   rollback: (index: number | null) => send<Changed>('PUT', '/rollback', { index }),
   evalExpr: (expr: string) => send<{ value?: number; error?: string }>('POST', '/expr/eval', { expr }),
   concepts: () => get<Concept[]>('/concepts'),
+  conceptPictureUrl: (id: string) => `/api/concepts/${encodeURIComponent(id)}/picture`,
   answerConcept: (id: string, decision: 'approve' | 'revise', note: string) =>
     send<Concept>('POST', `/concepts/${id}/answer`, { decision, note }),
+  mlStatus: () => get<MlStatus>('/ml/status'),
+  mlSetup: (components: ('painter' | 'sculptor')[] = ['painter', 'sculptor']) =>
+    send<MlStatus>('POST', '/ml/setup', { components }),
+  mlCancel: () => send<MlStatus>('POST', '/ml/cancel'),
+  characterDesign: (body: {
+    title: string
+    prompt: string
+    summary?: string
+    reference_photos?: string[]
+    turnaround?: boolean
+  }) => send<Concept>('POST', '/character/design', body),
+  characterSculpt: (body: {
+    concept_id?: string
+    name?: string
+    prompt?: string
+    reference_photos?: string[]
+    target_height_mm?: number
+    flatten_bottom_mm?: number
+    base_style?: 'none' | 'round' | 'oval' | 'square'
+    base_height_mm?: number
+    keychain_loop?: boolean
+    multicolor?: boolean
+    color?: string | null
+  }) => send<{ sculpt: SculptMesh; tree: Tree }>('POST', '/character/sculpt', body),
+  updateSculptPrep: (id: string, patch: Partial<SculptPrep> & { name?: string; color?: string | null; filament?: number | null }) =>
+    send<{ sculpt: SculptMesh; tree: Tree }>('POST', `/sculpts/${encodeURIComponent(id)}/prep`, patch),
+  deleteSculpt: (id: string) => send<{ deleted: string; tree: Tree }>('DELETE', `/sculpts/${encodeURIComponent(id)}`),
   images: () => get<ImageInfo[]>('/images'),
   imageUrl: (id: string) => `/api/images/${encodeURIComponent(id)}`,
   uploadImage: (file: File, note = '') => {

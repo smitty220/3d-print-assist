@@ -76,6 +76,9 @@ class Workspace:
         self._checks: tuple[tuple, dict] | None = None  # the print checks, for one build, palette and printer
         self._checks_lock = threading.Lock()
         self._layout: tuple[tuple, object, dict] | None = None  # the resolved print layout and plate meshes, for one key
+        self.sculpts_dir = project.root / "sculpts"
+        self.sculpts_dir.mkdir(parents=True, exist_ok=True)
+        self._sculpt_cache: dict[str, tuple[tuple, object]] = {}
         self.concepts = Concepts(project.root / "concepts")
         self.images = Images(project.root / "images")
         self.working: Design = project.data.design.model_copy(deep=True)
@@ -274,6 +277,137 @@ class Workspace:
                     self.update()
                     return f"AI: {label}"
 
+    # ---------- Character Mode sculpts ----------
+
+    def _prepared_sculpts(self):
+        from ..geometry.mesh_prep import MeshPrepError, prepare_print_mesh
+
+        out = []
+        d = self.design
+        for sm in d.sculpts:
+            p = self.sculpts_dir / sm.source_file
+            if not p.is_file():
+                continue
+            fil = d.filament(sm.filament)
+            color = fil.color if fil else (sm.color or "#b8c2cc")
+            key = (sm.source_file, p.stat().st_mtime, sm.prep.model_dump_json(), sm.name, color, sm.filament)
+            cached = self._sculpt_cache.get(sm.id)
+            if cached is None or cached[0] != key:
+                try:
+                    prepared = prepare_print_mesh(p, sm.prep, name=sm.name, color=color, filament=sm.filament)
+                except MeshPrepError:
+                    continue
+                self._sculpt_cache[sm.id] = (key, prepared)
+            out.append((sm, self._sculpt_cache[sm.id][1]))
+        return out
+
+    def add_sculpt(self, actor: str, name: str, raw_bytes: bytes, ext: str = ".glb", concept_id: str = "",
+                   prep=None, color: str | None = "#b8c2cc", filament: int | None = None):
+        from ..features.model import SculptMesh, SculptPrep
+        from ..geometry.mesh_prep import prepare_print_mesh
+
+        norm_ext = ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+        if norm_ext not in (".glb", ".gltf", ".obj", ".stl", ".ply", ".3mf"):
+            norm_ext = ".glb"
+        with self.lock:
+            trial = self.design.model_copy(deep=True)
+            sid = trial.next_sculpt_id()
+            fname = f"{sid}_raw{norm_ext}"
+            self.sculpts_dir.mkdir(parents=True, exist_ok=True)
+            raw_path = self.sculpts_dir / fname
+            raw_path.write_bytes(raw_bytes)
+            use_prep = prep if isinstance(prep, SculptPrep) else SculptPrep.model_validate(prep or {})
+            prepared = prepare_print_mesh(raw_path, use_prep, name=name or sid, color=color, filament=filament)
+            sm = SculptMesh(
+                id=sid,
+                name=(name or sid).strip(),
+                source_file=fname,
+                concept_id=concept_id,
+                filament=filament,
+                color=color,
+                prep=use_prep,
+                watertight=prepared.watertight,
+                triangles=prepared.triangles,
+                volume_mm3=round(prepared.volume_mm3, 2),
+            )
+            trial.sculpts.append(sm)
+            self.undo_stack.append(Step(self.working.model_dump_json(), f"Sculpt {sm.name}", actor))
+            del self.undo_stack[:-UNDO_LIMIT]
+            self.redo_stack.clear()
+            self._set(trial)
+            self._sculpt_cache[sid] = (
+                (fname, raw_path.stat().st_mtime, use_prep.model_dump_json(), sm.name, color or "#b8c2cc", filament),
+                prepared,
+            )
+            self.log(actor, f"Sculpted {sm.id} ({sm.name}): {sm.triangles:,} tris, watertight={sm.watertight}")
+            return sm
+
+    def update_sculpt_prep(self, actor: str, sid: str, patch: dict):
+        from ..features.model import SculptPrep
+        from ..geometry.mesh_prep import prepare_print_mesh
+
+        with self.lock:
+            trial = self.design.model_copy(deep=True)
+            sm = trial.sculpt(sid)
+            if sm is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            raw_path = self.sculpts_dir / sm.source_file
+            data = sm.prep.model_dump()
+            for k, v in patch.items():
+                if k in data and v is not None:
+                    data[k] = v
+            new_prep = SculptPrep.model_validate(data)
+            if "name" in patch and patch["name"]:
+                sm.name = str(patch["name"]).strip()
+            if "color" in patch:
+                sm.color = patch["color"]
+            if "filament" in patch:
+                sm.filament = patch["filament"]
+            fil = trial.filament(sm.filament)
+            color = fil.color if fil else (sm.color or "#b8c2cc")
+            prepared = prepare_print_mesh(raw_path, new_prep, name=sm.name, color=color, filament=sm.filament)
+            sm.prep = new_prep
+            sm.watertight = prepared.watertight
+            sm.triangles = prepared.triangles
+            sm.volume_mm3 = round(prepared.volume_mm3, 2)
+            self.undo_stack.append(Step(self.working.model_dump_json(), f"Prep {sm.name}", actor))
+            del self.undo_stack[:-UNDO_LIMIT]
+            self.redo_stack.clear()
+            self._set(trial)
+            self._sculpt_cache.pop(sid, None)
+            self.log(actor, f"Updated print prep for {sm.id} ({sm.name})")
+            return sm
+
+    def delete_sculpt(self, actor: str, sid: str) -> None:
+        with self.lock:
+            trial = self.design.model_copy(deep=True)
+            if trial.sculpt(sid) is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            trial.sculpts = [s for s in trial.sculpts if s.id != sid]
+            self.undo_stack.append(Step(self.working.model_dump_json(), f"Delete sculpt {sid}", actor))
+            del self.undo_stack[:-UNDO_LIMIT]
+            self.redo_stack.clear()
+            self._set(trial)
+            self._sculpt_cache.pop(sid, None)
+            self.log(actor, f"Removed sculpt {sid}")
+
+    def export_current(self, fmt: str, path: Path) -> Path:
+        """Export either Character Mode sculpted meshes or Engineer Mode OpenCascade solids."""
+        from ..export import export
+        from ..geometry.mesh_prep import export_prepared_meshes
+
+        with self.lock:
+            good = self.last_good
+            sculpts = self._prepared_sculpts()
+            has_cad = bool(good and good.parts)
+            if sculpts and not has_cad:
+                parts = [p for _, ps in sculpts for p in ps.parts]
+                return export_prepared_meshes(parts, self.project.printer, fmt, path, self.project.data.name, self.design)
+            names = {b.id: b.name for b in self.design.bodies}
+            colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
+            return export(good.parts if good else {}, names, self.project.printer, fmt, path,
+                          self.project.data.name, colors, self.design)
+
     # ---------- concepts ----------
 
     def propose_concept(self, actor: str, **kw) -> Concept:
@@ -314,11 +448,47 @@ class Workspace:
         with self._checks_lock:
             with self.lock:
                 good, design = self.last_good, self.design
-                key = (id(good), design.model_dump_json(include={"filaments", "bodies"}), self.project.data.settings.printer,
-                       repr(self.project.data.rules))
+                sculpt_sig = json.dumps([s.model_dump() for s in design.sculpts])
+                key = (id(good), design.model_dump_json(include={"filaments", "bodies"}), sculpt_sig,
+                       self.project.data.settings.printer, repr(self.project.data.rules))
                 stale = bool(self.pending())
+                sculpts = self._prepared_sculpts()
             if self._checks is None or self._checks[0] != key:
                 rep = validate(good, self.project.data.rules, self.project.printer, design=design).to_dict()
+                if sculpts:
+                    bed = self.project.printer.bed
+                    all_ok = all(ps.watertight for _, ps in sculpts)
+                    total_tris = sum(ps.triangles for _, ps in sculpts)
+                    total_vol = sum(ps.volume_mm3 for _, ps in sculpts)
+                    mass_g = total_vol * 0.00124  # PLA ~1.24 g/cm3
+                    bmin = [min(ps.bbox_min[i] for _, ps in sculpts) for i in range(3)]
+                    bmax = [max(ps.bbox_max[i] for _, ps in sculpts) for i in range(3)]
+                    dims = [bmax[i] - bmin[i] for i in range(3)]
+                    fits = dims[0] <= bed[0] and dims[1] <= bed[1] and dims[2] <= bed[2]
+                    sculpt_findings = [
+                        {
+                            "stage": "part", "code": "manifold", "title": "Watertight mesh",
+                            "status": "ok" if all_ok else "fail",
+                            "detail": f"{total_tris:,} triangles, closed solid" if all_ok else "Non-manifold edges found",
+                            "value": total_tris, "quantity": "count", "refs": [sm.id for sm, _ in sculpts], "points": [],
+                        },
+                        {
+                            "stage": "part", "code": "bed", "title": "Fits the bed",
+                            "status": "ok" if fits else "fail",
+                            "detail": f"{dims[0]:.1f} × {dims[1]:.1f} × {dims[2]:.1f} mm (bed {bed[0]:.0f} × {bed[1]:.0f} × {bed[2]:.0f} mm)",
+                            "value": None, "quantity": None, "refs": [], "points": [],
+                        },
+                        {
+                            "stage": "part", "code": "mass", "title": "Mass",
+                            "status": "ok",
+                            "detail": f"~{mass_g:.0f} g ({total_vol / 1000:.1f} cm³)",
+                            "value": round(mass_g, 1), "quantity": "mass", "refs": [], "points": [],
+                        },
+                    ]
+                    if not (good and good.parts):
+                        rep["part"] = sculpt_findings
+                    else:
+                        rep["part"] = [*rep.get("part", []), *sculpt_findings]
                 self._checks = (key, rep)
             return self._checks[1] | {"stale": stale}
 
@@ -326,10 +496,12 @@ class Workspace:
         """A picture of the last good part from a standard view, or of one plate of the print layout: "plate2" (iso),
         "plate2-top" (from above), with the bed under it; "plate2-bottom" (from below, without the bed) shows the faces
         that print on the bed."""
+        from ..geometry.mesh_prep import render_prepared_meshes
         from ..geometry.render import render
 
         with self.lock:
             good = self.last_good
+            sculpts = self._prepared_sculpts()
             bodies = []
             colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
             if (m := re.fullmatch(r"plate(\d+)(?:-(\w+))?", view)) is not None:
@@ -342,8 +514,11 @@ class Workspace:
                 view = m[2] or "iso"
                 if view != "bottom":  # from below, the bed would hide the faces that print on it
                     bodies.append((Location((bed[0] / 2, bed[1] / 2, -0.5)) * Box(bed[0], bed[1], 1), "#44484f"))
-            elif good is not None:
+            elif good is not None and good.parts:
                 bodies = [(shape, colors.get(bid)) for bid, shape in good.parts.items()]
+            elif sculpts:
+                parts = [p for _, ps in sculpts for p in ps.parts]
+                return render_prepared_meshes(parts, view, size)
         return render(bodies, view, size)
 
     def _resolved(self):
@@ -487,9 +662,12 @@ class Workspace:
                 "undo": self.undo_stack[-1].label if self.undo_stack else None,
                 "redo": self.redo_stack[-1].label if self.redo_stack else None,
                 "rev": self.rev, "built_rev": self.built_rev, "mode": self.mode,
+                "creation_mode": self.project.data.settings.creation_mode,
+                "direct_build": self.project.data.settings.direct_build,
                 "pending": pending, "pending_count": len(pending), "stale": bool(pending), "failed": failed,
-                "exportable": not pending and not failed and self.last_good is not None,
+                "exportable": (not pending and not failed and self.last_good is not None) or bool(d.sculpts),
                 "rollback": d.rollback, "params": params, "features": features, "sketches": sketches, "bodies": bodies,
+                "sculpts": [s.model_dump() for s in d.sculpts],
                 "errors": r.errors, "filaments": [f.model_dump() for f in d.filaments],
                 "variants": [v.model_dump() for v in d.variants], "colorways": [c.model_dump() for c in d.colorways],
                 "references": [x.model_dump() for x in d.references],
@@ -499,6 +677,8 @@ class Workspace:
 
     def part(self) -> dict:
         """The last good part, one mesh per body (meshes cached until the next good update; names and colours current)."""
+        from ..geometry.mesh_prep import to_viewer_mesh
+
         with self.lock:
             good = self.last_good
             if self._mesh is None or self._mesh[0] != id(good):
@@ -512,8 +692,16 @@ class Workspace:
             d = self.design
             bodies = [{"id": b.id, "name": b.name, "color": d.body_color(b), "mesh": meshes[b.id]}
                       for b in d.bodies if b.id in meshes]
+            sculpt_vol = 0.0
+            for sm, prepared in self._prepared_sculpts():
+                sculpt_vol += prepared.volume_mm3
+                for idx, p in enumerate(prepared.parts):
+                    bid = sm.id if idx == 0 else f"{sm.id}_{idx + 1}"
+                    bodies.append({"id": bid, "name": p.name or sm.name, "color": p.color, "mesh": to_viewer_mesh(p, bid)})
             pending = self.pending()
-            return {"bodies": bodies, "volume": good.volume if good else 0.0, "mass": good.mass if good else 0.0,
+            total_vol = (good.volume if good else 0.0) + sculpt_vol
+            total_mass = (good.mass if good else 0.0) + sculpt_vol * 1.24e-6
+            return {"bodies": bodies, "volume": total_vol, "mass": total_mass,
                     "rev": self.rev, "built_rev": self.built_rev, "stale": bool(pending),
                     "failed": bool(self.last and not self.last.complete)}
 

@@ -1,6 +1,6 @@
 // The File menu's dialogs: a name, unsaved changes, opening a design, and saved versions. Never browser alerts.
 import { useEffect, useState } from 'react'
-import { api, type DesignInfo, type Version } from '../api'
+import { api, type CreationMode, type DesignInfo, type Version } from '../api'
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   useEffect(() => {
@@ -18,14 +18,35 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
   )
 }
 
-export function NameModal({ title, label, initial, ok, onOk, onClose }: { title: string; label: string; initial: string; ok: string; onOk: (v: string) => void; onClose: () => void }) {
+export function NameModal({ title, label, initial, ok, showModePicker, onOk, onClose }: {
+  title: string; label: string; initial: string; ok: string; showModePicker?: boolean
+  onOk: (v: string, mode?: CreationMode) => void; onClose: () => void
+}) {
   const [v, setV] = useState(initial)
+  const [mode, setMode] = useState<CreationMode>('engineer')
   return (
     <Modal title={title} onClose={onClose}>
-      <form className="dbody" onSubmit={(e) => { e.preventDefault(); if (v.trim()) onOk(v.trim()) }}>
+      <form className="dbody" onSubmit={(e) => { e.preventDefault(); if (v.trim()) onOk(v.trim(), showModePicker ? mode : undefined) }}>
         <div className="xfield"><label htmlFor="nm-in">{label}</label>
           <input id="nm-in" autoFocus value={v} onChange={(e) => setV(e.target.value)} onFocus={(e) => e.target.select()} />
         </div>
+        {showModePicker && (
+          <fieldset style={{ border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px', margin: '4px 0 0' }}>
+            <legend style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', opacity: 0.75, padding: '0 4px' }}>Creation Mode</legend>
+            <div className="row" style={{ gap: 8 }}>
+              <button type="button" className={`btn${mode === 'engineer' ? ' primary' : ''}`} style={{ flex: 1, textAlign: 'left', padding: '8px 10px' }}
+                aria-pressed={mode === 'engineer'} onClick={() => setMode('engineer')}>
+                <div><b>Engineer Mode</b></div>
+                <div className="nm" style={{ opacity: 0.85, fontSize: 11 }}>Math, extrusions &amp; exact CAD parts</div>
+              </button>
+              <button type="button" className={`btn${mode === 'character' ? ' primary' : ''}`} style={{ flex: 1, textAlign: 'left', padding: '8px 10px' }}
+                aria-pressed={mode === 'character'} onClick={() => setMode('character')}>
+                <div><b>Character Mode</b></div>
+                <div className="nm" style={{ opacity: 0.85, fontSize: 11 }}>Molding clay: figurines &amp; organic scenes</div>
+              </button>
+            </div>
+          </fieldset>
+        )}
         <div className="dfoot flush"><span className="spacer" /><button type="button" className="btn" onClick={onClose}>Cancel</button>
           <button type="submit" className="btn primary" disabled={!v.trim()}>{ok}</button></div>
       </form>

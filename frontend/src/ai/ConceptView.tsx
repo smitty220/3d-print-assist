@@ -2,27 +2,48 @@
 // Shown large over the 3D view while it waits; the user approves it or says what to change.
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { Concept } from '../api'
+import { api, type Concept } from '../api'
 
 const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
 const STATUS = { pending: 'Waiting for you', approved: 'Approved', revise: 'Changes asked' } as const
+
+export interface CharacterBuildOptions {
+  target_height_mm: number
+  flatten_bottom_mm: number
+  base_style: 'none' | 'round' | 'oval' | 'square'
+  keychain_loop: boolean
+  multicolor: boolean
+}
 
 interface Props {
   concept: Concept
   concepts?: Concept[]
   onSelectConcept?: (id: string) => void
   hideAnswerInput?: boolean
-  onAnswer: (decision: 'approve' | 'revise', note: string) => void
-  onBuild?: (note: string) => void
+  defaultMulticolor?: boolean
+  hasMultiSlotPrinter?: boolean
+  onAnswer: (decision: 'approve' | 'revise', note: string, charOpts?: CharacterBuildOptions) => void
+  onBuild?: (note: string, charOpts?: CharacterBuildOptions) => void
   onClose: () => void
 }
 
-export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerInput, onAnswer, onBuild, onClose }: Props) {
+export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerInput, defaultMulticolor = false, hasMultiSlotPrinter = false, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState(false)
   const [split, setSplit] = useState(0.62) // fraction of cbody height for Drawing (0 = spec full, 1 = drawing full)
+  const [targetHeight, setTargetHeight] = useState(80)
+  const [baseStyle, setBaseStyle] = useState<'none' | 'round' | 'oval' | 'square'>('round')
+  const [keychainLoop, setKeychainLoop] = useState(false)
+  const [multicolor, setMulticolor] = useState(defaultMulticolor && hasMultiSlotPrinter)
   const bodyRef = useRef<HTMLDivElement>(null)
   const pending = c.status === 'pending'
+  const isCharacter = c.mode === 'character' || Boolean(c.image_file)
+  const previewSrc = c.image_file ? api.conceptPictureUrl(c.id) : svgUrl(c.svg)
+  const charOpts = (): CharacterBuildOptions | undefined => (
+    isCharacter
+      ? { target_height_mm: targetHeight, flatten_bottom_mm: 0.4, base_style: baseStyle, keychain_loop: keychainLoop, multicolor }
+      : undefined
+  )
 
   const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -76,6 +97,7 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
           <h2>{c.id} · {c.title}</h2>
         )}
         <span className={`chip cstat ${c.status}`}>{STATUS[c.status]}</span>
+        {isCharacter && <span className="chip">{c.views && c.views.length > 1 ? `Character · ${c.views.join(' / ')}` : 'Character Design'}</span>}
         <span className="spacer" />
         <button className="btn" onClick={fullScreen} title="Show the drawing full screen (Esc to come back; or double-click the drawing)">⛶ Full screen</button>
         <button className="x" onClick={onClose} aria-label={pending ? 'Hide for now' : 'Close'} title={pending ? 'Hide for now (it stays in the AI panel)' : 'Close'}>×</button>
@@ -100,7 +122,7 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
           </div>
           {split > 0.01 && (
             <div className="cdraw" onDoubleClick={fullScreen} title="Double-click for full screen">
-              <img src={svgUrl(c.svg)} alt={`Concept drawing: ${c.title}`} />
+              <img src={previewSrc} alt={`Concept drawing: ${c.title}`} />
             </div>
           )}
         </div>
@@ -109,7 +131,7 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
             <button type="button" className="btn cdraw-exit" onClick={() => setExpanded(false)} title="Exit full screen (Esc)">
               ✕ Exit full screen
             </button>
-            <img src={svgUrl(c.svg)} alt={`Concept drawing: ${c.title}`} />
+            <img src={previewSrc} alt={`Concept drawing: ${c.title}`} />
           </div>,
           document.body,
         )}
@@ -144,16 +166,57 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
                   {c.questions.length > 0 && (<div><h3>Questions</h3><ul className="qs">{c.questions.map((q, i) => <li key={i}>{q}</li>)}</ul></div>)}
                 </div>
               )}
+          {isCharacter && (
+            <div className="row" style={{ flexWrap: 'wrap', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--panel-2)', border: '1px solid var(--line)', alignItems: 'center' }}>
+              <label className="row sm" style={{ gap: 4 }}>
+                <span className="nm">Color:</span>
+                <select aria-label="Character color mode" value={multicolor ? 'multi' : 'single'}
+                  onChange={(e) => setMulticolor(e.target.value === 'multi')} style={{ fontSize: 12, padding: '2px 6px' }}>
+                  <option value="single">Single color (faster)</option>
+                  <option value="multi">Multi-color / AMS</option>
+                </select>
+              </label>
+              <label className="row sm" style={{ gap: 4 }}>
+                <span className="nm">Height (mm):</span>
+                <input type="number" min={15} max={300} value={targetHeight} onChange={(e) => setTargetHeight(Number(e.target.value) || 80)}
+                  style={{ width: 64, fontSize: 12, padding: '2px 6px' }} />
+              </label>
+              <label className="row sm" style={{ gap: 4 }}>
+                <span className="nm">Base:</span>
+                <select aria-label="Display base style" value={baseStyle}
+                  onChange={(e) => setBaseStyle(e.target.value as 'none' | 'round' | 'oval' | 'square')} style={{ fontSize: 12, padding: '2px 6px' }}>
+                  <option value="none">None (flat bottom)</option>
+                  <option value="round">Round plinth</option>
+                  <option value="oval">Oval plinth</option>
+                  <option value="square">Square plinth</option>
+                </select>
+              </label>
+              <label className="row sm" style={{ gap: 4, cursor: 'pointer' }}>
+                <input type="checkbox" checked={keychainLoop} onChange={(e) => setKeychainLoop(e.target.checked)} />
+                <span className="nm">Keychain loop</span>
+              </label>
+              <span className="spacer" />
+              {pending ? (
+                <button type="button" className="btn primary sm" onClick={() => onAnswer('approve', note, charOpts())}>
+                  Approve &amp; sculpt 3D
+                </button>
+              ) : onBuild ? (
+                <button type="button" className="btn primary sm" onClick={() => onBuild(note, charOpts())}>
+                  Sculpt 3D model
+                </button>
+              ) : null}
+            </div>
+          )}
           {!hideAnswerInput && (pending ? (
             <div className="canswer">
               <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
               <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note) }} />
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note, charOpts()) }} />
               <div className="row">
                 <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
                   title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
                 <span className="spacer" />
-                <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
+                <button className="btn primary" onClick={() => onAnswer('approve', note, charOpts())}>Approve and build</button>
               </div>
             </div>
           ) : (
@@ -164,10 +227,10 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
                   <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
                   <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
                     placeholder="Optional notes before building this concept…"
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note, charOpts()) }} />
                   <div className="row">
                     <span className="spacer" />
-                    <button className="btn primary" onClick={() => onBuild(note)}>Approve and build</button>
+                    <button className="btn primary" onClick={() => onBuild(note, charOpts())}>Approve and build</button>
                   </div>
                 </div>
               )}

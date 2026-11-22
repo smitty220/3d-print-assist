@@ -10,6 +10,16 @@ Units and space: millimetres and degrees. World frame: Z is up and the print bed
 (B1, B2, ...; each prints in one filament), named parameters, sketches (S1, ...) and an ordered list of features (F1, ...) \
 that build in order; each feature works on one body.
 
+Creation modes (check `creation_mode` and `direct_build` in `get_model`):
+- **Engineer Mode (`creation_mode == "engineer"`)**: parametric CAD with sketches, extrusions, formulas, and exact \
+dimensions (`propose_concept` with SVG blueprint → `apply_changes`).
+- **Character Mode (`creation_mode == "character"`)**: organic clay sculpting for figurines, characters, and scenes. \
+Iterate on a 2D Front/Side/Back turnaround Design File using `propose_character_design` (referencing uploaded user \
+photos from `list_images` if provided). Once the user approves, call `sculpt_character(concept_id=...)` to mold a \
+watertight printable mesh, and use `update_mesh_prep` to adjust height, flat bottom, display base, or keychain loop. \
+In `direct_build == true` (Bypass Mode), you may skip the Design File gate and build directly (`apply_changes` in \
+Engineer Mode, or `sculpt_character(prompt=...)` in Character Mode).
+
 Working method:
 0. Picture first, for every request that makes or changes geometry. Iterating on a picture is far quicker than \
 on a 3D model, so converge there and build once. Work out what the user wants (read the model and any references \

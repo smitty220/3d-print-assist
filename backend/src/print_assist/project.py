@@ -69,6 +69,9 @@ class Settings(BaseModel):
     ai_mode: Literal["mcp", "api"] = "mcp"
     ai_provider: Literal["auto", "agy", "gemini", "anthropic"] = "auto"
     ai_model: str = ""
+    creation_mode: Literal["engineer", "character"] = "engineer"
+    direct_build: bool = False
+    character_multicolor: bool = False
 
 
 class ProjectFile(BaseModel):
@@ -94,7 +97,7 @@ class Project:
         self.root = root
         self.slug = root.name
         self.file = root / "project.json"
-        for sub in ("fonts", "references", "exports"):
+        for sub in ("fonts", "references", "exports", "sculpts"):
             (root / sub).mkdir(parents=True, exist_ok=True)
         self.data = ProjectFile.model_validate_json(self.file.read_text(encoding="utf-8")) if self.file.exists() else ProjectFile()
         self._build: tuple[str, BuildResult] | None = None
@@ -183,13 +186,14 @@ class Projects:
                             "thumbnail": (d / "thumbnail.png").exists(), "recovery": (d / ".recovery.json").exists()})
         return sorted(out, key=lambda p: -p["modified"])
 
-    def create(self, name: str) -> Project:
+    def create(self, name: str, creation_mode: Literal["engineer", "character"] = "engineer") -> Project:
         slug = base = slugify(name)
         n = 2
         while (self.root / slug).exists():
             slug, n = f"{base}-{n}", n + 1
         p = Project(self.root / slug)
         p.data.name = name.strip() or "Untitled"
+        p.data.settings.creation_mode = creation_mode
         prefs = load_user_prefs(self.root)
         if prefs.get("printer") and prefs["printer"] in profiles():
             p.data.settings.printer = prefs["printer"]

@@ -122,12 +122,13 @@ def list_projects() -> list[dict]:
 
 class NewProject(BaseModel):
     name: str
+    creation_mode: Literal["engineer", "character"] = "engineer"
 
 
 @app.post("/api/projects")
 def create_project(body: NewProject) -> dict:
     try:
-        _switch(Workspace(projects().create(body.name)))
+        _switch(Workspace(projects().create(body.name, creation_mode=body.creation_mode)))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return _ws.project.summary()
@@ -336,6 +337,9 @@ class SettingsPatch(BaseModel):
     ai_mode: Literal["mcp", "api"] | None = None
     ai_provider: Literal["auto", "agy", "gemini", "anthropic"] | None = None
     ai_model: str | None = None
+    creation_mode: Literal["engineer", "character"] | None = None
+    direct_build: bool | None = None
+    character_multicolor: bool | None = None
 
 
 @app.put("/api/settings")
@@ -356,6 +360,12 @@ def put_settings(body: SettingsPatch) -> dict:
         s.ai_provider = body.ai_provider
     if body.ai_model is not None:
         s.ai_model = body.ai_model
+    if body.creation_mode is not None:
+        s.creation_mode = body.creation_mode
+    if body.direct_build is not None:
+        s.direct_build = body.direct_build
+    if body.character_multicolor is not None:
+        s.character_multicolor = body.character_multicolor
     w.project.save()
     save_user_prefs(
         projects().root,
@@ -679,6 +689,9 @@ def concept_picture(cid: str, width: int = 1200) -> Response:
     if c is None:
         available = ", ".join(x.id for x in ws().concepts.items) or "none yet"
         raise HTTPException(404, f"No concept {cid!r} (available: {available})")
+    img_path = ws().concepts.image_path(cid)
+    if img_path is not None:
+        return FileResponse(img_path)
     from .images import inline
 
     return Response(picture(inline(c.svg, ws().images), width), media_type="image/png")
@@ -968,13 +981,10 @@ def export_design(fmt: str) -> FileResponse:
     if not t["exportable"]:
         why = "update it first" if t["stale"] else "a feature failed" if t["failed"] else "nothing is built"
         raise HTTPException(409, f"Can't export: the model is not ready ({why})")
-    good = w.last_good
-    names = {b.id: b.name for b in w.design.bodies}
-    colors = {b.id: w.design.body_color(b) for b in w.design.bodies}
     path = w.project.root / "exports" / filename(w.project.data.name, fmt)
     try:
-        export(good.parts, names, w.project.printer, fmt, path, w.project.data.name, colors, w.design)
-    except ExportError as exc:
+        w.export_current(fmt, path)
+    except (ExportError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     w.log(USER, f"Exported {path.name}")
     return FileResponse(path, filename=path.name, headers={"X-Saved-Path": str(path)})
@@ -1069,13 +1079,10 @@ def export_send_to(body: SendToIn) -> dict:
     if not t["exportable"]:
         why = "update it first" if t["stale"] else "a feature failed" if t["failed"] else "nothing is built"
         raise HTTPException(409, f"Can't export: the model is not ready ({why})")
-    good = w.last_good
-    names = {b.id: b.name for b in w.design.bodies}
-    colors = {b.id: w.design.body_color(b) for b in w.design.bodies}
     path = w.project.root / "exports" / filename(w.project.data.name, body.fmt)
     try:
-        export(good.parts, names, w.project.printer, body.fmt, path, w.project.data.name, colors, w.design)
-    except ExportError as exc:
+        w.export_current(body.fmt, path)
+    except (ExportError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
     if sys.platform == "darwin" and app_target.endswith(".app"):
@@ -1218,6 +1225,257 @@ def ai_guide() -> dict:
     return {"guide": GUIDE, "ops": OP_NAMES}
 
 
+# ---------------------------------------------------------------- Character Mode & Local ML Engine
+
+
+class CharacterDesignIn(BaseModel):
+    title: str
+    prompt: str
+    summary: str = ""
+    reference_photos: list[str] = []
+    assumptions: list[str] = []
+    questions: list[str] = []
+    turnaround: bool = True
+    steps: int = 20
+    seed: int = -1
+
+
+class CharacterSculptIn(BaseModel):
+    concept_id: str = ""
+    name: str = ""
+    prompt: str = ""
+    reference_photos: list[str] = []
+    target_height_mm: float = 80.0
+    flatten_bottom_mm: float = 0.4
+    base_style: Literal["none", "round", "oval", "square"] = "none"
+    base_height_mm: float = 3.0
+    base_margin_mm: float = 4.0
+    keychain_loop: bool = False
+    keychain_hole_mm: float = 4.5
+    multicolor: bool = False
+    color: str | None = "#b8c2cc"
+
+
+class SculptPrepPatch(BaseModel):
+    name: str | None = None
+    target_height_mm: float | None = None
+    flatten_bottom_mm: float | None = None
+    base_style: Literal["none", "round", "oval", "square"] | None = None
+    base_height_mm: float | None = None
+    base_margin_mm: float | None = None
+    keychain_loop: bool | None = None
+    keychain_hole_mm: float | None = None
+    rotate_x: float | None = None
+    rotate_y: float | None = None
+    rotate_z: float | None = None
+    color: str | None = None
+    filament: int | None = None
+
+
+@app.get("/api/ml/status")
+def ml_status() -> dict:
+    from .ml.installer import installer
+
+    return installer.status()
+
+
+class MlSetupIn(BaseModel):
+    components: list[Literal["painter", "sculptor"]] = ["painter", "sculptor"]
+
+
+@app.post("/api/ml/setup")
+def ml_setup(body: MlSetupIn) -> dict:
+    from .ml.installer import installer
+
+    return installer.start_install(tuple(body.components))
+
+
+@app.post("/api/ml/cancel")
+def ml_cancel() -> dict:
+    from .ml.installer import installer
+
+    installer.cancel()
+    return installer.status()
+
+
+@app.post("/api/character/design")
+def create_character_design(body: CharacterDesignIn, x_actor: str = Header(default=USER)) -> dict:
+    """Generate a Character Mode 2D turnaround Design File using the local 2D Painter (never saved to Photos)."""
+    from .concepts import ConceptError
+    from .images import ImageError
+    from .ml.painter import PainterError, generate_character_design_image
+
+    w = ws()
+    ref_paths = []
+    for iid in body.reference_photos:
+        try:
+            ref_paths.append(w.images.path(iid))
+        except ImageError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    try:
+        png_bytes, views = generate_character_design_image(
+            prompt=body.prompt,
+            ref_paths=ref_paths or None,
+            turnaround=body.turnaround,
+            steps=body.steps,
+            seed=body.seed,
+        )
+        c = w.propose_concept(
+            x_actor,
+            title=body.title,
+            summary=body.summary or body.prompt,
+            assumptions=body.assumptions,
+            questions=body.questions,
+            mode="character",
+            image_bytes=png_bytes,
+            image_ext=".png",
+            reference_photos=body.reference_photos,
+            views=views,
+        )
+    except (PainterError, ConceptError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return c.model_dump(exclude={"svg"})
+
+
+@app.post("/api/character/sculpt")
+def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(default=USER)) -> dict:
+    """Sculpt a Character Mode 3D mesh from an approved Design File (or direct prompt in Direct Build mode)."""
+    from .features.model import SculptPrep
+    from .geometry.mesh_prep import MeshPrepError
+    from .images import ImageError
+    from .ml.painter import PainterError, generate_character_design_image
+    from .ml.sculptor import SculptorError, sculpt_mesh_from_image
+
+    w = ws()
+    img_path = None
+    views: list[str] = []
+    cid = body.concept_id.strip()
+    sculpt_name = body.name.strip()
+
+    if cid:
+        c = w.concepts.get(cid)
+        if c is None:
+            w.concepts.sync()
+            c = w.concepts.get(cid)
+        if c is None:
+            raise HTTPException(404, f"No concept {cid!r}")
+        if c.status == "pending" and x_actor != USER and not w.project.data.settings.direct_build:
+            raise HTTPException(409, f"Concept {c.id} is still waiting for the user's approval")
+        img_path = w.concepts.image_path(c.id)
+        views = list(c.views)
+        sculpt_name = sculpt_name or c.title
+        if img_path is None:
+            raise HTTPException(422, f"Concept {c.id} does not have a Character Mode design image")
+    elif body.prompt.strip():
+        # Direct Build bypass: synthesize a temporary 2D turnaround image, then immediately sculpt it
+        ref_paths = []
+        for iid in body.reference_photos:
+            try:
+                ref_paths.append(w.images.path(iid))
+            except ImageError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        try:
+            png_bytes, views = generate_character_design_image(
+                prompt=body.prompt, ref_paths=ref_paths or None, turnaround=True
+            )
+            c = w.propose_concept(
+                x_actor,
+                title=sculpt_name or body.prompt[:48],
+                summary=body.prompt,
+                mode="character",
+                image_bytes=png_bytes,
+                reference_photos=body.reference_photos,
+                views=views,
+            )
+            w.answer_concept(c.id, "approve", "Direct Build")
+            cid = c.id
+            img_path = w.concepts.image_path(c.id)
+            sculpt_name = sculpt_name or c.title
+        except PainterError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    elif body.reference_photos:
+        try:
+            img_path = w.images.path(body.reference_photos[0])
+            sculpt_name = sculpt_name or body.reference_photos[0]
+        except ImageError as exc:
+            raise HTTPException(422, str(exc)) from exc
+    else:
+        raise HTTPException(422, "Provide concept_id, prompt, or reference_photos to sculpt")
+
+    assert img_path is not None
+    try:
+        raw_glb = sculpt_mesh_from_image(img_path, views=views)
+        prep = SculptPrep(
+            target_height_mm=body.target_height_mm,
+            flatten_bottom_mm=body.flatten_bottom_mm,
+            base_style=body.base_style,
+            base_height_mm=body.base_height_mm,
+            base_margin_mm=body.base_margin_mm,
+            keychain_loop=body.keychain_loop,
+            keychain_hole_mm=body.keychain_hole_mm,
+            max_colors=4 if body.multicolor else 1,
+        )
+        sm = w.add_sculpt(
+            actor=x_actor, name=sculpt_name or "Sculpt", raw_bytes=raw_glb, ext=".glb",
+            concept_id=cid, prep=prep, color=body.color,
+        )
+    except (SculptorError, MeshPrepError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"sculpt": sm.model_dump(), "tree": w.tree()}
+
+
+@app.get("/api/sculpts")
+def list_sculpts() -> list[dict]:
+    return [s.model_dump() for s in ws().design.sculpts]
+
+
+@app.post("/api/sculpts/upload")
+async def upload_sculpt(file: UploadFile, name: str = "", target_height_mm: float = 80.0,
+                        x_actor: str = Header(default=USER)) -> dict:
+    """Import an organic mesh file (.glb/.obj/.stl/.3mf) into Character Mode with watertight print-prep."""
+    from pathlib import Path
+    from .features.model import SculptPrep
+    from .geometry.mesh_prep import MeshPrepError
+
+    data = await file.read(100 * 1024 * 1024 + 1)
+    if len(data) > 100 * 1024 * 1024:
+        raise HTTPException(413, "Mesh file is over 100 MB")
+    ext = Path(file.filename or "mesh.glb").suffix.lower() or ".glb"
+    try:
+        sm = ws().add_sculpt(
+            actor=x_actor,
+            name=name or Path(file.filename or "Sculpt").stem,
+            raw_bytes=data,
+            ext=ext,
+            prep=SculptPrep(target_height_mm=target_height_mm),
+        )
+    except MeshPrepError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"sculpt": sm.model_dump(), "tree": ws().tree()}
+
+
+@app.post("/api/sculpts/{sid}/prep")
+def update_sculpt_prep(sid: str, body: SculptPrepPatch, x_actor: str = Header(default=USER)) -> dict:
+    from .geometry.mesh_prep import MeshPrepError
+
+    try:
+        sm = ws().update_sculpt_prep(x_actor, sid, body.model_dump(exclude_none=True))
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (MeshPrepError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"sculpt": sm.model_dump(), "tree": ws().tree()}
+
+
+@app.delete("/api/sculpts/{sid}")
+def delete_sculpt(sid: str, x_actor: str = Header(default=USER)) -> dict:
+    try:
+        ws().delete_sculpt(x_actor, sid)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"deleted": sid, "tree": ws().tree()}
+
+
 # ---------------------------------------------------------------- AI chat (the panel's API mode)
 
 
@@ -1282,6 +1540,9 @@ def ai_status(refresh: bool = False) -> dict:
         "provider": active_provider,
         "key": has_key,
         "mode": s.ai_mode,
+        "creation_mode": s.creation_mode,
+        "direct_build": s.direct_build,
+        "character_multicolor": s.character_multicolor,
         "settings_provider": s.ai_provider,
         "settings_model": s.ai_model,
         "available_models": available,

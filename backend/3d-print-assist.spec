@@ -21,7 +21,7 @@ hiddenimports = [
     *collect_submodules("print_assist_mcp"),
 ]
 
-for pkg in ("OCP", "build123d", "lib3mf", "pillow_heif", "resvg_py", "webview"):
+for pkg in ("OCP", "build123d", "lib3mf", "manifold3d", "networkx", "pillow_heif", "resvg_py", "skimage", "trimesh", "webview"):
     pkg_datas, pkg_bins, pkg_hidden = collect_all(pkg)
     datas.extend(pkg_datas)
     binaries.extend(pkg_bins)

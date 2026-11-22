@@ -238,6 +238,103 @@ def propose_concept(title: str, svg: str, summary: str = "", assumptions: list[s
 
 
 @mcp.tool()
+def set_creation_mode(mode: str, direct_build: bool | None = None) -> str:
+    """Switch the open design between 'engineer' (parametric CAD extrusions/sketches) and 'character'
+    (local organic clay sculpting from 2D turnaround designs). Optionally toggle `direct_build` bypass."""
+    patch: dict[str, Any] = {"creation_mode": mode}
+    if direct_build is not None:
+        patch["direct_build"] = bool(direct_build)
+    return _text(_call("PUT", "/api/settings", json=patch))
+
+
+@mcp.tool()
+def propose_character_design(
+    title: str,
+    prompt: str,
+    reference_photos: list[str] | None = None,
+    summary: str = "",
+    assumptions: list[str] | None = None,
+    questions: list[str] | None = None,
+    turnaround: bool = True,
+) -> str:
+    """Character Mode Design File: use the local 2D Painter to generate a Front/Side/Back turnaround image from
+    `prompt` and optional uploaded `reference_photos` (e.g. ["I1", "I2"]). Shown in the Design tab (never in Photos)
+    for the user to inspect and iterate on before clicking Approve & Build."""
+    return _text(_call(
+        "POST",
+        "/api/character/design",
+        json={
+            "title": title,
+            "prompt": prompt,
+            "reference_photos": reference_photos or [],
+            "summary": summary,
+            "assumptions": assumptions or [],
+            "questions": questions or [],
+            "turnaround": turnaround,
+        },
+        headers=ACTOR,
+    ))
+
+
+@mcp.tool()
+def sculpt_character(
+    concept_id: str = "",
+    name: str = "",
+    prompt: str = "",
+    reference_photos: list[str] | None = None,
+    target_height_mm: float = 80.0,
+    flatten_bottom_mm: float = 0.4,
+    base_style: str = "none",
+    keychain_loop: bool = False,
+    multicolor: bool = False,
+) -> str:
+    """Character Mode 3D Sculptor: mold a watertight, 3D-printable mesh from an approved Character Design File
+    (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` when Direct Build bypass is active.
+    Automatically repairs to a closed manifold solid, scales to `target_height_mm`, flattens the bottom, and
+    optionally unions a display base ('none'|'round'|'oval'|'square') or keychain loop."""
+    return _text(_call(
+        "POST",
+        "/api/character/sculpt",
+        json={
+            "concept_id": concept_id,
+            "name": name,
+            "prompt": prompt,
+            "reference_photos": reference_photos or [],
+            "target_height_mm": target_height_mm,
+            "flatten_bottom_mm": flatten_bottom_mm,
+            "base_style": base_style,
+            "keychain_loop": keychain_loop,
+            "multicolor": multicolor,
+        },
+        headers=ACTOR,
+    ))
+
+
+@mcp.tool()
+def update_mesh_prep(
+    id: str,
+    target_height_mm: float | None = None,
+    flatten_bottom_mm: float | None = None,
+    base_style: str | None = None,
+    base_height_mm: float | None = None,
+    keychain_loop: bool | None = None,
+    rotate_z: float | None = None,
+) -> str:
+    """Instantly adjust print-prep finishing on an existing Character Mode sculpt (`id`, e.g. "M1") without
+    re-running the 3D AI sculptor: resize in mm, flatten bottom, add/change display base ('none'|'round'|'oval'|'square'),
+    toggle keychain loop, or rotate about Z."""
+    body = {k: v for k, v in {
+        "target_height_mm": target_height_mm,
+        "flatten_bottom_mm": flatten_bottom_mm,
+        "base_style": base_style,
+        "base_height_mm": base_height_mm,
+        "keychain_loop": keychain_loop,
+        "rotate_z": rotate_z,
+    }.items() if v is not None}
+    return _text(_call("POST", f"/api/sculpts/{id}/prep", json=body, headers=ACTOR))
+
+
+@mcp.tool()
 def wait_for_concept(id: str, timeout_s: int = 45) -> str:
     """Wait briefly for the user's answer on a concept: "approved" (build it, minding any note) or "revise" (their
     note says what to change: propose a new concept). If it times out still "pending", end your turn and let the user
