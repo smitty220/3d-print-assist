@@ -79,7 +79,7 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, sculpts = [], mlStatus, creationMode = 'engineer', directBuild = false, sculpting = false, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSetupMl, onCancelMl, onUpdateSculptPrep, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, sculpts = [], mlStatus, creationMode = 'engineer', directBuild = false, sculpting = false, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSetupMl, onUpdateSculptPrep, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
@@ -313,32 +313,24 @@ export function AiPanel({ status, activity, images, sculpts = [], mlStatus, crea
           <span>Direct build</span>
         </label>
       </div>
-      {creationMode === 'character' && mlStatus && !mlStatus.ready && (
-        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--line)', background: 'color-mix(in srgb, var(--accent) 10%, var(--panel-2))', fontSize: 12 }}>
-          <div className="row sm" style={{ gap: 8, alignItems: 'center' }}>
-            <b>Local Character Engine (Free)</b>
-            <span className="spacer" />
-            <span className="nm" style={{ fontSize: 11 }}>{mlStatus.hardware.gpu_name} · {mlStatus.hardware.ram_gb} GB</span>
-          </div>
+      {creationMode === 'character' && mlStatus && !mlStatus.ready && (mlStatus.installing || mlStatus.error) && (
+        <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', fontSize: 11.5 }}>
           {mlStatus.installing ? (
-            <div style={{ marginTop: 6 }}>
+            <>
               <div className="row sm" style={{ gap: 6, marginBottom: 4 }}>
-                <span>{mlStatus.stage || 'Installing…'} ({mlStatus.progress_pct}%)</span>
+                <span>Preparing Character Mode… {mlStatus.progress_pct}%</span>
                 <span className="spacer" />
-                <button type="button" className="btn sm" onClick={onCancelMl}>Cancel</button>
+                {mlStatus.detail && <span className="nm" style={{ fontSize: 10.5 }}>{mlStatus.detail}</span>}
               </div>
-              <div style={{ height: 5, borderRadius: 3, background: 'var(--line)', overflow: 'hidden' }}>
+              <div style={{ height: 4, borderRadius: 2, background: 'var(--line)', overflow: 'hidden' }}>
                 <div style={{ width: `${mlStatus.progress_pct}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.3s' }} />
               </div>
-              {mlStatus.detail && <div className="nm" style={{ marginTop: 3, fontSize: 11 }}>{mlStatus.detail}</div>}
-            </div>
+            </>
           ) : (
-            <div style={{ marginTop: 6 }}>
-              <div className="nm" style={{ fontSize: 11.5, marginBottom: 6 }}>
-                One-time free download (~{mlStatus.hardware.estimated_download_gb} GB) into your shared <code>ml-engine</code> folder ({mlStatus.hardware.sculptor_label}).
-              </div>
-              {mlStatus.error && <div style={{ color: 'var(--bad)', fontSize: 11.5, marginBottom: 6 }}>{mlStatus.error}</div>}
-              <button type="button" className="btn primary sm" onClick={onSetupMl}>Set up Character Engine</button>
+            <div className="row sm" style={{ gap: 8, alignItems: 'center' }}>
+              <span style={{ color: 'var(--bad)' }}>{mlStatus.error}</span>
+              <span className="spacer" />
+              <button type="button" className="btn sm" onClick={onSetupMl}>Retry</button>
             </div>
           )}
         </div>

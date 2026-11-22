@@ -20,7 +20,7 @@ from PIL import Image, ImageOps
 
 from . import ml_root
 from .hardware import detect_hardware
-from .installer import PAINTER_FILES, painter_dir, painter_ready, sd_cli_path
+from .installer import PAINTER_FILES, installer, painter_dir, painter_ready, sd_cli_path
 
 
 class PainterError(RuntimeError):
@@ -113,9 +113,10 @@ def generate_character_design_image(
     """Run local `stable-diffusion.cpp` to create a Character Mode turnaround Design File PNG."""
     r = root or ml_root()
     if not painter_ready(r):
-        raise PainterError(
-            "Local Character 2D Engine is not installed yet. Click 'Set up Character Engine' in Character Mode first."
-        )
+        try:
+            installer.ensure_ready("painter", on_progress=on_progress, root=root)
+        except Exception as exc:  # noqa: BLE001
+            raise PainterError(str(exc)) from exc
     cli = sd_cli_path(r)
     assert cli is not None
     pdir = painter_dir(r)

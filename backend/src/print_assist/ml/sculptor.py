@@ -19,7 +19,7 @@ from PIL import Image
 
 from . import ml_root
 from .hardware import detect_hardware
-from .installer import sculptor_python, sculptor_ready
+from .installer import installer, sculptor_python, sculptor_ready
 
 
 class SculptorError(RuntimeError):
@@ -146,9 +146,10 @@ def sculpt_mesh_from_image(
     """Run local Hunyuan3D-2mv / 2mini on the approved Character Design File and return raw `.glb` bytes."""
     r = root or ml_root()
     if not sculptor_ready(r):
-        raise SculptorError(
-            "Local 3D Sculptor is not installed yet. Click 'Set up Character Engine' in Character Mode first."
-        )
+        try:
+            installer.ensure_ready("sculptor", on_progress=on_progress, root=root)
+        except Exception as exc:  # noqa: BLE001
+            raise SculptorError(str(exc)) from exc
     if not image_path.is_file():
         raise SculptorError(f"concept design image not found: {image_path}")
     py = sculptor_python(r)

@@ -209,10 +209,14 @@ export default function App() {
   const directBuild = Boolean(ai?.direct_build ?? project?.settings.direct_build ?? tree?.direct_build)
 
   useEffect(() => {
-    if (creationMode !== 'character' && !mlStatus?.installing) return
+    api.mlStatus().then(setMlStatus).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!mlStatus?.installing && creationMode !== 'character') return
     api.mlStatus().then(setMlStatus).catch(() => {})
     if (!mlStatus?.installing) return
-    const t = setInterval(() => { api.mlStatus().then(setMlStatus).catch(() => {}) }, 1200)
+    const t = setInterval(() => { api.mlStatus().then(setMlStatus).catch(() => {}) }, 1000)
     return () => clearInterval(t)
   }, [creationMode, mlStatus?.installing])
 

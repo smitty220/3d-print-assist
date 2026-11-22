@@ -35,11 +35,18 @@ from .project import Projects, save_user_prefs
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     from print_assist_mcp.server import mcp as _mcp
+    from .ml.installer import installer
+
+    if not os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("PRINT_ASSIST_DISABLE_ML_AUTO_INSTALL") != "1":
+        st = installer.status()
+        if not st["ready"] and not st["installing"]:
+            installer.start_install()
 
     try:
         async with _mcp.session_manager.run():
             yield
     finally:
+        installer.cancel()
         _stop_all_chats()
 
 
