@@ -61,12 +61,13 @@ class Activity:
 
 
 class Workspace:
-    def __init__(self, project: Project, engine: Engine | None = None):
+    def __init__(self, project: Project, engine: Engine | None = None, defer_build: bool = False):
         self.project = project
         self.engine = engine or Engine()
         self.lock = threading.RLock()
         self.rev = 0  # bumps on every change to the design
         self.built_rev = -1  # the rev the last update built
+        self._building = False
         self.last: BuildResult | None = None  # the last update (statuses)
         self.last_good: BuildResult | None = None  # the last update that built completely (what is shown)
         self.built_hashes: dict[str, str] = {}
@@ -87,7 +88,35 @@ class Workspace:
         self.redo_stack: list[Step] = []
         rec = project.root / RECOVERY
         self.recovery = rec.exists() and rec.read_text(encoding="utf-8") != self.saved_json
-        self.update()
+        if defer_build and (self.working.features or self.working.sculpts):
+            self._building = True
+            threading.Thread(target=self._background_initial_build, daemon=True).start()
+        else:
+            self.update()
+
+    def _background_initial_build(self) -> None:
+        """Build heavy CAD geometry on a background thread after open so File > Open returns instantaneously."""
+        try:
+            with self.lock:
+                trial = self.working.model_copy(deep=True)
+                rules = self.project.data.rules
+                fonts_dir = self.project.root / "fonts"
+                rev_snap = self.rev
+            result = self.engine.build(trial, rules, fonts_dir=fonts_dir)
+            with self.lock:
+                if self.rev == rev_snap:
+                    self.last = result
+                    self.built_rev = rev_snap
+                    self.built_hashes = dict(result.hashes)
+                    self.built_params = dict(result.param_values)
+                    if result.complete:
+                        self.last_good = result
+        except Exception as exc:  # noqa: BLE001
+            with self.lock:
+                self.log("system", f"Initial build error: {exc}", ok=False)
+        finally:
+            with self.lock:
+                self._building = False
 
     @property
     def design(self) -> Design:
@@ -661,7 +690,7 @@ class Workspace:
                 "name": self.project.data.name, "slug": self.project.slug, "dirty": self.dirty,
                 "undo": self.undo_stack[-1].label if self.undo_stack else None,
                 "redo": self.redo_stack[-1].label if self.redo_stack else None,
-                "rev": self.rev, "built_rev": self.built_rev, "mode": self.mode,
+                "rev": self.rev, "built_rev": self.built_rev, "building": self._building, "mode": self.mode,
                 "creation_mode": self.project.data.settings.creation_mode,
                 "direct_build": self.project.data.settings.direct_build,
                 "pending": pending, "pending_count": len(pending), "stale": bool(pending), "failed": failed,
@@ -702,7 +731,7 @@ class Workspace:
             total_vol = (good.volume if good else 0.0) + sculpt_vol
             total_mass = (good.mass if good else 0.0) + sculpt_vol * 1.24e-6
             return {"bodies": bodies, "volume": total_vol, "mass": total_mass,
-                    "rev": self.rev, "built_rev": self.built_rev, "stale": bool(pending),
+                    "rev": self.rev, "built_rev": self.built_rev, "building": self._building, "stale": bool(pending),
                     "failed": bool(self.last and not self.last.complete)}
 
 

@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ml_root
+from . import ml_job_status, ml_root
 from .hardware import HardwareProfile, detect_hardware
 
 SD_CPP_RELEASES_API = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest"
@@ -204,6 +204,7 @@ class EngineInstaller:
             "engine_dir": str(r),
             "disk_gb": _dir_size_gb(r),
             "hardware": hw.to_dict(),
+            "job": ml_job_status(),
             **st,
         }
 
@@ -397,7 +398,7 @@ class EngineInstaller:
         self._run_cmd(torch_cmd, "Installing PyTorch runtime", 73, f"Installing PyTorch for {hw.accelerator.upper()}…")
 
         deps = [
-            "huggingface-hub", "diffusers", "transformers", "accelerate", "einops",
+            "huggingface-hub>=0.27,<1", "diffusers>=0.31,<0.36", "transformers>=4.46,<5", "accelerate", "einops",
             "omegaconf", "safetensors", "Pillow", "PyYAML", "tqdm", "scipy",
             "scikit-image", "opencv-python-headless", "trimesh", "pygltflib",
             "pymeshlab", "rembg", "onnxruntime",

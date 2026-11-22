@@ -39,6 +39,7 @@ export interface PartState {
   mass: number
   rev: number
   built_rev: number
+  building?: boolean
   stale: boolean
   failed: boolean
 }
@@ -129,6 +130,17 @@ export interface SculptPrep {
   base_margin_mm: number
   keychain_loop: boolean
   keychain_hole_mm: number
+  flexi_segments: number
+  flexi_axis: 'auto' | 'x' | 'y'
+  flexi_start_pct: number
+  flexi_end_pct: number
+  flexi_clearance_mm: number
+  flexi_angle_deg: number
+  magnet_hole: 'none' | 'bottom' | 'back'
+  magnet_dia_mm: number
+  magnet_depth_mm: number
+  hollow_cavity: boolean
+  hollow_wall_mm: number
   rotate_x: number
   rotate_y: number
   rotate_z: number
@@ -148,6 +160,15 @@ export interface SculptMesh {
   volume_mm3: number
 }
 
+export interface MlJob {
+  active: boolean
+  kind: 'painting' | 'sculpting' | ''
+  stage: string
+  progress_pct: number
+  detail: string
+  started_at: number
+}
+
 export interface MlStatus {
   ready: boolean
   painter_ready: boolean
@@ -159,6 +180,7 @@ export interface MlStatus {
   progress_pct: number
   detail: string
   error: string
+  job?: MlJob
   hardware: {
     os_name: string
     arch: string
@@ -181,6 +203,7 @@ export interface Tree {
   redo: string | null
   rev: number
   built_rev: number
+  building?: boolean
   mode: 'manual' | 'auto'
   creation_mode?: CreationMode
   direct_build?: boolean
@@ -341,6 +364,7 @@ export interface AiStatus {
   settings_provider?: string
   settings_model?: string
   available_models?: Record<string, ModelOption[]>
+  ml_job?: MlJob
   chat: {
     running: boolean
     log: ChatEntry[]
@@ -468,6 +492,8 @@ export const api = {
     reference_photos?: string[]
     turnaround?: boolean
   }) => send<Concept>('POST', '/character/design', body),
+  characterJob: (wait_s = 0) =>
+    get<{ status: 'idle' | 'running' | 'done' | 'error'; job: MlJob; result: { sculpt?: SculptMesh; tree?: Tree } | Concept | null; error: string }>(`/character/job?wait_s=${wait_s}`),
   characterSculpt: (body: {
     concept_id?: string
     name?: string
@@ -478,9 +504,21 @@ export const api = {
     base_style?: 'none' | 'round' | 'oval' | 'square'
     base_height_mm?: number
     keychain_loop?: boolean
+    flexi_segments?: number
+    flexi_axis?: 'auto' | 'x' | 'y'
+    flexi_start_pct?: number
+    flexi_end_pct?: number
+    flexi_clearance_mm?: number
+    flexi_angle_deg?: number
+    magnet_hole?: 'none' | 'bottom' | 'back'
+    magnet_dia_mm?: number
+    magnet_depth_mm?: number
+    hollow_cavity?: boolean
+    hollow_wall_mm?: number
     multicolor?: boolean
     color?: string | null
-  }) => send<{ sculpt: SculptMesh; tree: Tree }>('POST', '/character/sculpt', body),
+    wait_s?: number
+  }) => send<{ sculpt?: SculptMesh; tree?: Tree; status?: 'running' | 'done' | 'error'; job?: MlJob; result?: { sculpt: SculptMesh; tree: Tree }; error?: string }>('POST', '/character/sculpt', body),
   updateSculptPrep: (id: string, patch: Partial<SculptPrep> & { name?: string; color?: string | null; filament?: number | null }) =>
     send<{ sculpt: SculptMesh; tree: Tree }>('POST', `/sculpts/${encodeURIComponent(id)}/prep`, patch),
   deleteSculpt: (id: string) => send<{ deleted: string; tree: Tree }>('DELETE', `/sculpts/${encodeURIComponent(id)}`),

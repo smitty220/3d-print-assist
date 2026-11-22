@@ -70,6 +70,10 @@ def projects() -> Projects:
     return _projects
 
 
+def _defer_open() -> bool:
+    return not bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
 def ws() -> Workspace:
     """The open design. At start-up the most recently changed one (or a new one) opens, as an editor reopens its last
     document; after File › Close there is none until one is opened."""
@@ -79,7 +83,7 @@ def ws() -> Workspace:
             raise HTTPException(409, "No design is open; open or create one")
         listed = projects().list()
         p = projects().open(listed[0]["slug"]) if listed else projects().create("Untitled")
-        _ws = Workspace(p)
+        _ws = Workspace(p, defer_build=_defer_open())
     return _ws
 
 
@@ -148,7 +152,7 @@ def open_project(slug: str) -> dict:
     if _ws is not None and _ws.project.slug == slug:
         return _ws.project.summary()
     try:
-        _switch(Workspace(projects().open(slug)))
+        _switch(Workspace(projects().open(slug), defer_build=_defer_open()))
     except KeyError:
         raise HTTPException(404, f"No design {slug!r}") from None
     return _ws.project.summary()
@@ -429,11 +433,11 @@ async def events(request: Request, once: bool = False) -> StreamingResponse:
         last = None
         while True:
             if _ws is None and _closed:
-                state = {"slug": None, "rev": 0, "built_rev": 0, "activity": 0}
+                state = {"slug": None, "rev": 0, "built_rev": 0, "building": False, "activity": 0}
             else:
                 w = ws()
-                state = {"slug": w.project.slug, "rev": w.rev, "built_rev": w.built_rev, "activity": len(w.activity),
-                         "dirty": w.dirty}
+                state = {"slug": w.project.slug, "rev": w.rev, "built_rev": w.built_rev, "building": w._building,
+                         "activity": len(w.activity), "dirty": w.dirty}
             if state != last:
                 yield f"data: {json.dumps(state)}\n\n"
                 last = state
@@ -1242,9 +1246,10 @@ class CharacterDesignIn(BaseModel):
     reference_photos: list[str] = []
     assumptions: list[str] = []
     questions: list[str] = []
-    turnaround: bool = True
-    steps: int = 20
+    turnaround: bool = False
+    steps: int = 14
     seed: int = -1
+    wait_s: float = -1.0  # -1 = block until done; >= 0 = async job waiting up to wait_s seconds
 
 
 class CharacterSculptIn(BaseModel):
@@ -1259,8 +1264,20 @@ class CharacterSculptIn(BaseModel):
     base_margin_mm: float = 4.0
     keychain_loop: bool = False
     keychain_hole_mm: float = 4.5
+    flexi_segments: int = 0
+    flexi_axis: Literal["auto", "x", "y"] = "auto"
+    flexi_start_pct: float = 35.0
+    flexi_end_pct: float = 88.0
+    flexi_clearance_mm: float = 0.45
+    flexi_angle_deg: float = 22.0
+    magnet_hole: Literal["none", "bottom", "back"] = "none"
+    magnet_dia_mm: float = 8.2
+    magnet_depth_mm: float = 3.2
+    hollow_cavity: bool = False
+    hollow_wall_mm: float = 3.0
     multicolor: bool = False
     color: str | None = "#b8c2cc"
+    wait_s: float = -1.0
 
 
 class SculptPrepPatch(BaseModel):
@@ -1272,11 +1289,29 @@ class SculptPrepPatch(BaseModel):
     base_margin_mm: float | None = None
     keychain_loop: bool | None = None
     keychain_hole_mm: float | None = None
+    flexi_segments: int | None = None
+    flexi_axis: Literal["auto", "x", "y"] | None = None
+    flexi_start_pct: float | None = None
+    flexi_end_pct: float | None = None
+    flexi_clearance_mm: float | None = None
+    flexi_angle_deg: float | None = None
+    magnet_hole: Literal["none", "bottom", "back"] | None = None
+    magnet_dia_mm: float | None = None
+    magnet_depth_mm: float | None = None
+    hollow_cavity: bool | None = None
+    hollow_wall_mm: float | None = None
     rotate_x: float | None = None
     rotate_y: float | None = None
     rotate_z: float | None = None
     color: str | None = None
     filament: int | None = None
+
+
+@app.get("/api/character/job")
+def get_character_job(wait_s: float = 0.0) -> dict:
+    from .ml import poll_character_job
+
+    return poll_character_job(wait_s=max(0.0, min(float(wait_s), 45.0)))
 
 
 @app.get("/api/ml/status")
@@ -1307,9 +1342,10 @@ def ml_cancel() -> dict:
 
 @app.post("/api/character/design")
 def create_character_design(body: CharacterDesignIn, x_actor: str = Header(default=USER)) -> dict:
-    """Generate a Character Mode 2D turnaround Design File using the local 2D Painter (never saved to Photos)."""
+    """Generate a Character Mode 2D Design File using the local 2D Painter (never saved to Photos)."""
     from .concepts import ConceptError
     from .images import ImageError
+    from .ml import start_character_job
     from .ml.painter import PainterError, generate_character_design_image
 
     w = ws()
@@ -1319,7 +1355,8 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
             ref_paths.append(w.images.path(iid))
         except ImageError as exc:
             raise HTTPException(422, str(exc)) from exc
-    try:
+
+    def _work() -> dict:
         png_bytes, views = generate_character_design_image(
             prompt=body.prompt,
             ref_paths=ref_paths or None,
@@ -1339,17 +1376,29 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
             reference_photos=body.reference_photos,
             views=views,
         )
-    except (PainterError, ConceptError) as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return c.model_dump(exclude={"svg"})
+        return c.model_dump(exclude={"svg"})
+
+    if body.wait_s < 0:
+        try:
+            return _work()
+        except (PainterError, ConceptError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    res = start_character_job("painting", "Painting character design", body.title, _work, wait_s=body.wait_s)
+    if res["status"] == "error":
+        raise HTTPException(422, res["error"])
+    if res["status"] == "done" and res["result"] is not None:
+        return res["result"]
+    return res
 
 
 @app.post("/api/character/sculpt")
 def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(default=USER)) -> dict:
-    """Sculpt a Character Mode 3D mesh from an approved Design File (or direct prompt in Direct Build mode)."""
+    """Sculpt a Character Mode 3D mesh + precision CAD print mechanics (flexi hinges, cutouts, base, loop)."""
     from .features.model import SculptPrep
     from .geometry.mesh_prep import MeshPrepError
     from .images import ImageError
+    from .ml import ml_job_update, start_character_job
     from .ml.painter import PainterError, generate_character_design_image
     from .ml.sculptor import SculptorError, sculpt_mesh_from_image
 
@@ -1358,6 +1407,12 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
     views: list[str] = []
     cid = body.concept_id.strip()
     sculpt_name = body.name.strip()
+    ref_paths = []
+    for iid in body.reference_photos:
+        try:
+            ref_paths.append(w.images.path(iid))
+        except ImageError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     if cid:
         c = w.concepts.get(cid)
@@ -1373,19 +1428,42 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         sculpt_name = sculpt_name or c.title
         if img_path is None:
             raise HTTPException(422, f"Concept {c.id} does not have a Character Mode design image")
-    elif body.prompt.strip():
-        # Direct Build bypass: synthesize a temporary 2D turnaround image, then immediately sculpt it
-        ref_paths = []
-        for iid in body.reference_photos:
-            try:
-                ref_paths.append(w.images.path(iid))
-            except ImageError as exc:
-                raise HTTPException(422, str(exc)) from exc
-        try:
+    elif not body.prompt.strip() and not ref_paths:
+        raise HTTPException(422, "Provide concept_id, prompt, or reference_photos to sculpt")
+    elif not body.prompt.strip() and ref_paths:
+        img_path = ref_paths[0]
+        sculpt_name = sculpt_name or body.reference_photos[0]
+
+    prep = SculptPrep(
+        target_height_mm=body.target_height_mm,
+        flatten_bottom_mm=body.flatten_bottom_mm,
+        base_style=body.base_style,
+        base_height_mm=body.base_height_mm,
+        base_margin_mm=body.base_margin_mm,
+        keychain_loop=body.keychain_loop,
+        keychain_hole_mm=body.keychain_hole_mm,
+        flexi_segments=body.flexi_segments,
+        flexi_axis=body.flexi_axis,
+        flexi_start_pct=body.flexi_start_pct,
+        flexi_end_pct=body.flexi_end_pct,
+        flexi_clearance_mm=body.flexi_clearance_mm,
+        flexi_angle_deg=body.flexi_angle_deg,
+        magnet_hole=body.magnet_hole,
+        magnet_dia_mm=body.magnet_dia_mm,
+        magnet_depth_mm=body.magnet_depth_mm,
+        hollow_cavity=body.hollow_cavity,
+        hollow_wall_mm=body.hollow_wall_mm,
+        max_colors=4 if body.multicolor else 1,
+    )
+
+    def _work() -> dict:
+        nonlocal img_path, views, cid, sculpt_name
+        if img_path is None:
+            # Direct Build bypass: synthesize clean hero image, then sculpt
             png_bytes, views = generate_character_design_image(
-                prompt=body.prompt, ref_paths=ref_paths or None, turnaround=True
+                prompt=body.prompt, ref_paths=ref_paths or None, turnaround=False
             )
-            c = w.propose_concept(
+            c_new = w.propose_concept(
                 x_actor,
                 title=sculpt_name or body.prompt[:48],
                 summary=body.prompt,
@@ -1394,41 +1472,31 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
                 reference_photos=body.reference_photos,
                 views=views,
             )
-            w.answer_concept(c.id, "approve", "Direct Build")
-            cid = c.id
-            img_path = w.concepts.image_path(c.id)
-            sculpt_name = sculpt_name or c.title
-        except PainterError as exc:
-            raise HTTPException(422, str(exc)) from exc
-    elif body.reference_photos:
-        try:
-            img_path = w.images.path(body.reference_photos[0])
-            sculpt_name = sculpt_name or body.reference_photos[0]
-        except ImageError as exc:
-            raise HTTPException(422, str(exc)) from exc
-    else:
-        raise HTTPException(422, "Provide concept_id, prompt, or reference_photos to sculpt")
-
-    assert img_path is not None
-    try:
+            w.answer_concept(c_new.id, "approve", "Direct Build")
+            cid = c_new.id
+            img_path = w.concepts.image_path(c_new.id)
+            sculpt_name = sculpt_name or c_new.title
+        assert img_path is not None
         raw_glb = sculpt_mesh_from_image(img_path, views=views)
-        prep = SculptPrep(
-            target_height_mm=body.target_height_mm,
-            flatten_bottom_mm=body.flatten_bottom_mm,
-            base_style=body.base_style,
-            base_height_mm=body.base_height_mm,
-            base_margin_mm=body.base_margin_mm,
-            keychain_loop=body.keychain_loop,
-            keychain_hole_mm=body.keychain_hole_mm,
-            max_colors=4 if body.multicolor else 1,
-        )
+        ml_job_update("Engineering watertight mesh", 92, "Repairing solid & applying print mechanics…")
         sm = w.add_sculpt(
             actor=x_actor, name=sculpt_name or "Sculpt", raw_bytes=raw_glb, ext=".glb",
             concept_id=cid, prep=prep, color=body.color,
         )
-    except (SculptorError, MeshPrepError) as exc:
-        raise HTTPException(422, str(exc)) from exc
-    return {"sculpt": sm.model_dump(), "tree": w.tree()}
+        return {"sculpt": sm.model_dump(), "tree": w.tree()}
+
+    if body.wait_s < 0:
+        try:
+            return _work()
+        except (PainterError, SculptorError, MeshPrepError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    res = start_character_job("sculpting", "Molding 3D clay", sculpt_name or "Character sculpt", _work, wait_s=body.wait_s)
+    if res["status"] == "error":
+        raise HTTPException(422, res["error"])
+    if res["status"] == "done" and res["result"] is not None:
+        return res["result"]
+    return res
 
 
 @app.get("/api/sculpts")
@@ -1532,6 +1600,8 @@ AVAILABLE_MODELS = {
 
 @app.get("/api/ai/status")
 def ai_status(refresh: bool = False) -> dict:
+    from .ml import ml_job_status
+
     s = project().data.settings
     chosen_provider = s.ai_provider if s.ai_provider != "auto" else None
     active_provider = ai.provider(chosen_provider)
@@ -1553,6 +1623,7 @@ def ai_status(refresh: bool = False) -> dict:
         "settings_provider": s.ai_provider,
         "settings_model": s.ai_model,
         "available_models": available,
+        "ml_job": ml_job_status(),
         "chat": chat().to_dict(),
     }
 

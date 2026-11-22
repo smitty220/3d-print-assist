@@ -211,6 +211,244 @@ def _place_on_bed(mf: m3d.Manifold) -> m3d.Manifold:
     return mf.translate((-cx, -cy, -min_z))
 
 
+def _clamp(val: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, val))
+
+
+def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+    """Slice a solid sculpted character into N+1 permanently linked print-in-place flexi segments.
+
+    Uses exact `manifold3d` CSG to build support-free horizontal crossbar pins (on segment i-1) passing
+    through closed floor-anchored U-loops (on segment i) with guaranteed `prep.flexi_clearance_mm` air gaps
+    in X, Y, and Z so segments print flat on Z=0, never fuse, and wiggle right off the build plate.
+    """
+    n_cuts = int(prep.flexi_segments)
+    if n_cuts <= 0:
+        return mf, []
+    notes: list[str] = []
+    bb = mf.bounding_box()
+    sx = float(bb[3] - bb[0])
+    sy = float(bb[4] - bb[1])
+    rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
+    work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
+    work = _place_on_bed(work)
+    bb = work.bounding_box()
+    x0, y0, z0, x1, y1, z1 = [float(v) for v in bb]
+    length = x1 - x0
+    width_all = y1 - y0
+    height_all = z1 - z0
+    if length < 20.0 or width_all < 8.0 or height_all < 6.0:
+        notes.append("model is too small for print-in-place flexi joints (skipped)")
+        return mf, notes
+
+    c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.80)
+    gap = max(1.1, 2.2 * c)
+    s0 = _clamp(float(prep.flexi_start_pct) / 100.0, 0.12, 0.80)
+    s1 = _clamp(float(prep.flexi_end_pct) / 100.0, s0 + 0.10, 0.94)
+    cuts = [x0 + length * (s0 + (s1 - s0) * ((i + 0.5) / n_cuts)) for i in range(n_cuts)]
+    bounds = [x0 - 5.0, *cuts, x1 + 5.0]
+    pad_y = width_all + 40.0
+    pad_z = height_all + 40.0
+    tan_half = math.tan(math.radians(_clamp(float(prep.flexi_angle_deg), 8.0, 45.0) / 2.0))
+
+    # Measure valid joints at each cut plane so joints never poke outside thin tips
+    joint_specs: list[dict[str, float] | None] = []
+    active_cuts: list[float] = []
+    for i, u in enumerate(cuts):
+        slab_box = m3d.Manifold.cube((2.0, pad_y, pad_z), center=True).translate((u, (y0 + y1) / 2.0, height_all / 2.0))
+        slab = work ^ slab_box
+        if slab.is_empty():
+            continue
+        sbb = slab.bounding_box()
+        w_loc = float(sbb[4] - sbb[1])
+        z_bot = max(0.0, float(sbb[2]))
+        h_loc = float(sbb[5]) - z_bot
+        yc = float((sbb[1] + sbb[4]) / 2.0)
+        seg_pitch = min(u - bounds[i], bounds[i + 2] - u)
+        # Skip floating thin tips (like elevated tail stems) so they stay solidly attached to the last segment
+        if z_bot > 3.5 or w_loc < 8.0 or h_loc < 6.0 or seg_pitch < (gap + 4.0 * c + 4.5):
+            continue
+        # Size pin & loop wall to sit comfortably inside the local cross-section
+        max_pin_h = (h_loc - 1.2 - 3.0 * c) / 4.2
+        max_pin_x = (seg_pitch - gap - 3.5 * c) / 4.2
+        unit = _clamp(min(max_pin_h, max_pin_x, 2.1), 1.0, 2.1)
+        pin_r = unit
+        arm_t = max(1.2, unit * 1.05)
+        slot_w = _clamp(w_loc * 0.42, 4.0, 11.0)
+        if w_loc - slot_w < 3.6:
+            slot_w = max(3.6, w_loc - 3.6)
+        loop_w = slot_w - 2.0 * c
+        if loop_w < 2.2:
+            continue
+        pin_z = z_bot + arm_t + c + pin_r
+        loop_top_z = pin_z + pin_r + c + arm_t
+        if loop_top_z + c + 0.6 > float(sbb[5]):
+            continue
+        u_pin = u - (gap / 2.0 + c + pin_r + 0.5)
+        loop_front_x = u_pin - pin_r - c - arm_t
+        cavity_front_x = loop_front_x - c
+        if cavity_front_x <= bounds[i] + 1.2:
+            continue
+        active_cuts.append(u)
+        joint_specs.append({
+            "u": u, "yc": yc, "w_loc": w_loc, "h_loc": h_loc,
+            "pin_r": pin_r, "arm_t": arm_t, "slot_w": slot_w, "loop_w": loop_w,
+            "pin_z": pin_z, "loop_top_z": loop_top_z,
+            "u_pin": u_pin, "loop_front_x": loop_front_x, "cavity_front_x": cavity_front_x,
+        })
+
+    if not active_cuts:
+        notes.append("no cross-sections were wide enough for flexi joints")
+        return mf, notes
+
+    # Partition into N+1 segments with vertical gap + flared side V-wedges for wide flexing
+    cut_bounds = [x0 - 5.0, *active_cuts, x1 + 5.0]
+    segments: list[m3d.Manifold] = []
+    for seg_i in range(len(cut_bounds) - 1):
+        xa = cut_bounds[seg_i] + (gap / 2.0 if seg_i > 0 else 0.0)
+        xb = cut_bounds[seg_i + 1] - (gap / 2.0 if seg_i < len(cut_bounds) - 2 else 0.0)
+        if xb <= xa + 0.5:
+            segments.append(m3d.Manifold())
+            continue
+        box = m3d.Manifold.cube((xb - xa, pad_y, pad_z), center=True).translate(((xa + xb) / 2.0, (y0 + y1) / 2.0, height_all / 2.0))
+        seg = work ^ box
+        # Flared V-wedge relief on the outer flanks (outside the hinge slot) so segments wiggle freely
+        for j_idx in (seg_i - 1, seg_i):
+            if 0 <= j_idx < len(joint_specs):
+                sp = joint_specs[j_idx]
+                assert sp is not None
+                u = sp["u"]
+                yc = sp["yc"]
+                half_slot = sp["slot_w"] / 2.0 + 0.6
+                for side in (-1.0, 1.0):
+                    y_inner = yc + side * half_slot
+                    y_outer = yc + side * (width_all + 10.0)
+                    extra_x = abs(y_outer - y_inner) * tan_half
+                    pts = [
+                        (u - gap / 2.0, y_inner),
+                        (u + gap / 2.0, y_inner),
+                        (u + gap / 2.0 + extra_x, y_outer),
+                        (u - gap / 2.0 - extra_x, y_outer),
+                    ]
+                    if side < 0:
+                        pts.reverse()
+                    wedge = m3d.Manifold.extrude(m3d.CrossSection([pts]), pad_z).translate((0.0, 0.0, -5.0))
+                    seg = seg - wedge
+        segments.append(seg)
+
+    # Carve cavities, anchor horizontal pins into segment i, and union closed floor-anchored loops onto segment i+1
+    for j_idx, sp in enumerate(joint_specs):
+        assert sp is not None
+        u = sp["u"]
+        yc = sp["yc"]
+        w_loc = sp["w_loc"]
+        pin_r = sp["pin_r"]
+        slot_w = sp["slot_w"]
+        loop_w = sp["loop_w"]
+        pin_z = sp["pin_z"]
+        loop_top_z = sp["loop_top_z"]
+        u_pin = sp["u_pin"]
+        loop_front_x = sp["loop_front_x"]
+        cavity_front_x = sp["cavity_front_x"]
+        cavity_back_x = u + gap / 2.0 + 0.5
+        cavity_top_z = loop_top_z + c
+
+        # 1. Segment A (upstream): subtract slot pocket, then union horizontal crossbar pin anchored into side cheeks
+        cav_len = cavity_back_x - cavity_front_x
+        cavity = m3d.Manifold.cube((cav_len, slot_w, cavity_top_z + 2.0), center=True).translate(
+            (cavity_front_x + cav_len / 2.0, yc, (cavity_top_z - 2.0) / 2.0)
+        )
+        pin_span = min(w_loc - 1.2, slot_w + 5.0)
+        pin = (
+            m3d.Manifold.cylinder(pin_span, pin_r, pin_r, circular_segments=32, center=True)
+            .rotate((90.0, 0.0, 0.0))
+            .translate((u_pin, yc, pin_z))
+        )
+        pin = pin ^ work  # never protrude outside the character's sculpted skin
+        segments[j_idx] = (segments[j_idx] - cavity) + pin
+
+        # 2. Segment B (downstream): build closed flat-bottom U-loop wrapping 360° around pin with exact `c` clearance
+        next_limit = (
+            joint_specs[j_idx + 1]["cavity_front_x"] - 0.5
+            if j_idx + 1 < len(joint_specs) and joint_specs[j_idx + 1] is not None
+            else cut_bounds[j_idx + 2] - gap / 2.0 - 0.8
+        )
+        anchor_x = min(u + gap / 2.0 + 3.0, next_limit)
+        if anchor_x <= u + gap / 2.0 + 0.6:
+            anchor_x = u + gap / 2.0 + 0.8
+        loop_len = anchor_x - loop_front_x
+        loop_outer = m3d.Manifold.cube((loop_len, loop_w, loop_top_z), center=True).translate(
+            (loop_front_x + loop_len / 2.0, yc, loop_top_z / 2.0)
+        )
+        # Round the front leading edge of the loop so it swings cleanly inside the pocket without catching
+        eye_hole = (
+            m3d.Manifold.cylinder(loop_w + 4.0, pin_r + c, pin_r + c, circular_segments=32, center=True)
+            .rotate((90.0, 0.0, 0.0))
+            .translate((u_pin, yc, pin_z))
+        )
+        # Keep loop strictly inside the character's sculpted skin (no blocky tabs poking out curved tails)
+        loop = (loop_outer - eye_hole) ^ work
+        segments[j_idx + 1] = segments[j_idx + 1] + loop
+
+    non_empty = [s for s in segments if not s.is_empty() and s.status() == m3d.Error.NoError]
+    if len(non_empty) < 2:
+        return mf, notes
+    composed = m3d.Manifold.compose(non_empty)
+    if rotated_for_y:
+        composed = composed.rotate((0.0, 0.0, 90.0))
+    composed = _place_on_bed(composed)
+    notes.append(f"sliced {len(active_cuts)} print-in-place flexi joints ({len(non_empty)} segments, {c:.2f} mm clearance)")
+    return composed, notes
+
+
+def _apply_magnet_hole(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+    if prep.magnet_hole == "none":
+        return mf, []
+    bb = mf.bounding_box()
+    cx = float((bb[0] + bb[3]) / 2.0)
+    cy = float((bb[1] + bb[4]) / 2.0)
+    cz = float((bb[2] + bb[5]) / 2.0)
+    r = float(prep.magnet_dia_mm) / 2.0
+    depth = float(prep.magnet_depth_mm)
+    if prep.magnet_hole == "bottom":
+        cyl = m3d.Manifold.cylinder(depth + 1.0, r, r, circular_segments=48).translate((cx, cy, float(bb[2]) - 1.0))
+    else:  # "back" (-Y face)
+        cyl = (
+            m3d.Manifold.cylinder(depth + 1.0, r, r, circular_segments=48)
+            .rotate((-90.0, 0.0, 0.0))
+            .translate((cx, float(bb[1]) - 1.0, cz))
+        )
+    cut = mf - cyl
+    if cut.is_empty() or cut.status() != m3d.Error.NoError:
+        return mf, []
+    return cut, [f"cut {prep.magnet_hole} magnet pocket (Ø{prep.magnet_dia_mm:.1f} × {depth:.1f} mm)"]
+
+
+def _apply_hollow_cavity(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+    if not prep.hollow_cavity:
+        return mf, []
+    bb = mf.bounding_box()
+    sx = float(bb[3] - bb[0])
+    sy = float(bb[4] - bb[1])
+    sz = float(bb[5] - bb[2])
+    wall = max(1.5, float(prep.hollow_wall_mm))
+    rx = sx / 2.0 - wall
+    ry = sy / 2.0 - wall
+    if rx < 4.0 or ry < 4.0 or sz < wall * 2.5:
+        return mf, []
+    cx = float((bb[0] + bb[3]) / 2.0)
+    cy = float((bb[1] + bb[4]) / 2.0)
+    cav = (
+        m3d.Manifold.cylinder(sz + 5.0, 1.0, 1.0, circular_segments=48)
+        .scale((rx, ry, 1.0))
+        .translate((cx, cy, float(bb[2]) + wall))
+    )
+    cut = mf - cav
+    if cut.is_empty() or cut.status() != m3d.Error.NoError:
+        return mf, []
+    return cut, [f"hollowed top cavity ({wall:.1f} mm wall)"]
+
+
 def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
                        color: str | None = "#b8c2cc", filament: int | None = None) -> PreparedSculpt:
     """Load, repair, orient, scale, flatten bottom, and apply optional base/keychain finishing."""
@@ -244,8 +482,8 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
                 mf = _place_on_bed(trimmed)
                 notes.append(f"flattened bottom by {cut:.2f} mm")
 
-    # Optional display base / plinth
-    if prep.base_style != "none":
+    # Optional display base / plinth (skip if flexi articulation is enabled so joints remain free on bed)
+    if prep.base_style != "none" and prep.flexi_segments == 0:
         bb = mf.bounding_box()
         sx = float(bb[3] - bb[0])
         sy = float(bb[4] - bb[1])
@@ -255,7 +493,7 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
         mf = _place_on_bed(base + mf.translate((0.0, 0.0, bh - overlap)))
         notes.append(f"added {prep.base_style} display base ({bh:.1f} mm)")
 
-    # Optional keychain loop at top peak
+    # Optional keychain loop at top peak (applied before flexi cuts so it stays anchored to head/body)
     if prep.keychain_loop:
         tm = _manifold_to_trimesh(mf)
         top_z = float(tm.vertices[:, 2].max())
@@ -265,6 +503,19 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
         loop = _build_keychain_loop(prep.keychain_hole_mm, tx, ty, top_z)
         mf = _place_on_bed(mf + loop)
         notes.append(f"added keychain loop (Ø{prep.keychain_hole_mm:.1f} mm hole)")
+
+    # Optional functional hardware cutouts (magnet pocket, hollowed planter/cup cavity)
+    if prep.magnet_hole != "none":
+        mf, m_notes = _apply_magnet_hole(mf, prep)
+        notes.extend(m_notes)
+    if prep.hollow_cavity:
+        mf, h_notes = _apply_hollow_cavity(mf, prep)
+        notes.extend(h_notes)
+
+    # Optional print-in-place flexi articulation (precision CAD hinge cuts through sculpted character)
+    if prep.flexi_segments > 0:
+        mf, f_notes = _apply_flexi_articulation(mf, prep)
+        notes.extend(f_notes)
 
     final_tm = _manifold_to_trimesh(mf)
     bb = mf.bounding_box()
@@ -455,8 +706,8 @@ def render_prepared_meshes(parts: list[PreparedPart], view: str = "iso", size: i
         base_rgb = tuple(int(hex_c[i:i + 2], 16) for i in (0, 2, 4)) if len(hex_c) == 6 else (184, 194, 204)
         pts = p.points - center
         tris = p.tris
-        if len(tris) > 12000:
-            step = max(1, len(tris) // 12000)
+        if len(tris) > 50000:
+            step = max(1, len(tris) // 50000)
             tris = tris[::step]
         v0 = pts[tris[:, 0]]
         v1 = pts[tris[:, 1]]

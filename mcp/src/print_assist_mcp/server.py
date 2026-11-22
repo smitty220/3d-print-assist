@@ -44,6 +44,8 @@ def _guide() -> str:
 def _call(method: str, path: str, **kw) -> Any:
     try:
         r = client().request(method, path, **kw)
+    except httpx.TimeoutException as exc:
+        return {"error": f"Request to {path} timed out while 3D Print Assist was still working ({exc}). Check list_concepts or get_model before retrying."}
     except httpx.HTTPError as exc:
         return {"error": f"3D Print Assist is not reachable at {BASE_URL} ({exc}); ask the user to run ./dev.sh"}
     if r.status_code >= 400:
@@ -255,12 +257,16 @@ def propose_character_design(
     summary: str = "",
     assumptions: list[str] | None = None,
     questions: list[str] | None = None,
-    turnaround: bool = True,
+    turnaround: bool = False,
 ) -> str:
-    """Character Mode Design File: use the local 2D Painter to generate a Front/Side/Back turnaround image from
+    """Character Mode Design File: use the local 2D Painter to generate a clean studio character/scene design image from
     `prompt` and optional uploaded `reference_photos` (e.g. ["I1", "I2"]). Shown in the Design tab (never in Photos)
-    for the user to inspect and iterate on before clicking Approve & Build."""
-    return _text(_call(
+    for the user to inspect and iterate on before clicking Approve & Build.
+    IMPORTANT: Always design the character as a clean, solid organic form — do NOT try to paint tiny print-in-place
+    flexi hinges, magnet holes, or screw mounts into the 2D art; those are cut mathematically during sculpting via
+    `sculpt_character` / `update_mesh_prep`. If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)`
+    until `status == "done"` (never call `propose_character_design` a second time while running)."""
+    out = _call(
         "POST",
         "/api/character/design",
         json={
@@ -271,9 +277,14 @@ def propose_character_design(
             "assumptions": assumptions or [],
             "questions": questions or [],
             "turnaround": turnaround,
+            "wait_s": 40,
         },
         headers=ACTOR,
-    ))
+        timeout=75,
+    )
+    if isinstance(out, dict) and out.get("status") == "running":
+        out["next"] = "Still rendering on local GPU. Call wait_for_character_job(wait_s=40) to wait for completion. Do NOT call propose_character_design again."
+    return _text(out)
 
 
 @mcp.tool()
@@ -286,13 +297,29 @@ def sculpt_character(
     flatten_bottom_mm: float = 0.4,
     base_style: str = "none",
     keychain_loop: bool = False,
+    flexi_segments: int = 0,
+    flexi_axis: str = "auto",
+    flexi_start_pct: float = 35.0,
+    flexi_end_pct: float = 88.0,
+    flexi_clearance_mm: float = 0.45,
+    flexi_angle_deg: float = 22.0,
+    magnet_hole: str = "none",
+    magnet_dia_mm: float = 8.2,
+    magnet_depth_mm: float = 3.2,
+    hollow_cavity: bool = False,
+    hollow_wall_mm: float = 3.0,
     multicolor: bool = False,
 ) -> str:
-    """Character Mode 3D Sculptor: mold a watertight, 3D-printable mesh from an approved Character Design File
-    (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` when Direct Build bypass is active.
-    Automatically repairs to a closed manifold solid, scales to `target_height_mm`, flattens the bottom, and
-    optionally unions a display base ('none'|'round'|'oval'|'square') or keychain loop."""
-    return _text(_call(
+    """Character Mode 3D Sculptor + Print Engineering: mold a watertight, 3D-printable mesh from an approved Character
+    Design File (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` in Direct Build mode.
+    Automatically repairs to a closed manifold solid, scales to `target_height_mm`, flattens the bottom, and applies
+    exact-mm CAD mechanics on top:
+    - Print-in-Place Flexi Articulation: set `flexi_segments` (e.g. 5 for 6 linked segments), `flexi_start_pct` (35 keeps
+      head/fins solid), `flexi_end_pct` (88 keeps tail fin solid), `flexi_clearance_mm` (0.45 mm FDM tolerance).
+    - Functional hardware: `magnet_hole` ('none'|'bottom'|'back'), `hollow_cavity` (planter/cup), `base_style`
+      ('none'|'round'|'oval'|'square'), `keychain_loop`.
+    If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
+    out = _call(
         "POST",
         "/api/character/sculpt",
         json={
@@ -304,10 +331,38 @@ def sculpt_character(
             "flatten_bottom_mm": flatten_bottom_mm,
             "base_style": base_style,
             "keychain_loop": keychain_loop,
+            "flexi_segments": flexi_segments,
+            "flexi_axis": flexi_axis,
+            "flexi_start_pct": flexi_start_pct,
+            "flexi_end_pct": flexi_end_pct,
+            "flexi_clearance_mm": flexi_clearance_mm,
+            "flexi_angle_deg": flexi_angle_deg,
+            "magnet_hole": magnet_hole,
+            "magnet_dia_mm": magnet_dia_mm,
+            "magnet_depth_mm": magnet_depth_mm,
+            "hollow_cavity": hollow_cavity,
+            "hollow_wall_mm": hollow_wall_mm,
             "multicolor": multicolor,
+            "wait_s": 40,
         },
         headers=ACTOR,
-    ))
+        timeout=75,
+    )
+    if isinstance(out, dict) and out.get("status") == "running":
+        out["next"] = "Still sculpting on local GPU. Call wait_for_character_job(wait_s=40) to wait for completion. Do NOT call sculpt_character again."
+    return _text(out)
+
+
+@mcp.tool()
+def wait_for_character_job(wait_s: int = 40) -> str:
+    """Wait up to `wait_s` seconds (max 45s) for the active Character Mode GPU painting or 3D sculpting job.
+    Returns `status: "done"` with the finished Concept or Sculpt result, `status: "running"` with live progress
+    (call again to continue waiting), or `status: "error"`."""
+    sec = max(5, min(int(wait_s), 45))
+    out = _call("GET", "/api/character/job", params={"wait_s": sec}, timeout=sec + 25)
+    if isinstance(out, dict) and out.get("status") == "running":
+        out["next"] = "Still running on local GPU. Call wait_for_character_job(wait_s=40) again."
+    return _text(out)
 
 
 @mcp.tool()
@@ -318,17 +373,45 @@ def update_mesh_prep(
     base_style: str | None = None,
     base_height_mm: float | None = None,
     keychain_loop: bool | None = None,
+    flexi_segments: int | None = None,
+    flexi_axis: str | None = None,
+    flexi_start_pct: float | None = None,
+    flexi_end_pct: float | None = None,
+    flexi_clearance_mm: float | None = None,
+    flexi_angle_deg: float | None = None,
+    magnet_hole: str | None = None,
+    magnet_dia_mm: float | None = None,
+    magnet_depth_mm: float | None = None,
+    hollow_cavity: bool | None = None,
+    hollow_wall_mm: float | None = None,
+    rotate_x: float | None = None,
+    rotate_y: float | None = None,
     rotate_z: float | None = None,
 ) -> str:
-    """Instantly adjust print-prep finishing on an existing Character Mode sculpt (`id`, e.g. "M1") without
-    re-running the 3D AI sculptor: resize in mm, flatten bottom, add/change display base ('none'|'round'|'oval'|'square'),
-    toggle keychain loop, or rotate about Z."""
+    """Instantly adjust CAD print-engineering & finishing on an existing Character Mode sculpt (`id`, e.g. "M1")
+    in < 1s without re-running the 3D AI sculptor: resize in mm, flatten bottom, cut Print-in-Place Flexi Articulation
+    joints (`flexi_segments`, `flexi_start_pct`, `flexi_end_pct`, `flexi_clearance_mm`, `flexi_angle_deg`), cut magnet
+    pockets (`magnet_hole`: 'none'|'bottom'|'back'), hollow planter cavities (`hollow_cavity`), add/change display base
+    ('none'|'round'|'oval'|'square'), toggle keychain loop, or rotate."""
     body = {k: v for k, v in {
         "target_height_mm": target_height_mm,
         "flatten_bottom_mm": flatten_bottom_mm,
         "base_style": base_style,
         "base_height_mm": base_height_mm,
         "keychain_loop": keychain_loop,
+        "flexi_segments": flexi_segments,
+        "flexi_axis": flexi_axis,
+        "flexi_start_pct": flexi_start_pct,
+        "flexi_end_pct": flexi_end_pct,
+        "flexi_clearance_mm": flexi_clearance_mm,
+        "flexi_angle_deg": flexi_angle_deg,
+        "magnet_hole": magnet_hole,
+        "magnet_dia_mm": magnet_dia_mm,
+        "magnet_depth_mm": magnet_depth_mm,
+        "hollow_cavity": hollow_cavity,
+        "hollow_wall_mm": hollow_wall_mm,
+        "rotate_x": rotate_x,
+        "rotate_y": rotate_y,
         "rotate_z": rotate_z,
     }.items() if v is not None}
     return _text(_call("POST", f"/api/sculpts/{id}/prep", json=body, headers=ACTOR))

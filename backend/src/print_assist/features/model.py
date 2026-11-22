@@ -125,7 +125,7 @@ class PrintItem(BaseModel):
 
 
 class SculptPrep(BaseModel):
-    """Print-readiness and finishing settings for a Character Mode organic 3D mesh."""
+    """Non-destructive CAD print-engineering & finishing settings for a Character Mode organic 3D mesh."""
 
     target_height_mm: float = Field(default=80.0, ge=0.0, le=500.0)
     flatten_bottom_mm: float = Field(default=0.4, ge=0.0, le=10.0)
@@ -134,6 +134,19 @@ class SculptPrep(BaseModel):
     base_margin_mm: float = Field(default=4.0, ge=0.0, le=30.0)
     keychain_loop: bool = False
     keychain_hole_mm: float = Field(default=4.5, ge=2.0, le=15.0)
+    # Print-in-Place Flexi Articulation (precision CAD hinge cuts through the sculpted character)
+    flexi_segments: int = Field(default=0, ge=0, le=12)
+    flexi_axis: Literal["auto", "x", "y"] = "auto"
+    flexi_start_pct: float = Field(default=35.0, ge=10.0, le=80.0)
+    flexi_end_pct: float = Field(default=88.0, ge=20.0, le=95.0)
+    flexi_clearance_mm: float = Field(default=0.45, ge=0.25, le=0.80)
+    flexi_angle_deg: float = Field(default=22.0, ge=8.0, le=45.0)
+    # Functional hardware cutouts
+    magnet_hole: Literal["none", "bottom", "back"] = "none"
+    magnet_dia_mm: float = Field(default=8.2, ge=3.0, le=30.0)
+    magnet_depth_mm: float = Field(default=3.2, ge=1.0, le=15.0)
+    hollow_cavity: bool = False
+    hollow_wall_mm: float = Field(default=3.0, ge=1.5, le=15.0)
     rotate_x: float = 0.0
     rotate_y: float = 0.0
     rotate_z: float = 0.0

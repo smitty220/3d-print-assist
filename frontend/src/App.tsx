@@ -2,7 +2,7 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type Concept, type CreationMode, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type MlStatus, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type CreationMode, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type MlStatus, type Op, type PartState, type PlateMesh, type Printer, type Project, type SculptMesh, type SlicerInfo, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
 import { ConceptView, type CharacterBuildOptions } from './ai/ConceptView'
 import { PhotoView } from './ai/PhotoView'
@@ -125,7 +125,7 @@ export default function App() {
         retry = setTimeout(connect, 2000)
       }
       es.onmessage = (ev) => {
-        const s = JSON.parse(ev.data) as { slug: string | null; rev: number; built_rev: number; activity: number }
+        const s = JSON.parse(ev.data) as { slug: string | null; rev: number; built_rev: number; building?: boolean; activity: number }
         const k = seen.current
         if ((k.slug || s.slug) && (s.slug ?? '') !== k.slug) { run(loadAll); return }
         if (!s.slug) return
@@ -133,9 +133,11 @@ export default function App() {
           api.tree().then(setTree).catch(() => {})
           api.file().then(setFile).catch(() => {})
         }
-        if (s.built_rev !== k.built) {
-          api.part().then(setPart).catch(() => {})
-          api.checks().then(setChecks).catch(() => {})
+        if (s.built_rev !== k.built || s.building === false) {
+          if (s.built_rev !== k.built) {
+            api.part().then(setPart).catch(() => {})
+            api.checks().then(setChecks).catch(() => {})
+          }
         }
         if (s.activity !== k.activity) {
           api.activity().then(setActivity).catch(() => {})
@@ -213,12 +215,12 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!mlStatus?.installing && creationMode !== 'character') return
+    if (!mlStatus?.installing && !sculpting && creationMode !== 'character') return
     api.mlStatus().then(setMlStatus).catch(() => {})
-    if (!mlStatus?.installing) return
+    if (!mlStatus?.installing && !sculpting && !mlStatus?.job?.active) return
     const t = setInterval(() => { api.mlStatus().then(setMlStatus).catch(() => {}) }, 1000)
     return () => clearInterval(t)
-  }, [creationMode, mlStatus?.installing])
+  }, [creationMode, mlStatus?.installing, mlStatus?.job?.active, sculpting])
 
   // Photos tab is strictly for user-uploaded reference photos (AI-generated images never appear here).
   const uploadedPhotos = useMemo(() => images.filter((img) => img.model === 'upload'), [images])
@@ -244,24 +246,46 @@ export default function App() {
           await api.answerConcept(c.id, 'approve', note)
           api.concepts().then(setConcepts).catch(() => {})
         }
-        const res = await api.characterSculpt({
+        const initial = await api.characterSculpt({
           concept_id: c.id,
           name: c.title,
           target_height_mm: charOpts?.target_height_mm ?? 80,
           flatten_bottom_mm: charOpts?.flatten_bottom_mm ?? 0.4,
           base_style: charOpts?.base_style ?? 'none',
           keychain_loop: charOpts?.keychain_loop ?? false,
+          flexi_segments: charOpts?.flexi_segments ?? 0,
+          magnet_hole: charOpts?.magnet_hole ?? 'none',
+          hollow_cavity: charOpts?.hollow_cavity ?? false,
           multicolor: charOpts?.multicolor ?? Boolean(ai?.character_multicolor),
+          wait_s: 1,
         })
-        if (res) {
-          setTree(res.tree)
-          await Promise.all([
-            api.part().then(setPart).catch(() => {}),
-            api.checks().then(setChecks).catch(() => {}),
-            api.activity().then(setActivity).catch(() => {}),
-            api.file().then(setFile).catch(() => {}),
-          ])
-          say(`Sculpted “${res.sculpt.name}” (${res.sculpt.triangles.toLocaleString()} tris)`)
+        let finalSculpt = initial?.sculpt
+        let finalTree = initial?.tree
+        if (initial?.status === 'running') {
+          while (true) {
+            await new Promise((resolve) => setTimeout(resolve, 1200))
+            const st = await api.characterJob(0)
+            if (st.job) setMlStatus((prev) => (prev ? { ...prev, job: st.job } : prev))
+            if (st.status === 'error') throw new Error(st.error || '3D sculpting failed')
+            if (st.status === 'done') {
+              const r = st.result as { sculpt?: SculptMesh; tree?: Tree } | null
+              finalSculpt = r?.sculpt
+              finalTree = r?.tree
+              break
+            }
+            if (st.status === 'idle') break
+          }
+        }
+        if (finalTree) setTree(finalTree)
+        else api.tree().then(setTree).catch(() => {})
+        await Promise.all([
+          api.part().then(setPart).catch(() => {}),
+          api.checks().then(setChecks).catch(() => {}),
+          api.activity().then(setActivity).catch(() => {}),
+          api.file().then(setFile).catch(() => {}),
+        ])
+        if (finalSculpt) {
+          say(`Sculpted “${finalSculpt.name}” (${finalSculpt.triangles.toLocaleString()} tris)`)
         }
       }).finally(() => setSculpting(false))
       return
@@ -735,6 +759,11 @@ export default function App() {
               }
             }}
             edgeMarks={feature?.edges.length ? feature.edges.map((e) => e.points) : null}>
+            {tree.building && !shownConcept && !shownPhoto && (
+              <div className="recovery" role="status" style={{ background: 'var(--panel-2)' }}>
+                <span>Building 3D geometry in background…</span>
+              </div>
+            )}
             {file.recovery && (
               <div className="recovery" role="alert">
                 <span>Unsaved changes from last time were kept.</span>

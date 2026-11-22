@@ -12,6 +12,9 @@ export interface CharacterBuildOptions {
   flatten_bottom_mm: number
   base_style: 'none' | 'round' | 'oval' | 'square'
   keychain_loop: boolean
+  flexi_segments: number
+  magnet_hole: 'none' | 'bottom' | 'back'
+  hollow_cavity: boolean
   multicolor: boolean
 }
 
@@ -31,8 +34,12 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState(false)
   const [split, setSplit] = useState(0.62) // fraction of cbody height for Drawing (0 = spec full, 1 = drawing full)
-  const [targetHeight, setTargetHeight] = useState(80)
-  const [baseStyle, setBaseStyle] = useState<'none' | 'round' | 'oval' | 'square'>('round')
+  const looksFlexi = /\b(flexi|articulated|wiggle|print-in-place)\b/i.test(`${c.title} ${c.summary}`)
+  const [targetHeight, setTargetHeight] = useState(looksFlexi ? 42 : 80)
+  const [baseStyle, setBaseStyle] = useState<'none' | 'round' | 'oval' | 'square'>(looksFlexi ? 'none' : 'none')
+  const [flexiSegments, setFlexiSegments] = useState<number>(looksFlexi ? 5 : 0)
+  const [magnetHole, setMagnetHole] = useState<'none' | 'bottom' | 'back'>('none')
+  const [hollowCavity, setHollowCavity] = useState(false)
   const [keychainLoop, setKeychainLoop] = useState(false)
   const [multicolor, setMulticolor] = useState(defaultMulticolor && hasMultiSlotPrinter)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -41,7 +48,16 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
   const previewSrc = c.image_file ? api.conceptPictureUrl(c.id) : svgUrl(c.svg)
   const charOpts = (): CharacterBuildOptions | undefined => (
     isCharacter
-      ? { target_height_mm: targetHeight, flatten_bottom_mm: 0.4, base_style: baseStyle, keychain_loop: keychainLoop, multicolor }
+      ? {
+          target_height_mm: targetHeight,
+          flatten_bottom_mm: flexiSegments > 0 ? 1.5 : 0.4,
+          base_style: flexiSegments > 0 ? 'none' : baseStyle,
+          keychain_loop: keychainLoop,
+          flexi_segments: flexiSegments,
+          magnet_hole: magnetHole,
+          hollow_cavity: hollowCavity,
+          multicolor,
+        }
       : undefined
   )
 
@@ -182,14 +198,40 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
                   style={{ width: 64, fontSize: 12, padding: '2px 6px' }} />
               </label>
               <label className="row sm" style={{ gap: 4 }}>
+                <span className="nm">Articulation:</span>
+                <select aria-label="Print-in-place flexi joints" value={flexiSegments}
+                  onChange={(e) => { const n = Number(e.target.value); setFlexiSegments(n); if (n > 0) setBaseStyle('none') }}
+                  style={{ fontSize: 12, padding: '2px 6px' }}>
+                  <option value={0}>Solid figurine</option>
+                  <option value={4}>Flexi (4 joints)</option>
+                  <option value={5}>Flexi (5 joints)</option>
+                  <option value={6}>Flexi (6 joints)</option>
+                  <option value={8}>Flexi (8 joints)</option>
+                </select>
+              </label>
+              <label className="row sm" style={{ gap: 4 }}>
                 <span className="nm">Base:</span>
-                <select aria-label="Display base style" value={baseStyle}
+                <select aria-label="Display base style" value={flexiSegments > 0 ? 'none' : baseStyle}
+                  disabled={flexiSegments > 0}
                   onChange={(e) => setBaseStyle(e.target.value as 'none' | 'round' | 'oval' | 'square')} style={{ fontSize: 12, padding: '2px 6px' }}>
                   <option value="none">None (flat bottom)</option>
                   <option value="round">Round plinth</option>
                   <option value="oval">Oval plinth</option>
                   <option value="square">Square plinth</option>
                 </select>
+              </label>
+              <label className="row sm" style={{ gap: 4 }}>
+                <span className="nm">Magnet:</span>
+                <select aria-label="Magnet pocket" value={magnetHole}
+                  onChange={(e) => setMagnetHole(e.target.value as 'none' | 'bottom' | 'back')} style={{ fontSize: 12, padding: '2px 6px' }}>
+                  <option value="none">None</option>
+                  <option value="bottom">Bottom (8×3 mm)</option>
+                  <option value="back">Back (8×3 mm)</option>
+                </select>
+              </label>
+              <label className="row sm" style={{ gap: 4, cursor: 'pointer' }}>
+                <input type="checkbox" checked={hollowCavity} onChange={(e) => setHollowCavity(e.target.checked)} />
+                <span className="nm">Hollow</span>
               </label>
               <label className="row sm" style={{ gap: 4, cursor: 'pointer' }}>
                 <input type="checkbox" checked={keychainLoop} onChange={(e) => setKeychainLoop(e.target.checked)} />
