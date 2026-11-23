@@ -2,9 +2,9 @@
 // print checks along the bottom. The backend owns the model; this keeps a copy of its tree and last good part, refreshed
 // whenever the server says something changed (server-sent events), whoever changed it — you, Claude Code or the chat.
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { api, type Activity, type AiStatus, type Checks, type Concept, type CreationMode, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type MlStatus, type Op, type PartState, type PlateMesh, type Printer, type Project, type SculptMesh, type SlicerInfo, type Tree } from './api'
+import { api, type Activity, type AiStatus, type Checks, type Concept, type CreationMode, type DesignInfo, type FeatureSpec, type FileState, type FontInfo, type ImageInfo, type MlStatus, type Op, type PartState, type PlateMesh, type Printer, type Project, type SlicerInfo, type Tree } from './api'
 import { AiPanel } from './ai/AiPanel'
-import { ConceptView, type CharacterBuildOptions } from './ai/ConceptView'
+import { ConceptView } from './ai/ConceptView'
 import { PhotoView } from './ai/PhotoView'
 import { FeatureDialog, ParamDialog, ReferenceDialog } from './edit/Dialogs'
 import { ExportPane } from './export/ExportPane'
@@ -52,7 +52,6 @@ export default function App() {
   const [photoOpen, setPhotoOpen] = useState<string | null>(null) // reference photo shown in Photos tab
   const [openingSlug, setOpeningSlug] = useState<string | null>(null)
   const [mlStatus, setMlStatus] = useState<MlStatus | null>(null)
-  const [sculpting, setSculpting] = useState(false)
   const [ai, setAi] = useState<AiStatus | null>(null)
   const [mode, setMode] = useState<Mode>('part')
   const leftPanel = usePanelLayout({ storageKey: 'pa.left', side: 'left', defaultWidth: 300, minWidth: 180, maxWidth: 580 })
@@ -215,12 +214,12 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!mlStatus?.installing && !sculpting && creationMode !== 'character') return
+    if (!mlStatus?.installing && creationMode !== 'character') return
     api.mlStatus().then(setMlStatus).catch(() => {})
-    if (!mlStatus?.installing && !sculpting && !mlStatus?.job?.active) return
+    if (!mlStatus?.installing && !mlStatus?.job?.active) return
     const t = setInterval(() => { api.mlStatus().then(setMlStatus).catch(() => {}) }, 1000)
     return () => clearInterval(t)
-  }, [creationMode, mlStatus?.installing, mlStatus?.job?.active, sculpting])
+  }, [creationMode, mlStatus?.installing, mlStatus?.job?.active])
 
   // Photos tab is strictly for user-uploaded reference photos (AI-generated images never appear here).
   const uploadedPhotos = useMemo(() => images.filter((img) => img.model === 'upload'), [images])
@@ -236,62 +235,14 @@ export default function App() {
     setPhotoOpen(target.id)
   }
 
-  const buildConcept = (c: typeof concepts[number], note: string, charOpts?: CharacterBuildOptions) => {
+  const buildConcept = (c: typeof concepts[number], note: string) => {
     setConceptOpen(null)
     if (rightPanel.collapsed) rightPanel.setCollapsed(false)
-    if (c.mode === 'character' || Boolean(c.image_file)) {
-      setSculpting(true)
-      run(async () => {
-        if (c.status === 'pending') {
-          await api.answerConcept(c.id, 'approve', note)
-          api.concepts().then(setConcepts).catch(() => {})
-        }
-        const initial = await api.characterSculpt({
-          concept_id: c.id,
-          name: c.title,
-          target_height_mm: charOpts?.target_height_mm ?? 80,
-          flatten_bottom_mm: charOpts?.flatten_bottom_mm ?? 0.4,
-          base_style: charOpts?.base_style ?? 'none',
-          keychain_loop: charOpts?.keychain_loop ?? false,
-          flexi_segments: charOpts?.flexi_segments ?? 0,
-          magnet_hole: charOpts?.magnet_hole ?? 'none',
-          hollow_cavity: charOpts?.hollow_cavity ?? false,
-          multicolor: charOpts?.multicolor ?? Boolean(ai?.character_multicolor),
-          wait_s: 1,
-        })
-        let finalSculpt = initial?.sculpt
-        let finalTree = initial?.tree
-        if (initial?.status === 'running') {
-          while (true) {
-            await new Promise((resolve) => setTimeout(resolve, 1200))
-            const st = await api.characterJob(0)
-            if (st.job) setMlStatus((prev) => (prev ? { ...prev, job: st.job } : prev))
-            if (st.status === 'error') throw new Error(st.error || '3D sculpting failed')
-            if (st.status === 'done') {
-              const r = st.result as { sculpt?: SculptMesh; tree?: Tree } | null
-              finalSculpt = r?.sculpt
-              finalTree = r?.tree
-              break
-            }
-            if (st.status === 'idle') break
-          }
-        }
-        if (finalTree) setTree(finalTree)
-        else api.tree().then(setTree).catch(() => {})
-        await Promise.all([
-          api.part().then(setPart).catch(() => {}),
-          api.checks().then(setChecks).catch(() => {}),
-          api.activity().then(setActivity).catch(() => {}),
-          api.file().then(setFile).catch(() => {}),
-        ])
-        if (finalSculpt) {
-          say(`Sculpted “${finalSculpt.name}” (${finalSculpt.triangles.toLocaleString()} tris)`)
-        }
-      }).finally(() => setSculpting(false))
-      return
-    }
     const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
-    const msg = `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its drawing and build it now in 3D Print Assist.${extra}`
+    const isChar = c.mode === 'character' || Boolean(c.image_file)
+    const msg = isChar
+      ? `Approve and build concept ${c.id} ("${c.title}"). Call sculpt_character(concept_id="${c.id}", ...) applying every requirement we discussed (size, flexi_segments & flatten_bottom_mm if flexi/articulated, magnet_hole, hollow_cavity, base_style, keychain_loop, multicolor as requested), wait via wait_for_character_job until done, then inspect render_preview("iso") and render_preview("top") plus run_checks to confirm the 3D result matches my request before replying.${extra}`
+      : `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its drawing and build it now in 3D Print Assist.${extra}`
     run(async () => {
       if (c.status === 'pending') {
         await api.answerConcept(c.id, 'approve', note)
@@ -304,9 +255,9 @@ export default function App() {
     }).then(() => api.aiStatus().then(setAi))
   }
 
-  const answerConcept = (c: typeof concepts[number], decision: 'approve' | 'revise', note: string, charOpts?: CharacterBuildOptions) => {
+  const answerConcept = (c: typeof concepts[number], decision: 'approve' | 'revise', note: string) => {
     if (decision === 'approve') {
-      buildConcept(c, note, charOpts)
+      buildConcept(c, note)
       return
     }
     run(async () => {
@@ -775,10 +726,8 @@ export default function App() {
               <ConceptView key={shownConcept.id} concept={shownConcept} concepts={concepts}
                 onSelectConcept={(id) => { setPhotoOpen(null); setConceptHidden(null); setConceptOpen(id) }}
                 hideAnswerInput={ai?.mode !== 'mcp'}
-                defaultMulticolor={Boolean(ai?.character_multicolor)}
-                hasMultiSlotPrinter={(printers.find((p) => p.id === activePrinter)?.nozzles.reduce((s, n) => s + n.slots, 0) ?? 1) > 1}
-                onAnswer={(decision, note, charOpts) => answerConcept(shownConcept, decision, note, charOpts)}
-                onBuild={(note, charOpts) => buildConcept(shownConcept, note, charOpts)}
+                onAnswer={(decision, note) => answerConcept(shownConcept, decision, note)}
+                onBuild={(note) => buildConcept(shownConcept, note)}
                 onClose={() => { if (shownConcept.status === 'pending') setConceptHidden(shownConcept.id); setConceptOpen(null) }} />
             )}
             {shownPhoto && (
@@ -808,8 +757,8 @@ export default function App() {
           </ViewportPane>
         )}
 
-        <AiPanel status={ai} activity={activity} images={uploadedPhotos} sculpts={tree.sculpts ?? []}
-          mlStatus={mlStatus} creationMode={creationMode} directBuild={directBuild} sculpting={sculpting}
+        <AiPanel status={ai} activity={activity} images={uploadedPhotos}
+          mlStatus={mlStatus} creationMode={creationMode} directBuild={directBuild}
           context={context} concept={concepts[0] ?? null}
           conceptOpen={Boolean(shownConcept)}
           onAnswerConcept={(id, decision, note) => {
@@ -821,16 +770,6 @@ export default function App() {
           onOpenConcept={(id) => { setPhotoOpen(null); setConceptOpen(id); setConceptHidden(null) }}
           onOpenPhoto={(id) => openPhoto(id)}
           onSetupMl={() => { run(() => api.mlSetup()).then((s) => s && setMlStatus(s)) }}
-          onCancelMl={() => { run(() => api.mlCancel()).then((s) => s && setMlStatus(s)) }}
-          onUpdateSculptPrep={(id, patch) => {
-            run(() => api.updateSculptPrep(id, patch)).then((r) => {
-              if (!r) return
-              setTree(r.tree)
-              api.part().then(setPart).catch(() => {})
-              api.checks().then(setChecks).catch(() => {})
-              refreshFile()
-            })
-          }}
           onUploadImage={async (f) => {
             const img = await run(() => api.uploadImage(f))
             if (img) api.images().then(setImages).catch(() => {})

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import { api, type Activity, type AiStatus, type Concept, type CreationMode, type ImageInfo, type MlStatus, type SculptMesh, type SculptPrep } from '../api'
+import { api, type Activity, type AiStatus, type Concept, type CreationMode, type ImageInfo, type MlStatus } from '../api'
 import { Icon } from '../ui/icons'
 import type { usePanelLayout } from '../ui/usePanelLayout'
 
@@ -13,11 +13,9 @@ interface Props {
   status: AiStatus | null
   activity: Activity[]
   images: ImageInfo[]
-  sculpts?: SculptMesh[]
   mlStatus?: MlStatus | null
   creationMode?: CreationMode
   directBuild?: boolean
-  sculpting?: boolean
   context: string | null
   concept: Concept | null // the newest
   conceptOpen?: boolean
@@ -31,8 +29,6 @@ interface Props {
   onUploadImage: (file: File) => Promise<ImageInfo | undefined>
   onDeleteImage: (id: string) => Promise<void>
   onSetupMl?: () => void
-  onCancelMl?: () => void
-  onUpdateSculptPrep?: (id: string, patch: Partial<SculptPrep>) => void
   onSettings?: (patch: { ai_mode?: 'mcp' | 'api'; ai_provider?: 'auto' | 'agy' | 'gemini' | 'anthropic'; ai_model?: string; creation_mode?: CreationMode; direct_build?: boolean; character_multicolor?: boolean }) => void
   onSend: (text: string) => void
   onCancel: () => void
@@ -80,7 +76,7 @@ const TOOL_LABELS: Record<string, string> = {
   fetch_url: 'reading webpage',
 }
 
-export function AiPanel({ status, activity, images, sculpts = [], mlStatus, creationMode = 'engineer', directBuild = false, sculpting = false, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSetupMl, onUpdateSculptPrep, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
+export function AiPanel({ status, activity, images, mlStatus, creationMode = 'engineer', directBuild = false, context, concept, conceptOpen, onAnswerConcept, onBuildConcept, layout, zIndex, onFocusPanel, onOpenConcept, onOpenPhoto, onUploadImage, onDeleteImage, onSetupMl, onSettings, onSend, onCancel, onReset, onRevert }: Props) {
   const mode = status?.mode ?? 'mcp'
   const pendingConcept = concept?.status === 'pending' && mode !== 'mcp' && Boolean(onAnswerConcept) ? concept : null
   const [text, setText] = useState('')
@@ -338,10 +334,10 @@ export function AiPanel({ status, activity, images, sculpts = [], mlStatus, crea
       )}
       {(() => {
         const job = status?.ml_job?.active ? status.ml_job : (mlStatus?.job?.active ? mlStatus.job : null)
-        if (!job && !sculpting) return null
-        const stage = job?.stage || 'Molding 3D clay & repairing watertight mesh…'
-        const pct = job?.progress_pct ?? 0
-        const detail = job?.detail || ''
+        if (!job) return null
+        const stage = job.stage || 'Working on 3D model…'
+        const pct = job.progress_pct ?? 0
+        const detail = job.detail || ''
         return (
           <div style={{ padding: '7px 12px', borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', fontSize: 11.5 }}>
             <div className="row sm" style={{ gap: 6, marginBottom: 4 }}>
@@ -352,56 +348,6 @@ export function AiPanel({ status, activity, images, sculpts = [], mlStatus, crea
             <div style={{ height: 4, borderRadius: 2, background: 'var(--line)', overflow: 'hidden' }}>
               <div style={{ width: `${Math.max(8, pct)}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.3s' }} />
             </div>
-          </div>
-        )
-      })()}
-      {sculpts.length > 0 && onUpdateSculptPrep && (() => {
-        const s = sculpts[sculpts.length - 1]
-        return (
-          <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--line)', background: 'var(--panel-2)', fontSize: 11.5, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-            <b>{s.id} Prep:</b>
-            <label className="row sm" style={{ gap: 3 }}>
-              <span>H</span>
-              <input type="number" min={15} max={300} defaultValue={s.prep.target_height_mm} key={`${s.id}-h-${s.prep.target_height_mm}`}
-                onBlur={(e) => { const v = Number(e.target.value); if (v > 0 && v !== s.prep.target_height_mm) onUpdateSculptPrep(s.id, { target_height_mm: v }) }}
-                style={{ width: 52, fontSize: 11.5, padding: '1px 4px' }} />
-              <span>mm</span>
-            </label>
-            <select aria-label="Sculpt flexi joints" value={s.prep.flexi_segments ?? 0}
-              onChange={(e) => onUpdateSculptPrep(s.id, { flexi_segments: Number(e.target.value) })}
-              style={{ fontSize: 11.5, padding: '1px 4px' }}>
-              <option value={0}>Solid</option>
-              <option value={4}>Flexi 4</option>
-              <option value={5}>Flexi 5</option>
-              <option value={6}>Flexi 6</option>
-              <option value={8}>Flexi 8</option>
-            </select>
-            <select aria-label="Sculpt display base" value={s.prep.base_style}
-              disabled={(s.prep.flexi_segments ?? 0) > 0}
-              onChange={(e) => onUpdateSculptPrep(s.id, { base_style: e.target.value as SculptPrep['base_style'] })}
-              style={{ fontSize: 11.5, padding: '1px 4px' }}>
-              <option value="none">No base</option>
-              <option value="round">Round base</option>
-              <option value="oval">Oval base</option>
-              <option value="square">Square base</option>
-            </select>
-            <select aria-label="Sculpt magnet pocket" value={s.prep.magnet_hole ?? 'none'}
-              onChange={(e) => onUpdateSculptPrep(s.id, { magnet_hole: e.target.value as SculptPrep['magnet_hole'] })}
-              style={{ fontSize: 11.5, padding: '1px 4px' }}>
-              <option value="none">No magnet</option>
-              <option value="bottom">Bottom magnet</option>
-              <option value="back">Back magnet</option>
-            </select>
-            <label className="row sm" style={{ gap: 3, cursor: 'pointer' }}>
-              <input type="checkbox" checked={Boolean(s.prep.hollow_cavity)}
-                onChange={(e) => onUpdateSculptPrep(s.id, { hollow_cavity: e.target.checked })} />
-              <span>Hollow</span>
-            </label>
-            <label className="row sm" style={{ gap: 3, cursor: 'pointer' }}>
-              <input type="checkbox" checked={s.prep.keychain_loop}
-                onChange={(e) => onUpdateSculptPrep(s.id, { keychain_loop: e.target.checked })} />
-              <span>Loop</span>
-            </label>
           </div>
         )
       })()}

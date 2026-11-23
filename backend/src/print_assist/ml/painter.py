@@ -134,7 +134,7 @@ def generate_character_design_image(
     width, height = (960, 384) if turnaround else (640, 640)
     full_prompt = build_turnaround_prompt(prompt, turnaround=turnaround, has_refs=bool(ref_paths))
 
-    with gpu_job("painting", "Painting character design", f"Loading 2D model on {hw.gpu_name}…"):
+    with gpu_job("painting", "Creating design preview", "Starting 2D generator…"):
         with tempfile.TemporaryDirectory(prefix="pa_painter_") as td:
             td_path = Path(td)
             out_png = td_path / "design.png"
@@ -200,16 +200,16 @@ def generate_character_design_image(
                             cur, tot = int(m.group(1)), max(1, int(m.group(2)))
                             if tot <= 50:
                                 pct = 15 + int(75 * (cur / tot))
-                                detail = f"Step {cur}/{tot}"
-                                ml_job_update("Painting character design", pct, detail)
+                                detail = f"Step {cur} of {tot}"
+                                ml_job_update("Creating design preview", pct, detail)
                                 if on_progress:
                                     on_progress(detail)
                         elif "decoding" in low:
-                            ml_job_update("Finalizing image", 92, "Decoding image…")
+                            ml_job_update("Finishing image", 92, "Almost done…")
                             if on_progress:
-                                on_progress("Decoding image…")
+                                on_progress("Almost done…")
                         elif "loading tensors" in low:
-                            ml_job_update("Loading 2D model", 10, "Loading weights onto GPU…")
+                            ml_job_update("Creating design preview", 10, "Warming up GPU…")
                 rc = proc.wait(timeout=600)
             except Exception:
                 _kill_proc(proc)

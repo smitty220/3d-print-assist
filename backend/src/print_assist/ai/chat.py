@@ -62,12 +62,16 @@ _AGY_SYSTEM_PREAMBLE = (
     "a concise summary — the app resumes you automatically when the user clicks Approve & build or replies.\n"
     "4. Respect the design's active mode: in Engineer Mode build parametric CAD (`propose_concept` → `apply_changes`). "
     "In Character Mode (hybrid clay + CAD engineering): ALWAYS paint and sculpt the organic character as a clean SOLID "
-    "shape first via `propose_character_design` (do NOT fight the 2D painter to draw tiny flexi hinges or magnet holes!), "
-    "note in your summary what exact-mm print mechanics will be cut on sculpt, and then call `sculpt_character` / "
-    "`update_mesh_prep` with `flexi_segments` (print-in-place flexi joints with 0.45mm clearance), `magnet_hole`, "
-    "`hollow_cavity`, `base_style`, or `keychain_loop`. If `propose_character_design` or `sculpt_character` returns "
-    "`status: \"running\"`, call `wait_for_character_job(wait_s=40)` until `status == \"done\"` (never start a duplicate job). "
-    "If Direct Build bypass is active, skip the Design File gate and build directly.\n"
+    "shape first via `propose_character_design` (do NOT fight the 2D painter to draw tiny flexi hinges or magnet holes!). "
+    "When the user clicks Approve and build (or Direct Build is active), YOU translate EVERYTHING they asked for into "
+    "`sculpt_character(...)` parameters automatically — e.g. for any flexi/articulated toy pass `flexi_segments=5` and "
+    "`flatten_bottom_mm=8` (so every segment rests flat on the bed); for magnets pass `magnet_hole='bottom'|'back'`; for "
+    "planters/cups pass `hollow_cavity=True`; for keychains pass `keychain_loop=True`; for figurines on a stand pass "
+    "`base_style='round'`. If `propose_character_design` or `sculpt_character` returns `status: \"running\"`, call "
+    "`wait_for_character_job(wait_s=40)` until `status == \"done\"` (never start a duplicate job). ALWAYS inspect "
+    "`render_preview(view='iso')` and `render_preview(view='top')` after sculpting to verify the 3D result truly matches "
+    "what the user asked for (e.g., visible flexi joints & flat bottom); if not, call `update_mesh_prep` and re-check "
+    "before handing it over!\n"
     "5. Batch related ops in one apply_changes call. If the user refers to a concept or you want to check existing "
     "concepts, call list_concepts first, then look_at_concept(id=...) on an existing ID. If an approach fails twice, "
     "switch strategy instead of looping.\n\n"
@@ -307,9 +311,10 @@ def _block(b) -> dict:
 
 
 class Chat:
-    """One conversation per open design."""
+    """One conversation per open design (persisted to `chat.json` inside the design folder)."""
 
-    def __init__(self) -> None:
+    def __init__(self, storage_path: Path | None = None) -> None:
+        self._storage_path = storage_path
         self.messages: list[dict] = []
         self.log: list[Entry] = []
         self.running = False
@@ -325,6 +330,42 @@ class Chat:
         self._gemini_last: str | None = None  # Gemini keeps the conversation server side; continue from here
         self._agy_conv: str | None = None  # Antigravity CLI conversation_id
         self._active_proc: Any = None  # currently running subprocess (for immediate kill on stop/shutdown)
+        self._load()
+
+    def _load(self) -> None:
+        if self._storage_path is None or not self._storage_path.is_file():
+            return
+        try:
+            raw = json.loads(self._storage_path.read_text(encoding="utf-8"))
+            self.log = [Entry(**e) for e in raw.get("log", []) if isinstance(e, dict) and "role" in e and "text" in e]
+            self._agy_conv = raw.get("agy_conv") or None
+            self._gemini_last = raw.get("gemini_last") or None
+            if isinstance(raw.get("messages"), list):
+                self.messages = raw["messages"][-40:]
+        except Exception:  # noqa: BLE001 - corrupt chat file should never break opening a design
+            pass
+
+    def _save(self) -> None:
+        if self._storage_path is None:
+            return
+        try:
+            # Keep compact serializable text-only summary of messages so Claude/Gemini fallback retains context
+            compact_msgs = []
+            for m in self.messages[-40:]:
+                if isinstance(m, dict) and isinstance(m.get("content"), str):
+                    compact_msgs.append({"role": m.get("role", "user"), "content": m["content"]})
+            payload = {
+                "log": [asdict(e) for e in self.log[-200:]],
+                "agy_conv": self._agy_conv,
+                "gemini_last": self._gemini_last,
+                "messages": compact_msgs,
+            }
+            self._storage_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._storage_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp.replace(self._storage_path)
+        except Exception:  # noqa: BLE001
+            pass
 
     def to_dict(self) -> dict:
         now = time.time()
@@ -353,6 +394,7 @@ class Chat:
         self.last_event_at = time.time()
         self.current_step = None
         self.log.append(Entry("tool", text, tool=tool, ok=ok))
+        self._save()
 
     def stop(self) -> None:
         """Cancel the active turn and immediately terminate any active subprocess."""
@@ -375,6 +417,7 @@ class Chat:
         self.steps = 0
         self._gemini_last = None
         self._agy_conv = None
+        self._save()
 
     def _drain_queue(self) -> list[str]:
         with self._lock:
@@ -426,6 +469,7 @@ class Chat:
                     )
                 self.log.append(Entry("error", f"{type(exc).__name__}: {msg}", ok=False))
             with self._lock:
+                self._save()
                 if self.cancel.is_set() or not self._queue:
                     self._queue.clear()
                     self.running = False

@@ -7,59 +7,24 @@ import { api, type Concept } from '../api'
 const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
 const STATUS = { pending: 'Waiting for you', approved: 'Approved', revise: 'Changes asked' } as const
 
-export interface CharacterBuildOptions {
-  target_height_mm: number
-  flatten_bottom_mm: number
-  base_style: 'none' | 'round' | 'oval' | 'square'
-  keychain_loop: boolean
-  flexi_segments: number
-  magnet_hole: 'none' | 'bottom' | 'back'
-  hollow_cavity: boolean
-  multicolor: boolean
-}
-
 interface Props {
   concept: Concept
   concepts?: Concept[]
   onSelectConcept?: (id: string) => void
   hideAnswerInput?: boolean
-  defaultMulticolor?: boolean
-  hasMultiSlotPrinter?: boolean
-  onAnswer: (decision: 'approve' | 'revise', note: string, charOpts?: CharacterBuildOptions) => void
-  onBuild?: (note: string, charOpts?: CharacterBuildOptions) => void
+  onAnswer: (decision: 'approve' | 'revise', note: string) => void
+  onBuild?: (note: string) => void
   onClose: () => void
 }
 
-export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerInput, defaultMulticolor = false, hasMultiSlotPrinter = false, onAnswer, onBuild, onClose }: Props) {
+export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerInput, onAnswer, onBuild, onClose }: Props) {
   const [note, setNote] = useState('')
   const [expanded, setExpanded] = useState(false)
   const [split, setSplit] = useState(0.62) // fraction of cbody height for Drawing (0 = spec full, 1 = drawing full)
-  const looksFlexi = /\b(flexi|articulated|wiggle|print-in-place)\b/i.test(`${c.title} ${c.summary}`)
-  const [targetHeight, setTargetHeight] = useState(looksFlexi ? 42 : 80)
-  const [baseStyle, setBaseStyle] = useState<'none' | 'round' | 'oval' | 'square'>(looksFlexi ? 'none' : 'none')
-  const [flexiSegments, setFlexiSegments] = useState<number>(looksFlexi ? 5 : 0)
-  const [magnetHole, setMagnetHole] = useState<'none' | 'bottom' | 'back'>('none')
-  const [hollowCavity, setHollowCavity] = useState(false)
-  const [keychainLoop, setKeychainLoop] = useState(false)
-  const [multicolor, setMulticolor] = useState(defaultMulticolor && hasMultiSlotPrinter)
   const bodyRef = useRef<HTMLDivElement>(null)
   const pending = c.status === 'pending'
   const isCharacter = c.mode === 'character' || Boolean(c.image_file)
   const previewSrc = c.image_file ? api.conceptPictureUrl(c.id) : svgUrl(c.svg)
-  const charOpts = (): CharacterBuildOptions | undefined => (
-    isCharacter
-      ? {
-          target_height_mm: targetHeight,
-          flatten_bottom_mm: flexiSegments > 0 ? 1.5 : 0.4,
-          base_style: flexiSegments > 0 ? 'none' : baseStyle,
-          keychain_loop: keychainLoop,
-          flexi_segments: flexiSegments,
-          magnet_hole: magnetHole,
-          hollow_cavity: hollowCavity,
-          multicolor,
-        }
-      : undefined
-  )
 
   const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('button')) return
@@ -182,102 +147,35 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
                   {c.questions.length > 0 && (<div><h3>Questions</h3><ul className="qs">{c.questions.map((q, i) => <li key={i}>{q}</li>)}</ul></div>)}
                 </div>
               )}
-          {isCharacter && (
-            <div className="row" style={{ flexWrap: 'wrap', gap: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--panel-2)', border: '1px solid var(--line)', alignItems: 'center' }}>
-              <label className="row sm" style={{ gap: 4 }}>
-                <span className="nm">Color:</span>
-                <select aria-label="Character color mode" value={multicolor ? 'multi' : 'single'}
-                  onChange={(e) => setMulticolor(e.target.value === 'multi')} style={{ fontSize: 12, padding: '2px 6px' }}>
-                  <option value="single">Single color (faster)</option>
-                  <option value="multi">Multi-color / AMS</option>
-                </select>
-              </label>
-              <label className="row sm" style={{ gap: 4 }}>
-                <span className="nm">Height (mm):</span>
-                <input type="number" min={15} max={300} value={targetHeight} onChange={(e) => setTargetHeight(Number(e.target.value) || 80)}
-                  style={{ width: 64, fontSize: 12, padding: '2px 6px' }} />
-              </label>
-              <label className="row sm" style={{ gap: 4 }}>
-                <span className="nm">Articulation:</span>
-                <select aria-label="Print-in-place flexi joints" value={flexiSegments}
-                  onChange={(e) => { const n = Number(e.target.value); setFlexiSegments(n); if (n > 0) setBaseStyle('none') }}
-                  style={{ fontSize: 12, padding: '2px 6px' }}>
-                  <option value={0}>Solid figurine</option>
-                  <option value={4}>Flexi (4 joints)</option>
-                  <option value={5}>Flexi (5 joints)</option>
-                  <option value={6}>Flexi (6 joints)</option>
-                  <option value={8}>Flexi (8 joints)</option>
-                </select>
-              </label>
-              <label className="row sm" style={{ gap: 4 }}>
-                <span className="nm">Base:</span>
-                <select aria-label="Display base style" value={flexiSegments > 0 ? 'none' : baseStyle}
-                  disabled={flexiSegments > 0}
-                  onChange={(e) => setBaseStyle(e.target.value as 'none' | 'round' | 'oval' | 'square')} style={{ fontSize: 12, padding: '2px 6px' }}>
-                  <option value="none">None (flat bottom)</option>
-                  <option value="round">Round plinth</option>
-                  <option value="oval">Oval plinth</option>
-                  <option value="square">Square plinth</option>
-                </select>
-              </label>
-              <label className="row sm" style={{ gap: 4 }}>
-                <span className="nm">Magnet:</span>
-                <select aria-label="Magnet pocket" value={magnetHole}
-                  onChange={(e) => setMagnetHole(e.target.value as 'none' | 'bottom' | 'back')} style={{ fontSize: 12, padding: '2px 6px' }}>
-                  <option value="none">None</option>
-                  <option value="bottom">Bottom (8×3 mm)</option>
-                  <option value="back">Back (8×3 mm)</option>
-                </select>
-              </label>
-              <label className="row sm" style={{ gap: 4, cursor: 'pointer' }}>
-                <input type="checkbox" checked={hollowCavity} onChange={(e) => setHollowCavity(e.target.checked)} />
-                <span className="nm">Hollow</span>
-              </label>
-              <label className="row sm" style={{ gap: 4, cursor: 'pointer' }}>
-                <input type="checkbox" checked={keychainLoop} onChange={(e) => setKeychainLoop(e.target.checked)} />
-                <span className="nm">Keychain loop</span>
-              </label>
-              <span className="spacer" />
-              {pending ? (
-                <button type="button" className="btn primary sm" onClick={() => onAnswer('approve', note, charOpts())}>
-                  Approve &amp; sculpt 3D
-                </button>
-              ) : onBuild ? (
-                <button type="button" className="btn primary sm" onClick={() => onBuild(note, charOpts())}>
-                  Sculpt 3D model
-                </button>
-              ) : null}
-            </div>
-          )}
-          {!hideAnswerInput && (pending ? (
-            <div className="canswer">
-              <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
-              <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note, charOpts()) }} />
-              <div className="row">
-                <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
-                  title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
-                <span className="spacer" />
-                <button className="btn primary" onClick={() => onAnswer('approve', note, charOpts())}>Approve and build</button>
-              </div>
-            </div>
-          ) : (
-            <>
-              {c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
-              {onBuild && (
+              {!hideAnswerInput && (pending ? (
                 <div className="canswer">
-                  <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
-                  <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
-                    placeholder="Optional notes before building this concept…"
-                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note, charOpts()) }} />
+                  <label htmlFor="c-note" className="nm">Your answer (answers to the questions, changes, anything to keep in mind)</label>
+                  <textarea id="c-note" rows={4} value={note} onChange={(e) => setNote(e.target.value)} autoFocus
+                    onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onAnswer('approve', note) }} />
                   <div className="row">
+                    <button className="btn" onClick={() => onAnswer('revise', note)} disabled={!note.trim()}
+                      title={note.trim() ? 'The AI redraws the concept with your changes' : 'Say what to change first'}>Request changes</button>
                     <span className="spacer" />
-                    <button className="btn primary" onClick={() => onBuild(note, charOpts())}>Approve and build</button>
+                    <button className="btn primary" onClick={() => onAnswer('approve', note)}>Approve and build</button>
                   </div>
                 </div>
-              )}
-            </>
-          ))}
+              ) : (
+                <>
+                  {c.note ? <p className="cnote"><b>Your answer:</b> {c.note}</p> : null}
+                  {onBuild && (
+                    <div className="canswer">
+                      <label htmlFor="c-build-note" className="nm">Additional instructions (optional)</label>
+                      <textarea id="c-build-note" rows={2} value={note} onChange={(e) => setNote(e.target.value)}
+                        placeholder="Optional notes before building this concept…"
+                        onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) onBuild(note) }} />
+                      <div className="row">
+                        <span className="spacer" />
+                        <button className="btn primary" onClick={() => onBuild(note)}>Approve and build</button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ))}
             </div>
           )}
         </div>

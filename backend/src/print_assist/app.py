@@ -1384,7 +1384,7 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
         except (PainterError, ConceptError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
-    res = start_character_job("painting", "Painting character design", body.title, _work, wait_s=body.wait_s)
+    res = start_character_job("painting", "Creating design preview", body.title, _work, wait_s=body.wait_s)
     if res["status"] == "error":
         raise HTTPException(422, res["error"])
     if res["status"] == "done" and res["result"] is not None:
@@ -1478,7 +1478,7 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
             sculpt_name = sculpt_name or c_new.title
         assert img_path is not None
         raw_glb = sculpt_mesh_from_image(img_path, views=views)
-        ml_job_update("Engineering watertight mesh", 92, "Repairing solid & applying print mechanics…")
+        ml_job_update("Finishing for 3D printing", 92, "Repairing solid & cutting print mechanics…")
         sm = w.add_sculpt(
             actor=x_actor, name=sculpt_name or "Sculpt", raw_bytes=raw_glb, ext=".glb",
             concept_id=cid, prep=prep, color=body.color,
@@ -1491,7 +1491,7 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         except (PainterError, SculptorError, MeshPrepError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
-    res = start_character_job("sculpting", "Molding 3D clay", sculpt_name or "Character sculpt", _work, wait_s=body.wait_s)
+    res = start_character_job("sculpting", "Sculpting 3D model", sculpt_name or "Character sculpt", _work, wait_s=body.wait_s)
     if res["status"] == "error":
         raise HTTPException(422, res["error"])
     if res["status"] == "done" and res["result"] is not None:
@@ -1577,7 +1577,7 @@ def chat():
     if c is None:
         from .ai.chat import Chat
 
-        c = Chat()
+        c = Chat(storage_path=w.project.root / "chat.json")
         _chats[slug] = c
     return c
 

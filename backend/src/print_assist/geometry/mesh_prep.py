@@ -466,10 +466,17 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
 
     mf = _place_on_bed(mf)
 
-    # Flatten bottom by trimming `flatten_bottom_mm` off Z=0 so bed adhesion is rock-solid
-    if prep.flatten_bottom_mm > 0:
+    # Flatten bottom by trimming off Z=0 so bed adhesion is rock-solid.
+    # For print-in-place flexi models, automatically trim enough of a round belly (~8% of height) so every
+    # flexing segment rests flat on the print bed instead of floating.
+    eff_flat = float(prep.flatten_bottom_mm)
+    if prep.flexi_segments > 0 and eff_flat < 2.0:
+        bb_cur = mf.bounding_box()
+        h_cur = float(bb_cur[5] - bb_cur[2])
+        eff_flat = max(eff_flat, min(10.0, h_cur * 0.08))
+    if eff_flat > 0:
         bb = mf.bounding_box()
-        cut = min(float(prep.flatten_bottom_mm), max(0.0, (bb[5] - bb[2]) * 0.15))
+        cut = min(eff_flat, max(0.0, (bb[5] - bb[2]) * 0.15))
         if cut > 0.01:
             span_x = (bb[3] - bb[0]) + 40.0
             span_y = (bb[4] - bb[1]) + 40.0

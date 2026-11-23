@@ -46,7 +46,7 @@ elif cfg["accelerator"] == "mps" and getattr(torch.backends, "mps", None) and to
 else:
     device = "cpu"
 
-emit("Loading 3D Sculptor weights", 15, f"Using {device.upper()} ({cfg['repo']} / {cfg['subfolder']})")
+emit("Starting 3D sculptor", 15, "Warming up GPU…")
 
 from hy3dgen.rembg import BackgroundRemover
 from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
@@ -59,7 +59,7 @@ for k, vpath in views_in.items():
     im = rembg(im)
     prepared[k] = im
 
-emit("Molding 3D clay geometry", 45, "Running flow-matching shape diffusion…")
+emit("Sculpting 3D model", 45, "Building 3D geometry…")
 dtype = torch.float32 if device == "cpu" else torch.float16
 pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
     cfg["repo"],
@@ -83,7 +83,7 @@ mesh = pipe(
 
 out_path = Path(cfg["out_path"])
 out_path.parent.mkdir(parents=True, exist_ok=True)
-emit("Optimizing 3D mesh", 88, "Converting Y-up to Z-up and decimation for crisp 3D printing…")
+emit("Finishing for 3D printing", 88, "Aligning upright & smoothing mesh…")
 import numpy as np
 import trimesh
 # Convert standard glTF Y-up output from Hunyuan3D into Z-up 3D-printing orientation (+90° about X)
@@ -101,7 +101,7 @@ try:
             mesh = trimesh.Trimesh(vertices=cm.vertex_matrix(), faces=cm.face_matrix(), process=False)
 except Exception:
     pass
-emit("Exporting raw sculpt mesh", 94, out_path.name)
+emit("Finishing for 3D printing", 94, "Saving 3D mesh…")
 mesh.export(str(out_path))
 emit("Done", 100, str(out_path))
 '''
@@ -174,7 +174,7 @@ def sculpt_mesh_from_image(
     hw = detect_hardware()
     repo_dir = r / "Hunyuan3D-2"
 
-    with gpu_job("sculpting", "Molding 3D clay", f"Loading {hw.sculptor_label} on {hw.gpu_name}…"):
+    with gpu_job("sculpting", "Sculpting 3D model", "Warming up GPU…"):
         with tempfile.TemporaryDirectory(prefix="pa_sculpt_") as td:
             td_path = Path(td)
             view_files = _split_turnaround(image_path, td_path, views or [])
