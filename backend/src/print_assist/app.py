@@ -1236,6 +1236,20 @@ def ai_guide() -> dict:
     return {"guide": GUIDE, "ops": OP_NAMES}
 
 
+@app.get("/api/web/search")
+def api_web_search(query: str, max_results: int = 5) -> dict:
+    from .ai.web import web_search
+
+    return web_search(query, max_results=max_results)
+
+
+@app.get("/api/web/fetch")
+def api_web_fetch(url: str) -> dict:
+    from .ai.web import fetch_url
+
+    return fetch_url(url)
+
+
 # ---------------------------------------------------------------- Character Mode & Local ML Engine
 
 
@@ -1247,6 +1261,7 @@ class CharacterDesignIn(BaseModel):
     assumptions: list[str] = []
     questions: list[str] = []
     turnaround: bool = False
+    style: Literal["auto", "figurine", "flexi", "bust", "keychain", "magnet", "planter", "scene"] = "auto"
     steps: int = 14
     seed: int = -1
     wait_s: float = -1.0  # -1 = block until done; >= 0 = async job waiting up to wait_s seconds
@@ -1269,7 +1284,7 @@ class CharacterSculptIn(BaseModel):
     flexi_start_pct: float = 35.0
     flexi_end_pct: float = 88.0
     flexi_clearance_mm: float = 0.45
-    flexi_angle_deg: float = 22.0
+    flexi_angle_deg: float = 12.0
     magnet_hole: Literal["none", "bottom", "back"] = "none"
     magnet_dia_mm: float = 8.2
     magnet_depth_mm: float = 3.2
@@ -1361,6 +1376,7 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
             prompt=body.prompt,
             ref_paths=ref_paths or None,
             turnaround=body.turnaround,
+            style=body.style,
             steps=body.steps,
             seed=body.seed,
         )
@@ -1459,9 +1475,16 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
     def _work() -> dict:
         nonlocal img_path, views, cid, sculpt_name
         if img_path is None:
-            # Direct Build bypass: synthesize clean hero image, then sculpt
+            # Direct Build bypass: synthesize clean hero image with matching archetype framing, then sculpt
+            auto_style = (
+                "flexi" if body.flexi_segments > 0
+                else "magnet" if body.magnet_hole != "none"
+                else "planter" if body.hollow_cavity
+                else "keychain" if body.keychain_loop
+                else "auto"
+            )
             png_bytes, views = generate_character_design_image(
-                prompt=body.prompt, ref_paths=ref_paths or None, turnaround=False
+                prompt=body.prompt, ref_paths=ref_paths or None, turnaround=False, style=auto_style
             )
             c_new = w.propose_concept(
                 x_actor,

@@ -47,40 +47,50 @@ _IN_APP_DIRECTIVES = (
 )
 
 _AGY_SYSTEM_PREAMBLE = (
-    "You are the CAD assistant inside 3D Print Assist.\n"
+    "You are the CAD & 3D-printing assistant inside 3D Print Assist.\n"
     "STRICT TOOL RULES:\n"
     "1. ONLY call tools from the `3d-print-assist` MCP server (get_guide, get_model, get_feature_catalog, "
     "apply_changes, update, render_preview, run_checks, print_layout, list_faces, pick_face, list_fonts, "
     "list_concepts, propose_concept, look_at_concept, set_creation_mode, propose_character_design, "
     "sculpt_character, wait_for_character_job, update_mesh_prep, generate_image, list_images, look_at_image, "
     "list_references, look_at_reference, section_reference, add_reference, open_design, create_design, "
-    "list_designs, export).\n"
-    "2. NEVER inspect or edit files, and NEVER use run_command, shell scripts, python/uv commands, "
+    "list_designs, export, web_search, fetch_url) AND the built-in `search_web` tool for internet research.\n"
+    "2. NEVER inspect or edit local files, and NEVER use run_command, shell scripts, python/uv commands, "
     "invoke_subagent, schedule, timers, or background tasks.\n"
-    "3. CONCEPT APPROVAL: After calling propose_concept or once propose_character_design finishes, NEVER call "
+    "3. INTERNET RESEARCH: Use `search_web` (or `web_search`) whenever designing a specific movie/game/pop-culture "
+    "character, real-world animal, specialized 3D-printing style (such as print-in-place flexi toys), or hardware "
+    "part so you get authentic proportions, iconic facial/body details, and real dimensions.\n"
+    "4. CONCEPT APPROVAL: After calling propose_concept or once propose_character_design finishes, NEVER call "
     "wait_for_concept and NEVER run scripts or background tasks to wait for approval. End your turn immediately with "
     "a concise summary — the app resumes you automatically when the user clicks Approve & build or replies.\n"
-    "4. Respect the design's active mode: in Engineer Mode build parametric CAD (`propose_concept` → `apply_changes`). "
-    "In Character Mode (hybrid clay + CAD engineering): ALWAYS paint and sculpt the organic character as a clean SOLID "
-    "shape first via `propose_character_design` (do NOT fight the 2D painter to draw tiny flexi hinges or magnet holes!). "
-    "When the user clicks Approve and build (or Direct Build is active), YOU translate EVERYTHING they asked for into "
-    "`sculpt_character(...)` parameters automatically — e.g. for any flexi/articulated toy pass `flexi_segments=5` and "
-    "`flatten_bottom_mm=8` (so every segment rests flat on the bed); for magnets pass `magnet_hole='bottom'|'back'`; for "
-    "planters/cups pass `hollow_cavity=True`; for keychains pass `keychain_loop=True`; for figurines on a stand pass "
-    "`base_style='round'`. If `propose_character_design` or `sculpt_character` returns `status: \"running\"`, call "
-    "`wait_for_character_job(wait_s=40)` until `status == \"done\"` (never start a duplicate job). ALWAYS inspect "
-    "`render_preview(view='iso')` and `render_preview(view='top')` after sculpting to verify the 3D result truly matches "
-    "what the user asked for (e.g., visible flexi joints & flat bottom); if not, call `update_mesh_prep` and re-check "
+    "5. Respect the design's active mode: in Engineer Mode build parametric CAD (`propose_concept` → `apply_changes`). "
+    "In Character Mode (hybrid clay sculpting + precision CAD print engineering):\n"
+    "   - Always pass the right `style` on `propose_character_design`: use `style='flexi'` for ANY flexi/articulated/"
+    "wiggle toy (paints a wide 768x448 sleek elongated flat-bellied solid body so it never turns into a round sphere!), "
+    "`'bust'`, `'keychain'`, `'magnet'`, `'planter'`, `'scene'`, or `'figurine'`. Do NOT ask the 2D painter to draw "
+    "hinge cuts, seams, or magnet holes — keep the painted body smooth and solid.\n"
+    "   - When the user clicks Approve & build (or Direct Build is active), YOU translate EVERYTHING they asked for "
+    "into `sculpt_character(...)` parameters automatically: e.g. for any flexi/articulated toy pass `flexi_segments=5`, "
+    "`flexi_angle_deg=12`, `target_height_mm=48` (so an elongated flexi toy prints ~115–140 mm long!), and leave "
+    "`flatten_bottom_mm=0.4` (auto-applies a gentle tail-safe flat belly); for magnets pass `magnet_hole='bottom'|'back'`; "
+    "for planters/cups pass `hollow_cavity=True`; for keychains pass `keychain_loop=True`; for display figurines pass "
+    "`base_style='round'` if a stand is desired.\n"
+    "   - If `propose_character_design` or `sculpt_character` returns `status: \"running\"`, call "
+    "`wait_for_character_job(wait_s=40)` until `status == \"done\"` (never start a duplicate GPU job).\n"
+    "   - After sculpting, ALWAYS inspect `render_preview(view='iso')`, `render_preview(view='top')`, AND "
+    "`render_preview(view='bottom')` plus `run_checks` to verify fins/limbs are intact, curved flexi joints are clean, "
+    "and the belly sits flat on Z=0; if anything looks off, tune immediately with `update_mesh_prep` (<1s) and re-check "
     "before handing it over!\n"
-    "5. Batch related ops in one apply_changes call. If the user refers to a concept or you want to check existing "
+    "6. Batch related ops in one apply_changes call. If the user refers to a concept or you want to check existing "
     "concepts, call list_concepts first, then look_at_concept(id=...) on an existing ID. If an approach fails twice, "
     "switch strategy instead of looping.\n\n"
     "User request: "
 )
 
 _AGY_TURN_REMINDER = (
-    "\n\n[System rule: Use ONLY `3d-print-assist` MCP tools. Never use shell/run_command, python, "
-    "subagents, background tasks, or wait_for_concept — end your turn right after propose_concept or edits.]"
+    "\n\n[System rule: Use ONLY `3d-print-assist` MCP tools and `search_web` for internet lookups. Never use "
+    "shell/run_command, python, file tools, subagents, background tasks, or wait_for_concept — end your turn right "
+    "after propose_concept / propose_character_design or finished edits.]"
 )
 
 
@@ -121,51 +131,17 @@ _WEB_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (K
 
 
 def _web_search(args: dict) -> tuple[str, bool]:
-    query = str(args.get("query") or "").strip()
-    if not query:
-        return json.dumps({"error": "query is required"}), False
-    import httpx2
+    from .web import web_search
 
-    try:
-        r = httpx2.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query},
-            headers={"User-Agent": _WEB_UA},
-            timeout=10,
-        )
-        r.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"web_search failed: {exc}"}), False
-
-    titles = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text, re.S)
-    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.S)
-    results = []
-    for i, (href, t) in enumerate(titles[:6]):
-        s = snippets[i] if i < len(snippets) else ""
-        results.append({
-            "title": html.unescape(re.sub(r"<[^>]+>", "", t)).strip(),
-            "url": html.unescape(href),
-            "snippet": html.unescape(re.sub(r"<[^>]+>", "", s)).strip(),
-        })
-    return json.dumps({"query": query, "results": results}), True
+    out = web_search(str(args.get("query") or ""), max_results=int(args.get("max_results") or 5))
+    return json.dumps(out), ("error" not in out)
 
 
 def _fetch_url(args: dict) -> tuple[str, bool]:
-    url = str(args.get("url") or "").strip()
-    if not url.startswith(("http://", "https://")):
-        return json.dumps({"error": "url must start with http:// or https://"}), False
-    import httpx2
+    from .web import fetch_url
 
-    try:
-        r = httpx2.get(url, headers={"User-Agent": _WEB_UA}, follow_redirects=True, timeout=15)
-        r.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": f"fetch_url failed: {exc}"}), False
-
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", r.text, flags=re.S | re.I)
-    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
-    text = re.sub(r"\s+", " ", text).strip()
-    return json.dumps({"url": str(r.url), "content": text[:6000]}), True
+    out = fetch_url(str(args.get("url") or ""))
+    return json.dumps(out), ("error" not in out)
 
 
 def _tools() -> list[dict]:
@@ -174,7 +150,9 @@ def _tools() -> list[dict]:
     listed = asyncio.run(server.mcp.list_tools())
     base = [{"name": t.name, "description": t.description or "", "input_schema": t.input_schema}
             for t in listed if t.name not in SKIP_TOOLS]
-    return base + _WEB_TOOLS
+    existing = {t["name"] for t in base}
+    extras = [t for t in _WEB_TOOLS if t["name"] not in existing]
+    return base + extras
 
 
 def _wire_tools(actor: str = "claude") -> None:

@@ -304,3 +304,59 @@ def test_deferred_open_builds_in_background_and_returns_immediately(tmp_path: Pa
     assert w2.tree()["building"] is False
     assert w2.built_rev == 0
     assert w2.part()["volume"] > 3900.0
+
+
+def test_character_archetype_resolution_and_flexi_landscape_framing():
+    from print_assist.ml.painter import build_turnaround_prompt, resolve_character_style, style_canvas_size
+
+    assert resolve_character_style("make a flexi shark like Bruce") == "flexi"
+    assert resolve_character_style("cute articulated baby dragon") == "flexi"
+    assert resolve_character_style("fridge magnet cat") == "magnet"
+    assert resolve_character_style("succulent planter bulbasaur") == "planter"
+    assert resolve_character_style("backpack keychain charm") == "keychain"
+    assert resolve_character_style("character bust of a wizard") == "bust"
+    assert resolve_character_style("wizard holding staff") == "figurine"
+    assert resolve_character_style("Bruce shark", style="flexi") == "flexi"
+
+    assert style_canvas_size("flexi", turnaround=False) == (768, 448)
+    assert style_canvas_size("figurine", turnaround=False) == (640, 640)
+    assert style_canvas_size("flexi", turnaround=True) == (960, 384)
+
+    flexi_prompt = build_turnaround_prompt("Bruce cartoon great white shark", style="flexi")
+    assert "elongated horizontal body" in flexi_prompt
+    assert "NOT chubby or spherical" in flexi_prompt
+    assert "no hinge cuts" in flexi_prompt
+
+
+def test_sharp_edge_splitting_preserves_smooth_skin_and_splits_creases():
+    import numpy as np
+    from print_assist.geometry.mesh_prep import _split_sharp_edges
+
+    # Cube has 8 vertices and 90° edges everywhere -> splitting should duplicate corner vertices (8 -> 24)
+    box = trimesh.creation.box(extents=[20.0, 20.0, 20.0])
+    box.merge_vertices()
+    pts_b = np.asarray(box.vertices, dtype=np.float64)
+    tris_b = np.asarray(box.faces, dtype=np.int32)
+    s_pts_b, s_tris_b = _split_sharp_edges(pts_b, tris_b, angle_deg=40.0)
+    assert len(pts_b) == 8 and len(s_pts_b) == 24
+    assert s_tris_b.shape == tris_b.shape
+
+    # Smooth subdivided sphere has gentle angles (< 40°) -> zero splitting needed
+    sph = trimesh.creation.icosphere(subdivisions=3, radius=10.0)
+    pts_s = np.asarray(sph.vertices, dtype=np.float64)
+    tris_s = np.asarray(sph.faces, dtype=np.int32)
+    s_pts_s, _ = _split_sharp_edges(pts_s, tris_s, angle_deg=40.0)
+    assert len(s_pts_s) == len(pts_s)
+
+
+def test_web_search_mcp_tool_and_agy_allowance():
+    from print_assist.ai import chat as chat_module
+
+    tools = chat_module._tools()
+    names = [t["name"] for t in tools]
+    assert "web_search" in names
+    assert "fetch_url" in names
+    assert len(names) == len(set(names))  # no duplicates
+    assert "search_web" in chat_module._AGY_SYSTEM_PREAMBLE
+    assert "web_search" in chat_module._AGY_SYSTEM_PREAMBLE
+    assert "search_web" in chat_module._AGY_TURN_REMINDER

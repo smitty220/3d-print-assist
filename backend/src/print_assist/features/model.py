@@ -140,7 +140,7 @@ class SculptPrep(BaseModel):
     flexi_start_pct: float = Field(default=35.0, ge=10.0, le=80.0)
     flexi_end_pct: float = Field(default=88.0, ge=20.0, le=95.0)
     flexi_clearance_mm: float = Field(default=0.45, ge=0.25, le=0.80)
-    flexi_angle_deg: float = Field(default=22.0, ge=8.0, le=45.0)
+    flexi_angle_deg: float = Field(default=12.0, ge=6.0, le=35.0)
     # Functional hardware cutouts
     magnet_hole: Literal["none", "bottom", "back"] = "none"
     magnet_dia_mm: float = Field(default=8.2, ge=3.0, le=30.0)

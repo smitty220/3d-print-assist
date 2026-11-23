@@ -73,6 +73,7 @@ const TOOL_LABELS: Record<string, string> = {
   generate_image: 'generating image',
   look_at_image: 'inspecting image',
   search_web: 'searching web',
+  web_search: 'searching web',
   fetch_url: 'reading webpage',
 }
 

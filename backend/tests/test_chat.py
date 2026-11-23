@@ -361,38 +361,40 @@ def test_list_gemini_models_dynamic_discovery(monkeypatch):
 
 
 def test_web_search_and_fetch_url_tools(monkeypatch):
-    import httpx2
+    import httpx
     from print_assist.ai.chat import _call, _tools
 
     tool_names = {t["name"] for t in _tools()}
     assert "web_search" in tool_names
     assert "fetch_url" in tool_names
 
-    monkeypatch.setattr(
-        httpx2,
-        "post",
-        lambda *a, **kw: NS(
+    def _fake_get(url, *a, **kw):
+        if "duckduckgo.com" in url:
+            return NS(
+                status_code=200,
+                json=lambda: {
+                    "Heading": "M3 Spec",
+                    "AbstractURL": "https://example.com/spec",
+                    "AbstractText": "Diameter 3mm ISO metric screw thread.",
+                    "RelatedTopics": [],
+                },
+            )
+        if "wikipedia.org" in url:
+            return NS(status_code=200, json=lambda: {"query": {"search": []}})
+        return NS(
             status_code=200,
+            url="https://example.com/spec",
             raise_for_status=lambda: None,
-            text='<a class="result__a" href="https://example.com/spec">M3 Spec</a><a class="result__snippet">Diameter 3mm</a>',
-        ),
-    )
+            text="<html><script>ignore()</script><body><p>Body width is 28mm.</p></body></html>",
+        )
+
+    monkeypatch.setattr(httpx, "get", _fake_get)
     out, ok = _call("web_search", {"query": "M3 screw dimensions"})
     assert ok is True
     data = json.loads(out)
     assert data["results"][0]["title"] == "M3 Spec"
     assert data["results"][0]["url"] == "https://example.com/spec"
 
-    monkeypatch.setattr(
-        httpx2,
-        "get",
-        lambda *a, **kw: NS(
-            status_code=200,
-            url="https://example.com/spec",
-            raise_for_status=lambda: None,
-            text="<html><script>ignore()</script><body><p>Body width is 28mm.</p></body></html>",
-        ),
-    )
     out2, ok2 = _call("fetch_url", {"url": "https://example.com/spec"})
     assert ok2 is True
     data2 = json.loads(out2)

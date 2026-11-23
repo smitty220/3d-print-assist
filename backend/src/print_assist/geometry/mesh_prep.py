@@ -215,12 +215,185 @@ def _clamp(val: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, val))
 
 
-def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
-    """Slice a solid sculpted character into N+1 permanently linked print-in-place flexi segments.
+def _rounded_xz_loop(x_center: float, z_center: float, radius: float, x_back: float, z_floor: float,
+                     width_y: float, y_center: float, segs: int = 24) -> m3d.Manifold:
+    """Build a smooth semicircular-nose stadium block in the XZ plane extruded along Y (true bearing profile)."""
+    # Points in (X, Z) traced CCW around the front semicircle (around x_center, z_center) and back to x_back
+    top_z = z_center + radius
+    bot_z = max(z_floor, z_center - radius)
+    raw_pts: list[tuple[float, float]] = [(x_back, top_z), (x_center, top_z)]
+    # Front semicircle from angle +90° -> +270° (facing -X), clamped cleanly at z_floor
+    for k in range(1, segs):
+        ang = math.pi * 0.5 + math.pi * (k / segs)
+        px = x_center + radius * math.cos(ang)
+        pz = max(z_floor, z_center + radius * math.sin(ang))
+        raw_pts.append((px, pz))
+    raw_pts.append((x_center, bot_z))
+    raw_pts.append((x_back, bot_z))
+    # Deduplicate consecutive identical points from z_floor clamping
+    pts: list[tuple[float, float]] = []
+    for pt in raw_pts:
+        if not pts or abs(pt[0] - pts[-1][0]) > 1e-5 or abs(pt[1] - pts[-1][1]) > 1e-5:
+            pts.append(pt)
+    if len(pts) > 1 and abs(pts[0][0] - pts[-1][0]) <= 1e-5 and abs(pts[0][1] - pts[-1][1]) <= 1e-5:
+        pts.pop()
+    # Extrude in XY (where Y stands for Z), then rotate +90° about X so extrusion lies along Y and profile lies in XZ.
+    solid = (
+        m3d.Manifold.extrude(m3d.CrossSection([pts]), width_y)
+        .translate((0.0, 0.0, -width_y / 2.0))
+        .rotate((90.0, 0.0, 0.0))
+        .translate((0.0, y_center, 0.0))
+    )
+    return solid
 
-    Uses exact `manifold3d` CSG to build support-free horizontal crossbar pins (on segment i-1) passing
-    through closed floor-anchored U-loops (on segment i) with guaranteed `prep.flexi_clearance_mm` air gaps
-    in X, Y, and Z so segments print flat on Z=0, never fuse, and wiggle right off the build plate.
+
+def _crescent_x(u: float, y: float, yc: float, half_slot: float, half_w: float, curve: float) -> float:
+    """Smooth rearward-swept gill/rib crescent curve in the XY plane.
+
+    Flat inside the narrow central hinge channel (`|y - yc| <= half_slot`), then sweeps smoothly
+    rearward (+X, toward the tail) across the flanks so the upstream pin stays deeply nested in meat
+    and the exterior cuts follow organic shark-rib / chevron lines.
+    """
+    flank = max(0.0, abs(y - yc) - half_slot)
+    span = max(2.0, half_w - half_slot)
+    t = min(1.0, flank / span)
+    return u + curve * (t * t)
+
+
+def _clean_segment_slivers(seg: m3d.Manifold) -> m3d.Manifold:
+    """Drop tiny disconnected floating crumbs (< 10 mm³ above Z=1.5 mm) clipped off fin tips by a crescent cut."""
+    if seg.is_empty():
+        return seg
+    comps = seg.decompose()
+    if len(comps) <= 1:
+        return seg
+    main_vol = max(abs(float(c.volume())) for c in comps)
+    kept = []
+    for c in comps:
+        vol = abs(float(c.volume()))
+        z_min = float(c.bounding_box()[2])
+        if vol >= max(10.0, main_vol * 0.02) or z_min <= 1.5:
+            kept.append(c)
+    if not kept:
+        kept = [max(comps, key=lambda c: abs(float(c.volume())))]
+    return m3d.Manifold.compose(kept) if len(kept) > 1 else kept[0]
+
+
+def _auto_flexi_orientation_and_start(work: m3d.Manifold, start_pct: float) -> tuple[bool, float]:
+    """Detect head vs tail end and avoid chopping lateral pectoral fins when start_pct is near default."""
+    tm = _manifold_to_trimesh(work)
+    verts = np.asarray(tm.vertices, dtype=np.float64)
+    x0, x1 = float(verts[:, 0].min()), float(verts[:, 0].max())
+    length = max(1e-6, x1 - x0)
+    # Compare cross-sectional bulk of front 35% vs rear 35%: keep the heavier head end at x0!
+    front = verts[verts[:, 0] <= x0 + 0.35 * length]
+    rear = verts[verts[:, 0] >= x1 - 0.35 * length]
+    f_span = float(np.ptp(front[:, 1]) * np.ptp(front[:, 2])) if len(front) > 20 else 0.0
+    r_span = float(np.ptp(rear[:, 1]) * np.ptp(rear[:, 2])) if len(rear) > 20 else 0.0
+    flip_180 = r_span > f_span * 1.18
+
+    xs = (x1 - verts[:, 0]) / length if flip_180 else (verts[:, 0] - x0) / length
+    # Sample width profile in 30 bins from head (0) to tail (1) to detect lateral pectoral fins
+    widths = []
+    for b in range(30):
+        t0, t1 = b / 30.0, (b + 1) / 30.0
+        sl = verts[(xs >= t0) & (xs < t1)]
+        widths.append(float(np.ptp(sl[:, 1])) if len(sl) > 5 else 0.0)
+    adj_start = start_pct
+    if abs(start_pct - 35.0) < 3.0 and max(widths) > 1.0:
+        # Look for widest lateral fin peak in [20%..52%] and nudge first cut cleanly behind it
+        fin_zone = widths[6:16]
+        peak_val = max(fin_zone) if fin_zone else 0.0
+        torso_med = float(np.median(widths[6:22])) or peak_val
+        if peak_val > torso_med * 1.18:
+            peak_idx = 6 + fin_zone.index(peak_val)
+            # Advance past the fin peak until width drops back near torso width (capped at 52%)
+            end_idx = peak_idx + 1
+            while end_idx < 16 and widths[end_idx] > torso_med * 1.12:
+                end_idx += 1
+            fin_end_pct = (end_idx / 30.0) * 100.0
+            adj_start = max(start_pct, min(52.0, fin_end_pct + 2.0))
+    return flip_180, adj_start
+
+
+def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+    """Smoothly lower an arched floating torso/tail onto Z=0 via a volume-preserving vertical shear.
+
+    Real swimming sharks, whales, dolphins, and arched-tail creatures taper upward behind the chest so their
+    rear segments float 5-15 mm off the build plate. A pure vertical shear `z' = z - drop(x)` has Jacobian
+    determinant +1 everywhere (100% watertight & volume-preserving) and seats every flexing segment flat on
+    Z=0 for support-free print-in-place printing while leaving the head, fins, and tail tip untouched.
+    """
+    bb = mf.bounding_box()
+    sx = float(bb[3] - bb[0])
+    sy = float(bb[4] - bb[1])
+    sz = float(bb[5] - bb[2])
+    if max(sx, sy) < 20.0 or sz < 6.0:
+        return mf, []
+    rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
+    work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
+    work = _place_on_bed(work)
+    flip_180, _ = _auto_flexi_orientation_and_start(work, float(prep.flexi_start_pct))
+    if flip_180:
+        work = _place_on_bed(work.rotate((0.0, 0.0, 180.0)))
+
+    tm = _manifold_to_trimesh(work)
+    verts = np.asarray(tm.vertices, dtype=np.float64).copy()
+    x0, x1 = float(verts[:, 0].min()), float(verts[:, 0].max())
+    h_all = float(verts[:, 2].max() - verts[:, 2].min())
+    length = max(1e-6, x1 - x0)
+
+    n_bins = 48
+    edges = np.linspace(x0, x1, n_bins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    z_mins = np.full(n_bins, np.nan, dtype=np.float64)
+    for i in range(n_bins):
+        m = (verts[:, 0] >= edges[i]) & (verts[:, 0] <= edges[i + 1])
+        if np.any(m):
+            z_mins[i] = float(verts[m, 2].min())
+    valid = ~np.isnan(z_mins)
+    if valid.sum() < 8:
+        return mf, []
+    z_mins = np.interp(np.arange(n_bins), np.nonzero(valid)[0], z_mins[valid])
+
+    # Only seat if the rear torso/tail zone (30%..85%) actually floats above the build plate
+    t_norm = (centers - x0) / length
+    rear_zone = (t_norm >= 0.30) & (t_norm <= 0.85)
+    if float(z_mins[rear_zone].max()) < 2.2:
+        return mf, []
+
+    # Smoothstep ramp from 0 at snout (0..22%) to 1 across torso/tail (>= 34%)
+    ramp = np.clip((t_norm - 0.22) / 0.12, 0.0, 1.0)
+    ramp = ramp * ramp * (3.0 - 2.0 * ramp)
+    raw_drop = np.minimum(z_mins, h_all * 0.35) * ramp
+    kernel = np.array([0.06, 0.24, 0.40, 0.24, 0.06], dtype=np.float64)
+    drop_smooth = raw_drop.copy()
+    for _ in range(3):
+        drop_smooth = np.convolve(np.pad(drop_smooth, 2, mode="edge"), kernel, mode="valid")
+    # Never shear below actual local z_min (preserves lower tail lobe contact with Z=0)
+    drop_safe = np.minimum(drop_smooth, z_mins)
+    drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.2, 0.6, 0.2]), mode="valid")
+    if float(drop_safe.max()) < 1.2:
+        return mf, []
+
+    verts[:, 2] -= np.interp(verts[:, 0], centers, drop_safe)
+    verts[:, 2] -= float(verts[:, 2].min())
+    seated = _trimesh_to_manifold(trimesh.Trimesh(vertices=verts, faces=tm.faces, process=False))
+    if seated is None or seated.is_empty():
+        return mf, []
+    if flip_180:
+        seated = seated.rotate((0.0, 0.0, 180.0))
+    if rotated_for_y:
+        seated = seated.rotate((0.0, 0.0, 90.0))
+    return _place_on_bed(seated), ["seated arched tail smoothly onto print bed for support-free flexi printing"]
+
+
+def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+    """Slice a solid sculpted character into N+1 sleek, curved-crescent print-in-place flexi segments.
+
+    Uses smooth rib-curved crescent cuts (instead of flat bread-knife slabs) and compact rounded-stadium
+    internal chain links rotating around horizontal cylindrical pins with guaranteed `prep.flexi_clearance_mm`
+    air gaps in X, Y, and Z so segments print flat on Z=0, never fuse, preserve lateral fins, and wiggle smoothly.
     """
     n_cuts = int(prep.flexi_segments)
     if n_cuts <= 0:
@@ -232,6 +405,11 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
     work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
     work = _place_on_bed(work)
+
+    flip_180, eff_start_pct = _auto_flexi_orientation_and_start(work, float(prep.flexi_start_pct))
+    if flip_180:
+        work = _place_on_bed(work.rotate((0.0, 0.0, 180.0)))
+
     bb = work.bounding_box()
     x0, y0, z0, x1, y1, z1 = [float(v) for v in bb]
     length = x1 - x0
@@ -242,17 +420,17 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         return mf, notes
 
     c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.80)
-    gap = max(1.1, 2.2 * c)
-    s0 = _clamp(float(prep.flexi_start_pct) / 100.0, 0.12, 0.80)
-    s1 = _clamp(float(prep.flexi_end_pct) / 100.0, s0 + 0.10, 0.94)
+    gap = max(0.95, 2.1 * c)
+    s0 = _clamp(eff_start_pct / 100.0, 0.14, 0.72)
+    s1 = _clamp(float(prep.flexi_end_pct) / 100.0, s0 + 0.12, 0.94)
     cuts = [x0 + length * (s0 + (s1 - s0) * ((i + 0.5) / n_cuts)) for i in range(n_cuts)]
     bounds = [x0 - 5.0, *cuts, x1 + 5.0]
     pad_y = width_all + 40.0
     pad_z = height_all + 40.0
-    tan_half = math.tan(math.radians(_clamp(float(prep.flexi_angle_deg), 8.0, 45.0) / 2.0))
+    # Subtle side taper for natural S-curve swimming wiggle without chewing big Pac-Man chunks out of the character
+    tan_half = math.tan(math.radians(_clamp(float(prep.flexi_angle_deg), 6.0, 35.0) / 2.0)) * 0.80
 
-    # Measure valid joints at each cut plane so joints never poke outside thin tips
-    joint_specs: list[dict[str, float] | None] = []
+    joint_specs: list[dict[str, float]] = []
     active_cuts: list[float] = []
     for i, u in enumerate(cuts):
         slab_box = m3d.Manifold.cube((2.0, pad_y, pad_z), center=True).translate((u, (y0 + y1) / 2.0, height_all / 2.0))
@@ -264,129 +442,126 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         z_bot = max(0.0, float(sbb[2]))
         h_loc = float(sbb[5]) - z_bot
         yc = float((sbb[1] + sbb[4]) / 2.0)
-        seg_pitch = min(u - bounds[i], bounds[i + 2] - u)
-        # Skip floating thin tips (like elevated tail stems) so they stay solidly attached to the last segment
-        if z_bot > 3.5 or w_loc < 8.0 or h_loc < 6.0 or seg_pitch < (gap + 4.0 * c + 4.5):
+        prev_cut = active_cuts[-1] if active_cuts else bounds[i]
+        seg_pitch = min(u - prev_cut, bounds[i + 2] - u)
+        # Skip elevated thin tail stems so tail fins stay solidly attached to the last flexing segment
+        if z_bot > 3.5 or w_loc < 8.0 or h_loc < 6.0 or seg_pitch < (gap + 4.0 * c + 4.2):
             continue
-        # Size pin & loop wall to sit comfortably inside the local cross-section
-        max_pin_h = (h_loc - 1.2 - 3.0 * c) / 4.2
+        max_pin_h = (h_loc - 1.4 - 3.0 * c) / 4.2
         max_pin_x = (seg_pitch - gap - 3.5 * c) / 4.2
-        unit = _clamp(min(max_pin_h, max_pin_x, 2.1), 1.0, 2.1)
+        unit = _clamp(min(max_pin_h, max_pin_x, 1.85), 1.0, 1.85)
         pin_r = unit
-        arm_t = max(1.2, unit * 1.05)
-        slot_w = _clamp(w_loc * 0.42, 4.0, 11.0)
+        arm_t = max(1.15, unit * 1.05)
+        # Compact narrow central hinge channel with room for both vertical drape AND side-to-side S-curve wiggle
+        loop_w = _clamp(w_loc * 0.13, 2.5, 3.4)
+        slot_w = _clamp(max(w_loc * 0.22, loop_w + 2.0 * c + 1.6), 4.6, 6.8)
         if w_loc - slot_w < 3.6:
             slot_w = max(3.6, w_loc - 3.6)
-        loop_w = slot_w - 2.0 * c
+            loop_w = min(loop_w, slot_w - 2.0 * c)
         if loop_w < 2.2:
             continue
         pin_z = z_bot + arm_t + c + pin_r
-        loop_top_z = pin_z + pin_r + c + arm_t
-        if loop_top_z + c + 0.6 > float(sbb[5]):
+        r_loop = pin_r + c + arm_t
+        if pin_z + r_loop + c + 1.2 > float(sbb[5]):
             continue
-        u_pin = u - (gap / 2.0 + c + pin_r + 0.5)
-        loop_front_x = u_pin - pin_r - c - arm_t
-        cavity_front_x = loop_front_x - c
-        if cavity_front_x <= bounds[i] + 1.2:
+        u_pin = u - (gap / 2.0 + c + pin_r + 0.45)
+        cavity_front_x = u_pin - (r_loop + c)
+        min_front = (active_cuts[-1] + gap / 2.0 + 1.2) if active_cuts else (x0 + 1.0)
+        if cavity_front_x <= min_front:
             continue
+        # Gentle organic rearward crescent curve guaranteed never to cross adjacent cuts
+        curve = min(w_loc * 0.14, seg_pitch * 0.20, 4.8)
+        max_half_gap = max(gap / 2.0, seg_pitch * 0.26)
         active_cuts.append(u)
         joint_specs.append({
-            "u": u, "yc": yc, "w_loc": w_loc, "h_loc": h_loc,
-            "pin_r": pin_r, "arm_t": arm_t, "slot_w": slot_w, "loop_w": loop_w,
-            "pin_z": pin_z, "loop_top_z": loop_top_z,
-            "u_pin": u_pin, "loop_front_x": loop_front_x, "cavity_front_x": cavity_front_x,
+            "u": u, "yc": yc, "w_loc": w_loc, "z_bot": z_bot, "h_loc": h_loc,
+            "pin_r": pin_r, "arm_t": arm_t, "r_loop": r_loop, "slot_w": slot_w, "loop_w": loop_w,
+            "pin_z": pin_z, "u_pin": u_pin, "cavity_front_x": cavity_front_x,
+            "curve": curve, "max_half_gap": max_half_gap,
         })
 
     if not active_cuts:
         notes.append("no cross-sections were wide enough for flexi joints")
         return mf, notes
 
-    # Partition into N+1 segments with vertical gap + flared side V-wedges for wide flexing
-    cut_bounds = [x0 - 5.0, *active_cuts, x1 + 5.0]
-    segments: list[m3d.Manifold] = []
-    for seg_i in range(len(cut_bounds) - 1):
-        xa = cut_bounds[seg_i] + (gap / 2.0 if seg_i > 0 else 0.0)
-        xb = cut_bounds[seg_i + 1] - (gap / 2.0 if seg_i < len(cut_bounds) - 2 else 0.0)
-        if xb <= xa + 0.5:
-            segments.append(m3d.Manifold())
-            continue
-        box = m3d.Manifold.cube((xb - xa, pad_y, pad_z), center=True).translate(((xa + xb) / 2.0, (y0 + y1) / 2.0, height_all / 2.0))
-        seg = work ^ box
-        # Flared V-wedge relief on the outer flanks (outside the hinge slot) so segments wiggle freely
-        for j_idx in (seg_i - 1, seg_i):
-            if 0 <= j_idx < len(joint_specs):
-                sp = joint_specs[j_idx]
-                assert sp is not None
-                u = sp["u"]
-                yc = sp["yc"]
-                half_slot = sp["slot_w"] / 2.0 + 0.6
-                for side in (-1.0, 1.0):
-                    y_inner = yc + side * half_slot
-                    y_outer = yc + side * (width_all + 10.0)
-                    extra_x = abs(y_outer - y_inner) * tan_half
-                    pts = [
-                        (u - gap / 2.0, y_inner),
-                        (u + gap / 2.0, y_inner),
-                        (u + gap / 2.0 + extra_x, y_outer),
-                        (u - gap / 2.0 - extra_x, y_outer),
-                    ]
-                    if side < 0:
-                        pts.reverse()
-                    wedge = m3d.Manifold.extrude(m3d.CrossSection([pts]), pad_z).translate((0.0, 0.0, -5.0))
-                    seg = seg - wedge
-        segments.append(seg)
+    # Partition into N+1 sleek curved-crescent segments via smooth extruded CCW 2D rib polygons
+    n_samples = 25
+    ys = np.linspace(y0 - 8.0, y1 + 8.0, n_samples).tolist()
 
-    # Carve cavities, anchor horizontal pins into segment i, and union closed floor-anchored loops onto segment i+1
+    def _cut_curve_x(j: int, y_val: float, side: float) -> float:
+        sp = joint_specs[j]
+        u = sp["u"]
+        yc = sp["yc"]
+        half_w = max(4.0, sp["w_loc"] / 2.0)
+        half_slot = sp["slot_w"] / 2.0 + 0.45
+        base_x = _crescent_x(u, y_val, yc, half_slot, half_w, sp["curve"])
+        flank = min(half_w + 2.0, max(0.0, abs(y_val - yc) - half_slot))
+        half_gap = min(sp["max_half_gap"], gap / 2.0 + flank * tan_half)
+        return base_x + side * half_gap
+
+    segments: list[m3d.Manifold] = []
+    slab_prisms: list[m3d.Manifold] = []
+    for seg_i in range(len(active_cuts) + 1):
+        # Strictly CCW polygon: right boundary (increasing Y) -> left boundary (decreasing Y)
+        right_pts = [
+            (x1 + 8.0, yv) if seg_i == len(active_cuts) else (_cut_curve_x(seg_i, yv, -1.0), yv)
+            for yv in ys
+        ]
+        left_pts = [
+            (x0 - 8.0, yv) if seg_i == 0 else (_cut_curve_x(seg_i - 1, yv, +1.0), yv)
+            for yv in reversed(ys)
+        ]
+        poly = [*right_pts, *left_pts]
+        slab_prism = m3d.Manifold.extrude(m3d.CrossSection([poly]), pad_z).translate((0.0, 0.0, -5.0))
+        slab_prisms.append(slab_prism)
+        segments.append(_clean_segment_slivers(work ^ slab_prism))
+
+    # Carve compact rounded cavities, anchor cylindrical crossbar pins, and union smooth rounded bearing loops
     for j_idx, sp in enumerate(joint_specs):
-        assert sp is not None
         u = sp["u"]
         yc = sp["yc"]
         w_loc = sp["w_loc"]
+        z_bot = sp["z_bot"]
         pin_r = sp["pin_r"]
+        r_loop = sp["r_loop"]
         slot_w = sp["slot_w"]
         loop_w = sp["loop_w"]
         pin_z = sp["pin_z"]
-        loop_top_z = sp["loop_top_z"]
         u_pin = sp["u_pin"]
-        loop_front_x = sp["loop_front_x"]
-        cavity_front_x = sp["cavity_front_x"]
-        cavity_back_x = u + gap / 2.0 + 0.5
-        cavity_top_z = loop_top_z + c
+        cavity_back_x = u + gap / 2.0 + 0.6
 
-        # 1. Segment A (upstream): subtract slot pocket, then union horizontal crossbar pin anchored into side cheeks
-        cav_len = cavity_back_x - cavity_front_x
-        cavity = m3d.Manifold.cube((cav_len, slot_w, cavity_top_z + 2.0), center=True).translate(
-            (cavity_front_x + cav_len / 2.0, yc, (cavity_top_z - 2.0) / 2.0)
+        # 1. Segment A (upstream): subtract sleek rounded stadium cavity, then union horizontal crossbar pin
+        cavity = _rounded_xz_loop(
+            x_center=u_pin, z_center=pin_z, radius=r_loop + c,
+            x_back=cavity_back_x, z_floor=-1.0, width_y=slot_w, y_center=yc,
         )
-        pin_span = min(w_loc - 1.2, slot_w + 5.0)
+        pin_span = min(w_loc - 1.2, slot_w + 4.8)
         pin = (
             m3d.Manifold.cylinder(pin_span, pin_r, pin_r, circular_segments=32, center=True)
             .rotate((90.0, 0.0, 0.0))
             .translate((u_pin, yc, pin_z))
         )
-        pin = pin ^ work  # never protrude outside the character's sculpted skin
+        pin = pin ^ work ^ slab_prisms[j_idx]
         segments[j_idx] = (segments[j_idx] - cavity) + pin
 
-        # 2. Segment B (downstream): build closed flat-bottom U-loop wrapping 360° around pin with exact `c` clearance
+        # 2. Segment B (downstream): smooth rounded bearing loop wrapping 360° around pin with exact `c` clearance
         next_limit = (
             joint_specs[j_idx + 1]["cavity_front_x"] - 0.5
-            if j_idx + 1 < len(joint_specs) and joint_specs[j_idx + 1] is not None
-            else cut_bounds[j_idx + 2] - gap / 2.0 - 0.8
+            if j_idx + 1 < len(joint_specs)
+            else x1 - 1.0
         )
         anchor_x = min(u + gap / 2.0 + 3.0, next_limit)
-        if anchor_x <= u + gap / 2.0 + 0.6:
-            anchor_x = u + gap / 2.0 + 0.8
-        loop_len = anchor_x - loop_front_x
-        loop_outer = m3d.Manifold.cube((loop_len, loop_w, loop_top_z), center=True).translate(
-            (loop_front_x + loop_len / 2.0, yc, loop_top_z / 2.0)
+        if anchor_x <= u + gap / 2.0 + 0.7:
+            anchor_x = u + gap / 2.0 + 0.9
+        loop_outer = _rounded_xz_loop(
+            x_center=u_pin, z_center=pin_z, radius=r_loop,
+            x_back=anchor_x, z_floor=z_bot, width_y=loop_w, y_center=yc,
         )
-        # Round the front leading edge of the loop so it swings cleanly inside the pocket without catching
         eye_hole = (
             m3d.Manifold.cylinder(loop_w + 4.0, pin_r + c, pin_r + c, circular_segments=32, center=True)
             .rotate((90.0, 0.0, 0.0))
             .translate((u_pin, yc, pin_z))
         )
-        # Keep loop strictly inside the character's sculpted skin (no blocky tabs poking out curved tails)
         loop = (loop_outer - eye_hole) ^ work
         segments[j_idx + 1] = segments[j_idx + 1] + loop
 
@@ -394,10 +569,12 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     if len(non_empty) < 2:
         return mf, notes
     composed = m3d.Manifold.compose(non_empty)
+    if flip_180:
+        composed = composed.rotate((0.0, 0.0, 180.0))
     if rotated_for_y:
         composed = composed.rotate((0.0, 0.0, 90.0))
     composed = _place_on_bed(composed)
-    notes.append(f"sliced {len(active_cuts)} print-in-place flexi joints ({len(non_empty)} segments, {c:.2f} mm clearance)")
+    notes.append(f"sliced {len(active_cuts)} curved print-in-place flexi joints ({len(non_empty)} segments, {c:.2f} mm clearance)")
     return composed, notes
 
 
@@ -466,14 +643,20 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
 
     mf = _place_on_bed(mf)
 
+    # For print-in-place flexi models, smoothly seat any floating arched tail onto Z=0 BEFORE belly flattening
+    # so every flexing segment gets uniform flat bed adhesion with zero supports.
+    if prep.flexi_segments > 0:
+        mf, seat_notes = _seat_flexi_on_bed(mf, prep)
+        notes.extend(seat_notes)
+
     # Flatten bottom by trimming off Z=0 so bed adhesion is rock-solid.
-    # For print-in-place flexi models, automatically trim enough of a round belly (~8% of height) so every
-    # flexing segment rests flat on the print bed instead of floating.
+    # For print-in-place flexi models, automatically trim gently (~5% of height, capped at 3.5 mm) so every
+    # flexing segment rests flat on the print bed without lopping off lower tail fin tips.
     eff_flat = float(prep.flatten_bottom_mm)
-    if prep.flexi_segments > 0 and eff_flat < 2.0:
+    if prep.flexi_segments > 0 and eff_flat < 1.5:
         bb_cur = mf.bounding_box()
         h_cur = float(bb_cur[5] - bb_cur[2])
-        eff_flat = max(eff_flat, min(10.0, h_cur * 0.08))
+        eff_flat = max(eff_flat, min(3.5, h_cur * 0.05))
     if eff_flat > 0:
         bb = mf.bounding_box()
         cut = min(eff_flat, max(0.0, (bb[5] - bb[2]) * 0.15))
@@ -545,12 +728,135 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
     )
 
 
+def _split_sharp_edges(points: np.ndarray, tris: np.ndarray, angle_deg: float = 40.0) -> tuple[np.ndarray, np.ndarray]:
+    """Auto-smooth vertex splitting across sharp dihedral creases (e.g., 90° flexi cuts & flat bellies).
+
+    Keeps smooth organic skin vertices welded so Three.js `computeVertexNormals()` renders silky shading,
+    while splitting vertices across creases steeper than `angle_deg` so CAD cut rims render razor-crisp
+    with zero dark normal-averaging bruises. Never alters exported STL/3MF geometry.
+    """
+    n_verts = len(points)
+    n_faces = len(tris)
+    if n_verts == 0 or n_faces == 0:
+        return points, tris
+
+    v0 = points[tris[:, 0]]
+    v1 = points[tris[:, 1]]
+    v2 = points[tris[:, 2]]
+    fn = np.cross(v1 - v0, v2 - v0)
+    flen = np.linalg.norm(fn, axis=1, keepdims=True)
+    fn = np.divide(fn, np.maximum(flen, 1e-12))
+
+    # Build undirected edge keys for all 3*F half-edges and match shared edges in O(F log F)
+    e0 = tris[:, [0, 1]]
+    e1 = tris[:, [1, 2]]
+    e2 = tris[:, [2, 0]]
+    all_e = np.vstack((e0, e1, e2))
+    ea = np.minimum(all_e[:, 0], all_e[:, 1]).astype(np.int64)
+    eb = np.maximum(all_e[:, 0], all_e[:, 1]).astype(np.int64)
+    f_idx = np.tile(np.arange(n_faces, dtype=np.int32), 3)
+
+    keys = ea * n_verts + eb
+    order = np.argsort(keys)
+    k_sorted = keys[order]
+    same = k_sorted[:-1] == k_sorted[1:]
+    if not np.any(same):
+        return points, tris
+
+    o1 = order[:-1][same]
+    o2 = order[1:][same]
+    f1 = f_idx[o1]
+    f2 = f_idx[o2]
+    dots = np.einsum("ij,ij->i", fn[f1], fn[f2])
+    cos_thresh = math.cos(math.radians(angle_deg))
+    sharp_mask = dots < cos_thresh
+    if not np.any(sharp_mask):
+        return points, tris
+
+    sharp_verts = np.unique(np.concatenate((ea[o1[sharp_mask]], eb[o1[sharp_mask]])))
+    is_sharp_v = np.zeros(n_verts, dtype=bool)
+    is_sharp_v[sharp_verts] = True
+
+    # Collect incident (face, corner_slot) only for sharp vertices
+    v_corners: dict[int, list[tuple[int, int]]] = {int(v): [] for v in sharp_verts}
+    t_flat = tris.reshape(-1)
+    sharp_corner_idx = np.nonzero(is_sharp_v[t_flat])[0]
+    for ci in sharp_corner_idx.tolist():
+        v_corners[int(t_flat[ci])].append((ci // 3, ci % 3))
+
+    # Collect smooth edge face-adjacency only at sharp vertices
+    smooth_mask = ~sharp_mask
+    sm_a = ea[o1[smooth_mask]]
+    sm_b = eb[o1[smooth_mask]]
+    sm_f1 = f1[smooth_mask]
+    sm_f2 = f2[smooth_mask]
+    touch_sharp = is_sharp_v[sm_a] | is_sharp_v[sm_b]
+    smooth_adj: dict[int, dict[int, list[int]]] = {}
+    for a_v, b_v, fa, fb in zip(
+        sm_a[touch_sharp].tolist(), sm_b[touch_sharp].tolist(),
+        sm_f1[touch_sharp].tolist(), sm_f2[touch_sharp].tolist(),
+    ):
+        if is_sharp_v[a_v]:
+            d = smooth_adj.setdefault(a_v, {})
+            d.setdefault(fa, []).append(fb)
+            d.setdefault(fb, []).append(fa)
+        if is_sharp_v[b_v]:
+            d = smooth_adj.setdefault(b_v, {})
+            d.setdefault(fa, []).append(fb)
+            d.setdefault(fb, []).append(fa)
+
+    new_tris = tris.copy()
+    extra_pts: list[np.ndarray] = []
+    next_vid = n_verts
+
+    for v in sharp_verts.tolist():
+        corners = v_corners[v]
+        if len(corners) <= 1:
+            continue
+        adj = smooth_adj.get(v)
+        # Map face -> corner slot(s) at vertex v
+        f_to_slots: dict[int, list[int]] = {}
+        for f, slot in corners:
+            f_to_slots.setdefault(f, []).append(slot)
+        visited: set[int] = set()
+        group_idx = 0
+        for start_f in f_to_slots:
+            if start_f in visited:
+                continue
+            # BFS over faces incident to v connected by smooth edges
+            comp = [start_f]
+            visited.add(start_f)
+            if adj:
+                head = 0
+                while head < len(comp):
+                    cur = comp[head]
+                    head += 1
+                    for nxt in adj.get(cur, ()):
+                        if nxt in f_to_slots and nxt not in visited:
+                            visited.add(nxt)
+                            comp.append(nxt)
+            if group_idx > 0:
+                vid = next_vid
+                next_vid += 1
+                extra_pts.append(points[v])
+                for f in comp:
+                    for slot in f_to_slots[f]:
+                        new_tris[f, slot] = vid
+            group_idx += 1
+
+    if not extra_pts:
+        return points, tris
+    new_points = np.vstack((points, np.asarray(extra_pts, dtype=points.dtype)))
+    return new_points, new_tris
+
+
 def to_viewer_mesh(part: PreparedPart, bid: str) -> dict:
     """Convert a `PreparedPart` into the `ShapeMesh`-compatible dict that `ViewportPane` renders in Three.js."""
     bmin, bmax = part.bounds()
     centroid = ((bmin + bmax) / 2.0).tolist()
-    pos = np.round(part.points.astype(np.float64), 4).reshape(-1).tolist()
-    idx = part.tris.astype(np.int64).reshape(-1).tolist()
+    pts, tris = _split_sharp_edges(part.points, part.tris, angle_deg=40.0)
+    pos = np.round(pts.astype(np.float64), 4).reshape(-1).tolist()
+    idx = tris.astype(np.int64).reshape(-1).tolist()
     return {
         "name": bid,
         "units": "mm",
@@ -713,8 +1019,8 @@ def render_prepared_meshes(parts: list[PreparedPart], view: str = "iso", size: i
         base_rgb = tuple(int(hex_c[i:i + 2], 16) for i in (0, 2, 4)) if len(hex_c) == 6 else (184, 194, 204)
         pts = p.points - center
         tris = p.tris
-        if len(tris) > 50000:
-            step = max(1, len(tris) // 50000)
+        if len(tris) > 120000:
+            step = max(1, len(tris) // 120000)
             tris = tris[::step]
         v0 = pts[tris[:, 0]]
         v1 = pts[tris[:, 1]]

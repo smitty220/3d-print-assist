@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from PIL import Image, ImageOps
 
@@ -23,7 +23,41 @@ from . import gpu_job, ml_job_update, ml_root
 from .hardware import detect_hardware
 from .installer import PAINTER_FILES, installer, painter_dir, painter_ready, sd_cli_path
 
+CharacterStyle = Literal["auto", "figurine", "flexi", "bust", "keychain", "magnet", "planter", "scene"]
+_VALID_STYLES = frozenset({"figurine", "flexi", "bust", "keychain", "magnet", "planter", "scene"})
+
 _STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
+_STYLE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("flexi", re.compile(r"\b(flexi|articulated|wiggle|wiggly|print[- ]in[- ]place|segmented|fidget)\b", re.I)),
+    ("keychain", re.compile(r"\b(keychain|bag charm|pendant|ornament)\b", re.I)),
+    ("magnet", re.compile(r"\b(fridge magnet|magnet)\b", re.I)),
+    ("planter", re.compile(r"\b(planter|succulent pot|flower pot|pencil holder|pen cup|candy dish)\b", re.I)),
+    ("bust", re.compile(r"\b(portrait bust|head sculpt|bust)\b", re.I)),
+    ("scene", re.compile(r"\b(diorama|miniature scene|couple|family portrait|group scene)\b", re.I)),
+)
+
+
+def resolve_character_style(prompt: str, style: str = "auto") -> str:
+    """Resolve an explicit archetype or auto-detect it from the user's prompt."""
+    clean = (style or "auto").strip().lower()
+    if clean in _VALID_STYLES:
+        return clean
+    text = prompt or ""
+    for name, pat in _STYLE_PATTERNS:
+        if pat.search(text):
+            return name
+    return "figurine"
+
+
+def style_canvas_size(style: str, turnaround: bool = False) -> tuple[int, int]:
+    """Choose the ideal canvas aspect ratio for FLUX so elongated flexi toys don't inflate into spheres."""
+    if turnaround:
+        return (960, 384)
+    if style == "flexi":
+        return (768, 448)
+    if style == "scene":
+        return (768, 512)
+    return (640, 640)
 
 
 class PainterError(RuntimeError):
@@ -85,21 +119,70 @@ def _kill_proc(proc: subprocess.Popen) -> None:
             pass
 
 
-def build_turnaround_prompt(prompt: str, turnaround: bool = False, has_refs: bool = False) -> str:
+_STYLE_PREFIXES: dict[str, str] = {
+    "flexi": (
+        "3D printable desk toy studio product photo, sleek elongated horizontal body resting completely flat on its "
+        "belly on a smooth horizontal ground plane (length about 2.5 to 3 times its height, NOT chubby or spherical), "
+        "smooth solid unsegmented sculpted body with front fins or legs positioned forward near the head and a long "
+        "gently tapering tail extending straight back along the floor, clean side three-quarter angle with generous "
+        "margin around nose, fins, and tail so nothing is cropped, plain solid light-gray background, smooth matte "
+        "vinyl sculpt finish, no hinge cuts or seams drawn on the surface, no text, no watermarks. "
+    ),
+    "bust": (
+        "3D printable sculpted character bust from chest up resting on a clean flat bottom edge, centered "
+        "three-quarter portrait view with generous margin around all edges, crisp facial features and hair volumes "
+        "suitable for 3D printing, plain solid light-gray background, matte clay sculpt finish, no text, no watermarks. "
+    ),
+    "keychain": (
+        "3D printable chunky pocket keychain charm sculpt, compact sturdy silhouette with thick features and no "
+        "fragile thin overhangs, centered front three-quarter view with generous margin, plain solid light-gray "
+        "background, smooth matte vinyl toy finish, no metal chains or rings drawn, no text, no watermarks. "
+    ),
+    "magnet": (
+        "3D printable chunky fridge magnet character sculpt with a clean flat back surface and bold sculpted front "
+        "details, centered front three-quarter view with generous margin, plain solid light-gray background, smooth "
+        "matte vinyl finish, no text, no watermarks. "
+    ),
+    "planter": (
+        "3D printable cute character planter pot with a sturdy wide flat bottom and rounded hollow-ready body, "
+        "centered three-quarter studio product photo with generous margin, plain solid light-gray background, smooth "
+        "ceramic matte sculpt finish, empty interior with no soil or plants, no text, no watermarks. "
+    ),
+    "scene": (
+        "3D printable miniature character scene resting together on a single unified ground base, complete uncropped "
+        "three-quarter studio product photo with generous margin around all edges, sturdy connected forms suitable "
+        "for 3D printing, plain solid light-gray background, smooth matte sculpted finish, no text, no watermarks. "
+    ),
+    "figurine": (
+        "3D printable figurine studio product photo, complete uncropped centered hero three-quarter view standing "
+        "stably with generous margin around all edges so the entire silhouette is fully visible, clean studio lighting, "
+        "plain solid light-gray background, smooth sculpted vinyl toy finish suitable for 3D printing, no text, no watermarks. "
+    ),
+}
+
+
+def build_turnaround_prompt(
+    prompt: str,
+    turnaround: bool = False,
+    has_refs: bool = False,
+    style: str = "auto",
+) -> str:
     base = prompt.strip()
+    resolved = resolve_character_style(base, style)
     if turnaround:
+        shape_note = (
+            "sleek elongated horizontal flat-bellied solid body (length 2.5 to 3x height, no hinge seams drawn), "
+            if resolved == "flexi"
+            else ""
+        )
         prefix = (
-            "3D printable figurine character turnaround sheet showing three complete uncropped views "
+            f"3D printable character turnaround sheet showing three complete uncropped views {shape_note}"
             "side by side (FRONT view on left, SIDE profile in middle, BACK view on right) with generous white margin "
             "around all edges so tails and fins are never cut off, clean studio lighting, plain solid light-gray background, "
             "chunky sculpted details suitable for 3D printing, no text labels, no watermarks. "
         )
     else:
-        prefix = (
-            "3D printable figurine studio product photo, complete uncropped centered hero three-quarter view with generous "
-            "margin around all edges so the entire silhouette is fully visible, clean studio lighting, plain solid "
-            "light-gray background, smooth sculpted vinyl toy finish suitable for 3D printing, no text, no watermarks. "
-        )
+        prefix = _STYLE_PREFIXES.get(resolved, _STYLE_PREFIXES["figurine"])
     ref_hint = "Preserve the likeness, faces, hairstyles, and distinct features of the people/subjects in the reference photo. " if has_refs else ""
     return f"{prefix}{ref_hint}Subject: {base}"
 
@@ -108,6 +191,7 @@ def generate_character_design_image(
     prompt: str,
     ref_paths: list[Path] | None = None,
     turnaround: bool = False,
+    style: str = "auto",
     steps: int = 14,
     seed: int = -1,
     on_progress: Callable[[str], None] | None = None,
@@ -131,8 +215,9 @@ def generate_character_design_image(
     t5xxl = pdir / PAINTER_FILES[3][2]
 
     n_steps = max(8, min(int(steps), 30))
-    width, height = (960, 384) if turnaround else (640, 640)
-    full_prompt = build_turnaround_prompt(prompt, turnaround=turnaround, has_refs=bool(ref_paths))
+    resolved_style = resolve_character_style(prompt, style)
+    width, height = style_canvas_size(resolved_style, turnaround=turnaround)
+    full_prompt = build_turnaround_prompt(prompt, turnaround=turnaround, has_refs=bool(ref_paths), style=resolved_style)
 
     with gpu_job("painting", "Creating design preview", "Starting 2D generator…"):
         with tempfile.TemporaryDirectory(prefix="pa_painter_") as td:

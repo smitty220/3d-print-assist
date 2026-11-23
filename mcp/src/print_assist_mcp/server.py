@@ -258,12 +258,23 @@ def propose_character_design(
     assumptions: list[str] | None = None,
     questions: list[str] | None = None,
     turnaround: bool = False,
+    style: str = "auto",
 ) -> str:
     """Character Mode Design File: use the local 2D Painter to generate a clean studio character/scene design image from
     `prompt` and optional uploaded `reference_photos` (e.g. ["I1", "I2"]). Shown in the Design tab (never in Photos)
     for the user to inspect and iterate on before clicking Approve & Build.
-    IMPORTANT: Always design the character as a clean, solid organic form — do NOT try to paint tiny print-in-place
-    flexi hinges, magnet holes, or screw mounts into the 2D art; those are cut mathematically during sculpting via
+    `style`: archetype controlling canvas aspect ratio & 3D-print framing — one of:
+    - "flexi": wide 768x448 landscape framing for sleek elongated flat-bellied print-in-place flexi animals/toys
+      (prevents chubby spherical proportions, keeps front fins near head & long tapering tail on the floor!)
+    - "figurine": centered upright display character
+    - "bust": chest-up portrait bust on a flat bottom
+    - "keychain": chunky sturdy pocket charm silhouette
+    - "magnet": bold front-relief flat-back fridge magnet
+    - "planter": wide-bottom cute planter pot
+    - "scene": wide landscape unified miniature scene
+    - "auto" (default): auto-detects from `prompt` keywords.
+    IMPORTANT: Always design the character as a clean, solid organic form — do NOT ask the 2D painter to draw
+    tiny print-in-place flexi hinge cuts or magnet holes; those are cut mathematically during sculpting via
     `sculpt_character` / `update_mesh_prep`. If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)`
     until `status == "done"` (never call `propose_character_design` a second time while running)."""
     out = _call(
@@ -277,6 +288,7 @@ def propose_character_design(
             "assumptions": assumptions or [],
             "questions": questions or [],
             "turnaround": turnaround,
+            "style": style,
             "wait_s": 40,
         },
         headers=ACTOR,
@@ -302,7 +314,7 @@ def sculpt_character(
     flexi_start_pct: float = 35.0,
     flexi_end_pct: float = 88.0,
     flexi_clearance_mm: float = 0.45,
-    flexi_angle_deg: float = 22.0,
+    flexi_angle_deg: float = 12.0,
     magnet_hole: str = "none",
     magnet_dia_mm: float = 8.2,
     magnet_depth_mm: float = 3.2,
@@ -314,8 +326,10 @@ def sculpt_character(
     Design File (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` in Direct Build mode.
     Automatically repairs to a closed manifold solid, scales to `target_height_mm`, flattens the bottom, and applies
     exact-mm CAD mechanics on top:
-    - Print-in-Place Flexi Articulation: set `flexi_segments` (e.g. 5 for 6 linked segments), `flexi_start_pct` (35 keeps
-      head/fins solid), `flexi_end_pct` (88 keeps tail fin solid), `flexi_clearance_mm` (0.45 mm FDM tolerance).
+    - Print-in-Place Flexi Articulation: set `flexi_segments` (e.g. 5 for 6 sleek curved-crescent segments with
+      compact rounded bearing loops), `flexi_start_pct` (35 auto-nudges cleanly behind lateral pectoral fins),
+      `flexi_end_pct` (88 keeps tail fin solid), `flexi_clearance_mm` (0.45 mm FDM tolerance), `flexi_angle_deg` (12°).
+      Leave `flatten_bottom_mm` at default (0.4) — flexi auto-applies a gentle tail-safe belly flat!
     - Functional hardware: `magnet_hole` ('none'|'bottom'|'back'), `hollow_cavity` (planter/cup), `base_style`
       ('none'|'round'|'oval'|'square'), `keychain_loop`.
     If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
@@ -555,6 +569,19 @@ def list_designs() -> str:
 def open_design(slug: str) -> str:
     """Open another design in the app (the user's screen follows)."""
     return _text(_call("POST", f"/api/projects/{slug}/open"))
+
+
+@mcp.tool()
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web for real-world character appearances (movies, animals, pop culture), 3D printing flexi/articulated
+    toy designs, standard hardware sizes (M3 screws, 608 bearings, magnets), or real-world product dimensions."""
+    return _text(_call("GET", "/api/web/search", params={"query": query, "max_results": max_results}))
+
+
+@mcp.tool()
+def fetch_url(url: str) -> str:
+    """Fetch and read the plain-text content of an HTTP/HTTPS web page returned by `web_search`."""
+    return _text(_call("GET", "/api/web/fetch", params={"url": url}))
 
 
 @mcp.tool()

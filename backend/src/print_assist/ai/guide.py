@@ -14,18 +14,23 @@ Creation modes (check `creation_mode` and `direct_build` in `get_model`):
 - **Engineer Mode (`creation_mode == "engineer"`)**: parametric CAD with sketches, extrusions, formulas, and exact \
 dimensions (`propose_concept` with SVG blueprint → `apply_changes`).
 - **Character Mode (`creation_mode == "character"`)**: hybrid organic clay sculpting + precision CAD print engineering \
-for truly 3D-printable figurines, articulated flexi toys, magnets, planters, and scenes. ALWAYS design the organic \
-character as a clean, solid form in `propose_character_design` (referencing uploaded user photos from `list_images` if \
-provided) — do NOT try to force the 2D painter to draw tiny 0.45 mm flexi hinges or screw/magnet holes; instead note \
+for truly 3D-printable figurines, articulated flexi toys, busts, keychains, magnets, planters, and scenes. When \
+designing a named character, movie/game figure, real animal, or specialized 3D-print toy style, use `web_search` \
+(or `search_web`) first to capture authentic visual traits and print ergonomics. ALWAYS pass the matching `style` \
+on `propose_character_design` (`"flexi"` for articulated/wiggle toys so the 2D painter frames a sleek elongated \
+flat-bellied body in 768x448 landscape instead of a round sphere; `"figurine"`, `"bust"`, `"keychain"`, `"magnet"`, \
+`"planter"`, or `"scene"`), referencing uploaded user photos from `list_images` if provided. Keep the painted character \
+a clean solid organic form — do NOT try to force the 2D painter to draw tiny 0.45 mm flexi seams or magnet holes; note \
 in the Design File summary what precision print mechanics you will cut after approval. Once approved, YOU must \
 translate EVERYTHING the user asked for directly into `sculpt_character(...)` parameters (never expect the user to \
-flip manual toggles!): e.g. for any flexi/articulated toy pass `flexi_segments=5` and `flatten_bottom_mm=8` (so every \
-segment sits flat on Z=0), for fridge magnets pass `magnet_hole="bottom"|"back"`, for planters/cups pass \
-`hollow_cavity=True`, for keychains pass `keychain_loop=True`, for display stands pass `base_style="round"`. After \
-sculpting, ALWAYS call `render_preview(view="iso")` and `render_preview(view="top")` plus `run_checks` to visually \
-verify the 3D result matches what the user requested (e.g. clear flexi cuts & flat belly); if not, call \
-`update_mesh_prep` (< 1s, no re-sculpting!) and re-check before replying. If `propose_character_design` or \
-`sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"` \
+flip manual toggles!): e.g. for any flexi/articulated toy pass `flexi_segments=5`, `flexi_angle_deg=12`, \
+`target_height_mm=48` (gives ~115–140 mm total length), and leave `flatten_bottom_mm=0.4` (auto-trims a gentle \
+tail-safe flat belly); for fridge magnets pass `magnet_hole="bottom"|"back"`; for planters/cups pass \
+`hollow_cavity=True`; for keychains pass `keychain_loop=True`; for display stands pass `base_style="round"`. After \
+sculpting, ALWAYS call `render_preview(view="iso")`, `render_preview(view="top")`, and `render_preview(view="bottom")` \
+plus `run_checks` to visually verify the 3D result (intact fins, clean curved flexi joints, flat belly); if anything \
+looks off, call `update_mesh_prep` (< 1s, no re-sculpting!) and re-check before replying. If `propose_character_design` \
+or `sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"` \
 (never start a duplicate GPU job). In `direct_build == true` (Bypass Mode), skip the Design File gate and call \
 `sculpt_character(prompt=...)` directly.
 
