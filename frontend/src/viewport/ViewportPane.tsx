@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { api, type PartState, type PlateMesh, type Reference } from '../api'
 import { Icon } from '../ui/icons'
+import { Spinner } from '../ui/Spinner'
 import { Viewer, type FacePick, type ViewName } from '../viewer/Viewer'
 
 const BODY_COLORS = [0xcfc8b8, 0xc9a227, 0x8fb8de, 0xc07a45, 0x9fd18c]
@@ -156,7 +157,8 @@ export function ViewportPane({ part, references, stale, failed, highlight, edgeM
       {picking && <div className="pickhint">Picking {picking}: click on the part</div>}
       {!plateMode && part && !part.bodies.length && !references.length && <div className="empty">Nothing built yet: start with a sketch, then extrude it — or ask the AI.</div>}
       {children}
-      <div className="vinfo">{plateMode ? (plate ? `Plate ${plate.plate} · ${plate.objects.length} object${plate.objects.length === 1 ? '' : 's'}` : 'Laying out…')
+      <div className="vinfo">{plateMode
+        ? (plate ? `Plate ${plate.plate} · ${plate.objects.length} object${plate.objects.length === 1 ? '' : 's'}` : <span className="spin-row"><Spinner size={12} decorative /> Laying out…</span>)
         : part ? `${(part.volume / 1000).toFixed(1)} cm³ · ${(part.mass * 1000).toFixed(0)} g` : ''}</div>
     </section>
   )

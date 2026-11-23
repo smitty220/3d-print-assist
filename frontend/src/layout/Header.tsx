@@ -1,5 +1,6 @@
 import type { FileState, Printer, SlicerInfo, Tree } from '../api'
 import { Icon } from '../ui/icons'
+import { Spinner } from '../ui/Spinner'
 import { FileMenu, type FileAction } from './FileMenu'
 
 export type Mode = 'part' | 'sketch' | 'export' | 'plates'
@@ -80,10 +81,12 @@ export function Header({
         <button aria-pressed={manual} onClick={() => onUpdateMode('manual')} title="Edits wait for Update">Manual</button>
         <button aria-pressed={!manual} onClick={() => onUpdateMode('auto')} title="Every edit rebuilds">Auto</button>
       </div>
-      <button className={`update${n ? ' due' : tree?.failed ? ' failed' : ''}`} onClick={onUpdate} disabled={updating || (!n && !tree?.failed)}
+      <button className={`update${n ? ' due' : tree?.failed ? ' failed' : ''}`} onClick={onUpdate} disabled={updating || Boolean(tree?.building) || (!n && !tree?.failed)}
         title={tree?.failed && !n ? 'The last update stopped at a failed feature; fix it, or update again' : 'Update geometry (Ctrl+B)'}>
-        <Icon name={n ? 'bolt' : tree?.failed ? 'fail' : 'ok'} size={16} fill={n ? 'currentColor' : 'none'} width={1.9} />
-        {updating ? 'Updating…' : n ? `Update (${n})` : tree?.failed ? 'Update failed' : 'Up to date'}
+        {(updating || tree?.building)
+          ? <Spinner size={14} decorative />
+          : <Icon name={n ? 'bolt' : tree?.failed ? 'fail' : 'ok'} size={16} fill={n ? 'currentColor' : 'none'} width={1.9} />}
+        {updating ? 'Updating…' : tree?.building ? 'Building…' : n ? `Update (${n})` : tree?.failed ? 'Update failed' : 'Up to date'}
       </button>
     </header>
   )

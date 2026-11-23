@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { api, type Activity, type AiStatus, type Concept, type CreationMode, type ImageInfo, type MlStatus } from '../api'
 import { Icon } from '../ui/icons'
+import { Spinner } from '../ui/Spinner'
 import type { usePanelLayout } from '../ui/usePanelLayout'
 
 type PanelLayout = ReturnType<typeof usePanelLayout>
@@ -146,6 +147,7 @@ export function AiPanel({ status, activity, images, mlStatus, creationMode = 'en
       />
       <button type="button" className="btn sm" disabled={uploading} onClick={() => imgInput.current?.click()}
         title="Upload a reference photo (PNG, JPG, WebP, HEIC) so the AI can inspect it">
+        {uploading && <Spinner size={12} decorative />}
         {uploading ? 'Uploading…' : '+ Photo'}
       </button>
       {images.map((img) => {
@@ -509,7 +511,9 @@ export function AiPanel({ status, activity, images, mlStatus, creationMode = 'en
               return (
                 <div className={`entry assistant working${stalled ? ' stalled' : ''}`}>
                   <div className="work-row">
-                    <span className={`work-dot${stalled ? ' stalled' : ''}`} aria-hidden="true" />
+                    {stalled || waitingOnUser
+                      ? <span className={`work-dot${stalled ? ' stalled' : ''}`} aria-hidden="true" />
+                      : <Spinner size={14} decorative />}
                     <b>{waitingOnUser ? activeLabel : `${activeLabel}…`}</b>
                     <span className="work-meta">
                       {steps > 0 ? `Step ${steps} · ` : ''}{fmtTime(elapsed)}

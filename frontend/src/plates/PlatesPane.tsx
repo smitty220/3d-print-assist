@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import { api, type LayoutReport, type SlicerInfo, type Tree } from '../api'
 import { Icon } from '../ui/icons'
+import { Spinner } from '../ui/Spinner'
 
 interface Props {
   tree: Tree
@@ -60,7 +61,7 @@ export function PlatesPane({ tree, plate, onPlate, slicers, slicer, onError }: P
   return (
     <div className="plates-pane">
       <h2>Print plates</h2>
-      {!report && <p className="note">Laying out…</p>}
+      {!report && <p className="note spin-row" role="status"><Spinner size={14} label="Laying out plates" /> Laying out…</p>}
       <ul className="plate-list" role="listbox" aria-label="Plates">
         {(report?.plates ?? []).map((p) => (
           <li key={p.plate}>
@@ -101,6 +102,7 @@ export function PlatesPane({ tree, plate, onPlate, slicers, slicer, onError }: P
       {why && <p className="dmsg stale">{why}</p>}
       <div className="exports">
         <button className="btn primary" disabled={!!why || busy || problems.length > 0} onClick={exportPlates}>
+          {busy && <Spinner size={13} decorative />}
           {busy ? 'Exporting…' : `Export ${report?.plates.length ?? tree.print_layout?.plates} plates (3MF)`}
         </button>
         {activeSlicer && anySlicerInstalled && (
@@ -119,6 +121,7 @@ export function PlatesPane({ tree, plate, onPlate, slicers, slicer, onError }: P
               }
             }}
           >
+            {sending && <Spinner size={13} decorative />}
             {sending ? `Opening ${activeSlicer.name}…` : `Send to ${activeSlicer.name}`}
           </button>
         )}

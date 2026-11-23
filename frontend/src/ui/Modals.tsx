@@ -1,6 +1,7 @@
 // The File menu's dialogs: a name, unsaved changes, opening a design, and saved versions. Never browser alerts.
 import { useEffect, useState } from 'react'
 import { api, type CreationMode, type DesignInfo, type Version } from '../api'
+import { Spinner } from './Spinner'
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   useEffect(() => {
@@ -73,7 +74,7 @@ export function OpenModal({ current, busySlug, onOpen, onDelete, onClose }: { cu
   return (
     <Modal title="Open design" onClose={onClose} wide>
       <div className="dbody">
-        {busySlug && <p className="note">Opening design…</p>}
+        {busySlug && <p className="note spin-row" role="status"><Spinner size={14} decorative /> Opening design…</p>}
         <DesignGrid list={list} current={current} busySlug={busySlug} onOpen={onOpen} onDelete={onDelete} />
       </div>
     </Modal>
@@ -81,7 +82,7 @@ export function OpenModal({ current, busySlug, onOpen, onDelete, onClose }: { cu
 }
 
 export function DesignGrid({ list, current, busySlug, onOpen, onDelete }: { list: DesignInfo[] | null; current: string | null; busySlug?: string | null; onOpen: (slug: string) => void; onDelete?: (d: DesignInfo) => void }) {
-  if (!list) return <p className="note">Loading…</p>
+  if (!list) return <p className="note spin-row" role="status"><Spinner size={15} label="Loading designs" /> Loading designs…</p>
   if (!list.length) return <p className="note">No designs yet.</p>
   return (
     <ul className="grid">
@@ -89,7 +90,10 @@ export function DesignGrid({ list, current, busySlug, onOpen, onDelete }: { list
         <li key={d.slug} className={d.slug === current ? 'cur' : ''}>
           <button type="button" className="card" onClick={() => onOpen(d.slug)} disabled={d.slug === current || Boolean(busySlug)}>
             {d.thumbnail ? <img src={api.thumbnailUrl(d.slug, d.modified)} alt="" /> : <span className="noimg">no picture until saved</span>}
-            <b>{d.slug === busySlug ? `${d.name} (Opening…)` : d.name}</b>
+            <b className={d.slug === busySlug ? 'spin-row' : undefined}>
+              {d.slug === busySlug && <Spinner size={13} decorative />}
+              {d.slug === busySlug ? `${d.name} (Opening…)` : d.name}
+            </b>
             <span className="nm">{new Date(d.modified * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{d.recovery ? ' · unsaved changes kept' : ''}</span>
           </button>
           {onDelete && d.slug !== current && <button type="button" className="link danger" disabled={Boolean(busySlug)} onClick={() => onDelete(d)}>Move to Trash</button>}
@@ -109,21 +113,43 @@ export function ConfirmModal({ title, text, ok, onOk, onClose }: { title: string
   )
 }
 
-export function HistoryModal({ onRestore, onClose }: { onRestore: (v: Version) => void; onClose: () => void }) {
+export function HistoryModal({ onRestore, onClose }: { onRestore: (v: Version) => Promise<void> | void; onClose: () => void }) {
   const [list, setList] = useState<Version[] | null>(null)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
   useEffect(() => { api.history().then(setList).catch(() => setList([])) }, [])
+  const handleRestore = async (v: Version) => {
+    if (restoringId) return
+    setRestoringId(v.id)
+    try {
+      await onRestore(v)
+    } finally {
+      setRestoringId(null)
+    }
+  }
   return (
-    <Modal title="Saved versions" onClose={onClose}>
+    <Modal title="Saved versions" onClose={() => { if (!restoringId) onClose() }}>
       <div className="dbody">
         <p className="note">Restoring a version loads it as unsaved changes: look it over, then save (or undo to go back).</p>
-        <ul className="versions">
-          {(list ?? []).map((v) => (
-            <li key={v.id}>
-              <div><b>{v.message}</b><div className="nm">{new Date(v.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · {v.id}</div></div>
-              <button className="btn sm" onClick={() => onRestore(v)}>Restore</button>
-            </li>
-          ))}
-        </ul>
+        {!list ? (
+          <p className="note spin-row" role="status"><Spinner size={15} label="Loading saved versions" /> Loading saved versions…</p>
+        ) : !list.length ? (
+          <p className="note">No saved versions yet.</p>
+        ) : (
+          <ul className="versions">
+            {list.map((v) => {
+              const busy = restoringId === v.id
+              return (
+                <li key={v.id}>
+                  <div><b>{v.message}</b><div className="nm">{new Date(v.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} · {v.id}</div></div>
+                  <button className="btn sm" disabled={Boolean(restoringId)} onClick={() => handleRestore(v)}>
+                    {busy && <Spinner size={12} decorative />}
+                    {busy ? 'Restoring…' : 'Restore'}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </div>
     </Modal>
   )
@@ -161,7 +187,10 @@ export function ExportModal({ why, onUpdate, onExport, onMore, onClose }: {
         {why === 'Update the model first'
           ? <button className="btn primary" onClick={onUpdate}>Update</button>
           : <button className="btn primary" autoFocus disabled={!!why || busy}
-              onClick={() => { setBusy(true); onExport(fmt).finally(() => setBusy(false)) }}>{busy ? 'Exporting…' : 'Export'}</button>}
+              onClick={() => { setBusy(true); onExport(fmt).finally(() => setBusy(false)) }}>
+              {busy && <Spinner size={13} decorative />}
+              {busy ? 'Exporting…' : 'Export'}
+            </button>}
       </div>
     </Modal>
   )

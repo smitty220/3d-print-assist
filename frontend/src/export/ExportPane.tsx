@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Checks, Colorway, Op, Printer, SlicerInfo, Tree, Variant } from '../api'
 import { api } from '../api'
 import { Icon } from '../ui/icons'
+import { Spinner } from '../ui/Spinner'
 
 interface Props {
   tree: Tree
@@ -226,6 +227,7 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, slicers
               : activeSlicer?.installed ? `Export 3MF and open in ${activeSlicer.name}` : `${activeSlicer?.name ?? 'Slicer'} not found in /Applications`}
             onClick={() => activeSlicer && (setSendMenu(false), sendOrDownload(activeSlicer))}
           >
+            {sending && <Spinner size={13} decorative />}
             {sending ? `Opening ${sending}…` : anySlicerInstalled ? `Send to ${activeSlicer?.name ?? 'Slicer'}` : `Download 3MF (${activeSlicer?.name ?? 'Slicer'})`}
           </button>
           <button
@@ -268,6 +270,7 @@ export function ExportPane({ tree, checks, printers, printer, onPrinter, slicers
           </select>
           <button className="btn primary" disabled={busy || tree.stale} onClick={batch}
             title={tree.stale ? 'Update the model first' : 'Every variant in every colorway, in one zip'}>
+            {busy && <Spinner size={13} decorative />}
             {busy ? 'Building…' : `Export all ${count} (zip)`}
           </button>
         </div>
