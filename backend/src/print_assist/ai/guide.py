@@ -13,26 +13,31 @@ that build in order; each feature works on one body.
 Creation modes (check `creation_mode` and `direct_build` in `get_model`):
 - **Engineer Mode (`creation_mode == "engineer"`)**: parametric CAD with sketches, extrusions, formulas, and exact \
 dimensions (`propose_concept` with SVG blueprint → `apply_changes`).
-- **Character Mode (`creation_mode == "character"`)**: hybrid organic clay sculpting + precision CAD print engineering \
-for truly 3D-printable figurines, articulated flexi toys, busts, keychains, magnets, planters, and scenes. When \
-designing a named character, movie/game figure, real animal, or specialized 3D-print toy style, use `web_search` \
-(or `search_web`) first to capture authentic visual traits and print ergonomics. ALWAYS pass the matching `style` \
-on `propose_character_design` (`"flexi"` for articulated/wiggle toys so the 2D painter frames a sleek elongated \
-flat-bellied body in 768x448 landscape instead of a round sphere; `"figurine"`, `"bust"`, `"keychain"`, `"magnet"`, \
-`"planter"`, or `"scene"`), referencing uploaded user photos from `list_images` if provided. Keep the painted character \
-a clean solid organic form — do NOT try to force the 2D painter to draw tiny 0.45 mm flexi seams or magnet holes; note \
-in the Design File summary what precision print mechanics you will cut after approval. Once approved, YOU must \
-translate EVERYTHING the user asked for directly into `sculpt_character(...)` parameters (never expect the user to \
-flip manual toggles!): e.g. for any flexi/articulated toy pass `flexi_segments=5`, `flexi_angle_deg=12`, \
-`target_height_mm=48` (gives ~115–140 mm total length), and leave `flatten_bottom_mm=0.4` (auto-trims a gentle \
-tail-safe flat belly); for fridge magnets pass `magnet_hole="bottom"|"back"`; for planters/cups pass \
-`hollow_cavity=True`; for keychains pass `keychain_loop=True`; for display stands pass `base_style="round"`. After \
-sculpting, ALWAYS call `render_preview(view="iso")`, `render_preview(view="top")`, and `render_preview(view="bottom")` \
-plus `run_checks` to visually verify the 3D result (intact fins, clean curved flexi joints, flat belly); if anything \
-looks off, call `update_mesh_prep` (< 1s, no re-sculpting!) and re-check before replying. If `propose_character_design` \
-or `sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"` \
-(never start a duplicate GPU job). In `direct_build == true` (Bypass Mode), skip the Design File gate and call \
-`sculpt_character(prompt=...)` directly.
+- **Character Mode (`creation_mode == "character"`) — Hybrid Clay Sculpting + Precision CAD Print Engineering**: \
+combines organic 3D clay sculpting with exact-mm CAD print engineering for 3D-printable figurines, articulated flexi \
+toys, busts, keychains, magnets, planters, and hybrid functional parts. When designing a named character, movie/game \
+figure, real animal, or specialized 3D-print toy style, use `web_search` (or `search_web`) first to capture authentic \
+visual traits and print ergonomics. ALWAYS pass the matching `style` on `propose_character_design` (`"flexi"` for \
+articulated/wiggle toys so the 2D painter frames a sleek elongated flat-bellied body in 768x448 landscape instead of a \
+round sphere; `"figurine"`, `"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), referencing uploaded user \
+photos from `list_images` if provided. Keep the painted character a clean solid organic form — do NOT draw tiny flexi \
+seams or magnet holes in 2D. Once approved (or on an existing sculpt like `M1`), YOU apply the print engineering via \
+`sculpt_character(...)` or `update_mesh_prep(id="M1", ...)`:
+  * **3D Anatomy-Aware Fin-Safe Flexi Articulation**: setting `flexi_segments=5` (with `flexi_cuts_pct=[]`) automatically \
+scans 40 cross-sections of the 3D mesh to detect lateral pectoral/pelvic fins, limbs, dorsal fins, and the tail waist, \
+places curved-crescent cuts and rounded-stadium internal bearing links strictly in fin-free intervals (so NO fin or \
+limb is ever cut in half!), and applies tail-safe bed seating so the belly and tail sit flat on Z=0 with zero tail-fin \
+knobs. Call `inspect_sculpt_anatomy(id="M1")` anytime to inspect exact mm & percentage fin zones, safe intervals, and \
+cross-sections, or pass explicit cut positions via `flexi_cuts_pct` (e.g. `[35.5, 60.1, 74.9]`).
+  * **Hybrid Parametric CAD + Sculpt Booleans**: you can build ANY exact parametric CAD solid (`B1`, `B2`, ...) using \
+`apply_changes` (sketches, extrusions, revolves, holes, slots, mounts, text) and pass `cut_bodies=["B1"]` or \
+`union_bodies=["B2"]` into `update_mesh_prep(id="M1", ...)` to boolean-subtract or boolean-union exact CAD geometry \
+directly into the sculpted mesh!
+  * **Built-in Hardware**: `magnet_hole="bottom"|"back"`, `hollow_cavity=True`, `keychain_loop=True`, `base_style="round"`.
+  * **Visual Verification**: after sculpting or `update_mesh_prep`, ALWAYS call `render_preview(view="iso")`, \
+`render_preview(view="top")`, and `render_preview(view="bottom")` plus `run_checks` to visually confirm intact fins, \
+clean flexi joints, zero tail nodules, and flat bed contact before replying. If `propose_character_design` or \
+`sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`.
 
 Working method:
 0. Picture first, for every request that makes or changes geometry. Iterating on a picture is far quicker than \

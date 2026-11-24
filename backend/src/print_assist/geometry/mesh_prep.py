@@ -279,50 +279,220 @@ def _clean_segment_slivers(seg: m3d.Manifold) -> m3d.Manifold:
     return m3d.Manifold.compose(kept) if len(kept) > 1 else kept[0]
 
 
-def _auto_flexi_orientation_and_start(work: m3d.Manifold, start_pct: float) -> tuple[bool, float]:
-    """Detect head vs tail end and avoid chopping lateral pectoral fins when start_pct is near default."""
+def _detect_head_flip(work: m3d.Manifold) -> bool:
+    """Compare cross-sectional bulk of front 35% vs rear 35%: keep the heavier head end at x0."""
     tm = _manifold_to_trimesh(work)
     verts = np.asarray(tm.vertices, dtype=np.float64)
     x0, x1 = float(verts[:, 0].min()), float(verts[:, 0].max())
     length = max(1e-6, x1 - x0)
-    # Compare cross-sectional bulk of front 35% vs rear 35%: keep the heavier head end at x0!
     front = verts[verts[:, 0] <= x0 + 0.35 * length]
     rear = verts[verts[:, 0] >= x1 - 0.35 * length]
     f_span = float(np.ptp(front[:, 1]) * np.ptp(front[:, 2])) if len(front) > 20 else 0.0
     r_span = float(np.ptp(rear[:, 1]) * np.ptp(rear[:, 2])) if len(rear) > 20 else 0.0
-    flip_180 = r_span > f_span * 1.18
+    return bool(r_span > f_span * 1.18)
 
-    xs = (x1 - verts[:, 0]) / length if flip_180 else (verts[:, 0] - x0) / length
-    # Sample width profile in 30 bins from head (0) to tail (1) to detect lateral pectoral fins
-    widths = []
-    for b in range(30):
-        t0, t1 = b / 30.0, (b + 1) / 30.0
-        sl = verts[(xs >= t0) & (xs < t1)]
-        widths.append(float(np.ptp(sl[:, 1])) if len(sl) > 5 else 0.0)
-    adj_start = start_pct
-    if abs(start_pct - 35.0) < 3.0 and max(widths) > 1.0:
-        # Look for widest lateral fin peak in [20%..52%] and nudge first cut cleanly behind it
-        fin_zone = widths[6:16]
-        peak_val = max(fin_zone) if fin_zone else 0.0
-        torso_med = float(np.median(widths[6:22])) or peak_val
-        if peak_val > torso_med * 1.18:
-            peak_idx = 6 + fin_zone.index(peak_val)
-            # Advance past the fin peak until width drops back near torso width (capped at 52%)
-            end_idx = peak_idx + 1
-            while end_idx < 16 and widths[end_idx] > torso_med * 1.12:
-                end_idx += 1
-            fin_end_pct = (end_idx / 30.0) * 100.0
-            adj_start = max(start_pct, min(52.0, fin_end_pct + 2.0))
-    return flip_180, adj_start
+
+def analyze_sculpt_anatomy(
+    work: m3d.Manifold,
+    n_cuts: int = 5,
+    s0_pct: float = 35.0,
+    s1_pct: float = 88.0,
+) -> dict:
+    """Analyze a canonical Z-up sculpt (head at x0, tail at x1) to locate fins, limbs, tail waist, and fin-safe cuts.
+
+    Slices the mesh into 40 cross-sections along X and measures:
+    - Lateral fin/limb protrusions (`w_max / w_median > 1.22` and `w_max > 0.50 * W`, e.g. pectoral fins, arms, legs)
+    - Vertical dorsal fin/crest protrusions (`dorsal_h > max(5.0, 0.14 * H)` above the core torso)
+    - Caudal peduncle (tail waist) before the tail fin flares upward/outward
+    Returns exact mm & percentage anatomy data plus recommended fin-safe cut positions `[(t_norm, force_flat), ...]`.
+    """
+    tm = _manifold_to_trimesh(work)
+    v = np.asarray(tm.vertices, dtype=np.float64)
+    x0, x1 = float(v[:, 0].min()), float(v[:, 0].max())
+    y0, y1 = float(v[:, 1].min()), float(v[:, 1].max())
+    z0_all, z1_all = float(v[:, 2].min()), float(v[:, 2].max())
+    length = max(1e-6, x1 - x0)
+    width_all = max(1e-6, y1 - y0)
+    height_all = max(1e-6, z1_all - z0_all)
+
+    n_bins = 40
+    edges = np.linspace(x0, x1, n_bins + 1)
+    t_centers = np.array([(i + 0.5) / n_bins for i in range(n_bins)], dtype=np.float64)
+    w_max = np.zeros(n_bins, dtype=np.float64)
+    w_upper = np.zeros(n_bins, dtype=np.float64)
+    w_top = np.zeros(n_bins, dtype=np.float64)
+    z_min = np.zeros(n_bins, dtype=np.float64)
+    z_max = np.zeros(n_bins, dtype=np.float64)
+
+    for i in range(n_bins):
+        sl = v[(v[:, 0] >= edges[i]) & (v[:, 0] <= edges[i + 1])]
+        if len(sl) < 6:
+            continue
+        w_max[i] = float(np.ptp(sl[:, 1]))
+        za, zb = float(sl[:, 2].min()), float(sl[:, 2].max())
+        z_min[i], z_max[i] = za, zb
+        hl = zb - za
+        if hl < 3.0:
+            w_upper[i] = w_max[i]
+            w_top[i] = w_max[i]
+            continue
+        up = sl[(sl[:, 2] >= za + 0.45 * hl) & (sl[:, 2] <= za + 0.76 * hl)]
+        w_upper[i] = float(np.ptp(up[:, 1])) if len(up) >= 3 else w_max[i]
+        tp = sl[sl[:, 2] >= za + 0.80 * hl]
+        w_top[i] = float(np.ptp(tp[:, 1])) if len(tp) >= 3 else w_upper[i]
+
+    h_loc = z_max - z_min
+    lat_ratio = np.divide(w_max, np.maximum(1.0, w_upper))
+    top_ratio = np.divide(w_top, np.maximum(1.0, w_upper))
+
+    # 1. Detect tail waist if a caudal fin flares upward/outward at the rear (68%..88%)
+    eff_s1 = min(0.92, s1_pct / 100.0)
+    waist_bins = np.where((t_centers >= 0.68) & (t_centers <= 0.88))[0]
+    has_tail_flare = False
+    tail_waist_pct: float | None = None
+    if len(waist_bins) >= 3:
+        areas = w_max[waist_bins] * np.maximum(1.0, h_loc[waist_bins])
+        w_idx = int(waist_bins[np.argmin(areas)])
+        after = np.where(t_centers > t_centers[w_idx])[0]
+        if len(after) and (
+            float(h_loc[after].max()) > float(h_loc[w_idx]) * 1.10
+            or float(w_max[after].max()) > float(w_max[w_idx]) * 1.15
+        ):
+            has_tail_flare = True
+            tail_waist_pct = round(float(t_centers[w_idx] * 100.0), 1)
+            eff_s1 = min(eff_s1, float(t_centers[w_idx]) - 0.03)
+            # Also pull back in front of any pelvic/adipose fin bump right before the tail waist
+            pelvic = np.where((t_centers >= 0.72) & (t_centers <= eff_s1 + 0.04) & ((lat_ratio > 1.25) | (top_ratio < 0.45)))[0]
+            if len(pelvic):
+                eff_s1 = min(eff_s1, float(t_centers[pelvic[0]]) - 0.045)
+
+    # 2. Detect major protected fin/limb zones in [20%..70%]
+    is_lat_fin = (lat_ratio > 1.24) & (w_max > 0.50 * width_all) & (t_centers >= 0.20) & (t_centers <= 0.70)
+    is_dorsal_fin = (top_ratio < 0.45) & (h_loc > 0.78 * height_all) & (t_centers >= 0.20) & (t_centers <= 0.70)
+    is_protected = is_lat_fin | is_dorsal_fin
+
+    dt = 1.0 / n_bins
+    protected_zones: list[dict] = []
+    p_run = False
+    p_start = 0
+    for i, p_flag in enumerate(is_protected):
+        if p_flag and not p_run:
+            p_run = True
+            p_start = i
+        elif not p_flag and p_run:
+            p_run = False
+            has_lat = bool(np.any(is_lat_fin[p_start:i]))
+            has_dor = bool(np.any(is_dorsal_fin[p_start:i]))
+            kind = "pectoral+dorsal_fins" if (has_lat and has_dor) else ("pectoral_fins_or_limbs" if has_lat else "dorsal_fin")
+            protected_zones.append({
+                "kind": kind,
+                "start_pct": round(float((t_centers[p_start] - 0.5 * dt) * 100.0), 1),
+                "end_pct": round(float((t_centers[i - 1] + 0.5 * dt) * 100.0), 1),
+            })
+    if p_run:
+        protected_zones.append({
+            "kind": "fin_or_limb",
+            "start_pct": round(float((t_centers[p_start] - 0.5 * dt) * 100.0), 1),
+            "end_pct": round(float((t_centers[n_bins - 1] + 0.5 * dt) * 100.0), 1),
+        })
+
+    # If no protected fin zones and no tail flare (e.g. uniform ellipsoid/worm), use standard spacing in [s0..s1]
+    target_n = max(1, int(n_cuts))
+    if not np.any(is_protected) and not has_tail_flare:
+        s0 = _clamp(s0_pct / 100.0, 0.14, 0.72)
+        s1 = _clamp(s1_pct / 100.0, s0 + 0.12, 0.94)
+        chosen_t = [(s0 + (s1 - s0) * ((i + 0.5) / target_n), False) for i in range(target_n)]
+        safe_intervals = [(s0, s1)]
+    else:
+        min_t = min(0.33, _clamp(s0_pct / 100.0, 0.14, 0.72))
+        safe_mask = (~is_protected) & (t_centers >= min_t) & (t_centers <= eff_s1) & (w_max >= 8.0)
+        safe_intervals = []
+        in_run = False
+        run_start = 0.0
+        for i, ok in enumerate(safe_mask):
+            if ok and not in_run:
+                in_run = True
+                run_start = float(t_centers[i] - 0.2 * dt)
+            elif not ok and in_run:
+                in_run = False
+                safe_intervals.append((run_start, float(t_centers[i - 1] + 0.2 * dt)))
+        if in_run:
+            safe_intervals.append((run_start, min(eff_s1, float(t_centers[np.where(safe_mask)[0][-1]] + 0.2 * dt))))
+
+        min_pitch = 9.0 / length
+        iv_caps = []
+        for iv_a, iv_b in safe_intervals:
+            span_t = max(0.0, iv_b - iv_a)
+            if span_t < 0.010:
+                iv_caps.append(0)
+            elif span_t < min_pitch * 1.15:
+                iv_caps.append(1)
+            else:
+                iv_caps.append(max(1, int(round(span_t / min_pitch))))
+
+        # If the main rear tail interval already fits >= 3 joints, skip narrow (< 4%) mid-fin cracks
+        if len(iv_caps) >= 2 and iv_caps[-1] >= 3:
+            for idx_iv in range(len(iv_caps) - 1):
+                if (safe_intervals[idx_iv][1] - safe_intervals[idx_iv][0]) < 0.04:
+                    iv_caps[idx_iv] = 0
+
+        chosen_t = []
+        total_cap = sum(iv_caps)
+        for (iv_a, iv_b), cap in zip(safe_intervals, iv_caps):
+            if cap <= 0:
+                continue
+            k_iv = min(cap, max(1, int(round(target_n * (cap / max(1, total_cap))))))
+            fin_behind = any(is_protected[k] for k in range(n_bins) if iv_b - 0.01 <= t_centers[k] <= iv_b + 0.10)
+            eff_b = (iv_b - 0.02) if (fin_behind and iv_b - iv_a > 0.02) else iv_b
+            if k_iv == 1:
+                pt_single = min(0.5 * (iv_a + eff_b), eff_b - 0.01) if fin_behind else 0.5 * (iv_a + eff_b)
+                chosen_t.append((pt_single, fin_behind))
+            else:
+                pad = min(0.018, (eff_b - iv_a) * 0.12)
+                pts = np.linspace(iv_a + pad, eff_b - pad, k_iv).tolist()
+                for idx_p, pt in enumerate(pts):
+                    chosen_t.append((pt, fin_behind and idx_p == len(pts) - 1))
+
+        if len(chosen_t) > target_n:
+            idxs = np.round(np.linspace(0, len(chosen_t) - 1, target_n)).astype(int)
+            chosen_t = [chosen_t[k] for k in idxs]
+
+        # Fallback if no safe intervals were wide enough
+        if not chosen_t:
+            s0 = _clamp(s0_pct / 100.0, 0.14, 0.72)
+            s1 = _clamp(eff_s1, s0 + 0.10, 0.90)
+            chosen_t = [(s0 + (s1 - s0) * ((i + 0.5) / target_n), False) for i in range(target_n)]
+
+    profile_10pct = []
+    for k in range(0, n_bins, 4):
+        pct = round(float(t_centers[k] * 100.0), 1)
+        profile_10pct.append({
+            "pct": pct,
+            "x_mm": round(float(x0 + length * t_centers[k]), 1),
+            "width_mm": round(float(w_max[k]), 1),
+            "height_mm": round(float(h_loc[k]), 1),
+            "z_min_mm": round(float(z_min[k]), 1),
+            "protected_fin": bool(is_protected[k]),
+        })
+
+    return {
+        "bbox_min_mm": [round(x0, 2), round(y0, 2), round(z0_all, 2)],
+        "bbox_max_mm": [round(x1, 2), round(y1, 2), round(z1_all, 2)],
+        "dimensions_mm": [round(length, 2), round(width_all, 2), round(height_all, 2)],
+        "protected_fin_zones": protected_zones,
+        "tail_waist_pct": tail_waist_pct,
+        "safe_cut_intervals_pct": [[round(a * 100.0, 1), round(b * 100.0, 1)] for a, b in safe_intervals],
+        "recommended_cuts_pct": [round(t * 100.0, 1) for t, _ in chosen_t],
+        "solved_cuts": chosen_t,
+        "profile": profile_10pct,
+    }
 
 
 def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
     """Smoothly lower an arched floating torso/tail onto Z=0 via a volume-preserving vertical shear.
 
-    Real swimming sharks, whales, dolphins, and arched-tail creatures taper upward behind the chest so their
-    rear segments float 5-15 mm off the build plate. A pure vertical shear `z' = z - drop(x)` has Jacobian
-    determinant +1 everywhere (100% watertight & volume-preserving) and seats every flexing segment flat on
-    Z=0 for support-free print-in-place printing while leaving the head, fins, and tail tip untouched.
+    Ramps smoothly up behind the snout (`22%..34%`) and ramps smoothly back down to `0.0` before the tail fin
+    (`73%..82%`) so the overhanging upper tail fin tip is NEVER pulled downward into a hook or nodule.
     """
     bb = mf.bounding_box()
     sx = float(bb[3] - bb[0])
@@ -333,7 +503,7 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
     rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
     work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
     work = _place_on_bed(work)
-    flip_180, _ = _auto_flexi_orientation_and_start(work, float(prep.flexi_start_pct))
+    flip_180 = _detect_head_flip(work)
     if flip_180:
         work = _place_on_bed(work.rotate((0.0, 0.0, 180.0)))
 
@@ -356,22 +526,30 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
         return mf, []
     z_mins = np.interp(np.arange(n_bins), np.nonzero(valid)[0], z_mins[valid])
 
-    # Only seat if the rear torso/tail zone (30%..85%) actually floats above the build plate
     t_norm = (centers - x0) / length
-    rear_zone = (t_norm >= 0.30) & (t_norm <= 0.85)
+    rear_zone = (t_norm >= 0.30) & (t_norm <= 0.80)
     if float(z_mins[rear_zone].max()) < 2.2:
         return mf, []
 
-    # Smoothstep ramp from 0 at snout (0..22%) to 1 across torso/tail (>= 34%)
-    ramp = np.clip((t_norm - 0.22) / 0.12, 0.0, 1.0)
-    ramp = ramp * ramp * (3.0 - 2.0 * ramp)
-    raw_drop = np.minimum(z_mins, h_all * 0.35) * ramp
+    # Clamp z_for_drop past the tail fin's lowest point so overhanging upper tail fin tips never get pulled down!
+    tail_region = np.where((t_norm >= 0.72) & (t_norm <= 0.96))[0]
+    tail_low_idx = int(tail_region[np.argmin(z_mins[tail_region])]) if len(tail_region) else (n_bins - 1)
+    z_for_drop = z_mins.copy()
+    for i in range(tail_low_idx, n_bins):
+        z_for_drop[i] = min(z_for_drop[i], z_mins[tail_low_idx])
+
+    # Smoothstep ramp up behind snout (22%..34%) and back to 0 across the tail waist (73%..82%)
+    ramp_front = np.clip((t_norm - 0.22) / 0.12, 0.0, 1.0)
+    ramp_front = ramp_front * ramp_front * (3.0 - 2.0 * ramp_front)
+    ramp_back = np.clip((0.82 - t_norm) / 0.09, 0.0, 1.0)
+    ramp_back = ramp_back * ramp_back * (3.0 - 2.0 * ramp_back)
+    raw_drop = np.minimum(z_for_drop, h_all * 0.35) * ramp_front * ramp_back
+
     kernel = np.array([0.06, 0.24, 0.40, 0.24, 0.06], dtype=np.float64)
     drop_smooth = raw_drop.copy()
     for _ in range(3):
         drop_smooth = np.convolve(np.pad(drop_smooth, 2, mode="edge"), kernel, mode="valid")
-    # Never shear below actual local z_min (preserves lower tail lobe contact with Z=0)
-    drop_safe = np.minimum(drop_smooth, z_mins)
+    drop_safe = np.minimum(drop_smooth, z_for_drop) * (t_norm <= 0.83)
     drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.2, 0.6, 0.2]), mode="valid")
     if float(drop_safe.max()) < 1.2:
         return mf, []
@@ -385,18 +563,20 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
         seated = seated.rotate((0.0, 0.0, 180.0))
     if rotated_for_y:
         seated = seated.rotate((0.0, 0.0, 90.0))
-    return _place_on_bed(seated), ["seated arched tail smoothly onto print bed for support-free flexi printing"]
+    return _place_on_bed(seated), ["seated arched tail smoothly onto print bed (tail-fin protected)"]
 
 
 def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
-    """Slice a solid sculpted character into N+1 sleek, curved-crescent print-in-place flexi segments.
+    """Slice a solid sculpted character into N+1 fin-safe, curved-crescent print-in-place flexi segments.
 
-    Uses smooth rib-curved crescent cuts (instead of flat bread-knife slabs) and compact rounded-stadium
-    internal chain links rotating around horizontal cylindrical pins with guaranteed `prep.flexi_clearance_mm`
-    air gaps in X, Y, and Z so segments print flat on Z=0, never fuse, preserve lateral fins, and wiggle smoothly.
+    Uses 3D cross-sectional anatomy analysis (or explicit `prep.flexi_cuts_pct`) to place cuts strictly
+    in fin-free intervals (never chopping pectoral fins, dorsal fins, limbs, or tail fins) and builds
+    compact rounded-stadium internal chain links rotating around horizontal cylindrical pins with guaranteed
+    `prep.flexi_clearance_mm` air gaps in X, Y, and Z.
     """
     n_cuts = int(prep.flexi_segments)
-    if n_cuts <= 0:
+    explicit_pcts = [float(p) for p in (prep.flexi_cuts_pct or []) if 10.0 <= float(p) <= 92.0]
+    if n_cuts <= 0 and not explicit_pcts:
         return mf, []
     notes: list[str] = []
     bb = mf.bounding_box()
@@ -406,7 +586,7 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
     work = _place_on_bed(work)
 
-    flip_180, eff_start_pct = _auto_flexi_orientation_and_start(work, float(prep.flexi_start_pct))
+    flip_180 = _detect_head_flip(work)
     if flip_180:
         work = _place_on_bed(work.rotate((0.0, 0.0, 180.0)))
 
@@ -421,9 +601,15 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
 
     c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.80)
     gap = max(0.95, 2.1 * c)
-    s0 = _clamp(eff_start_pct / 100.0, 0.14, 0.72)
-    s1 = _clamp(float(prep.flexi_end_pct) / 100.0, s0 + 0.12, 0.94)
-    cuts = [x0 + length * (s0 + (s1 - s0) * ((i + 0.5) / n_cuts)) for i in range(n_cuts)]
+    if explicit_pcts:
+        sorted_pcts = sorted(explicit_pcts)
+        solved_cuts = [(p / 100.0, False) for p in sorted_pcts]
+    else:
+        anat = analyze_sculpt_anatomy(work, n_cuts=max(1, n_cuts), s0_pct=float(prep.flexi_start_pct), s1_pct=float(prep.flexi_end_pct))
+        solved_cuts = anat["solved_cuts"]
+
+    cuts = [x0 + length * t_val for t_val, _ in solved_cuts]
+    force_flat = [bool(fl) for _, fl in solved_cuts]
     bounds = [x0 - 5.0, *cuts, x1 + 5.0]
     pad_y = width_all + 40.0
     pad_z = height_all + 40.0
@@ -469,8 +655,8 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         min_front = (active_cuts[-1] + gap / 2.0 + 1.2) if active_cuts else (x0 + 1.0)
         if cavity_front_x <= min_front:
             continue
-        # Gentle organic rearward crescent curve guaranteed never to cross adjacent cuts
-        curve = min(w_loc * 0.14, seg_pitch * 0.20, 4.8)
+        # Keep cut straight (curve=0) right in front of lateral pectoral fins so flanks never sweep back into fins!
+        curve = 0.0 if force_flat[i] else min(w_loc * 0.14, seg_pitch * 0.20, 4.8)
         max_half_gap = max(gap / 2.0, seg_pitch * 0.26)
         active_cuts.append(u)
         joint_specs.append({
@@ -574,8 +760,44 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     if rotated_for_y:
         composed = composed.rotate((0.0, 0.0, 90.0))
     composed = _place_on_bed(composed)
-    notes.append(f"sliced {len(active_cuts)} curved print-in-place flexi joints ({len(non_empty)} segments, {c:.2f} mm clearance)")
+    cut_pct_strs = [f"{((u - x0) / length) * 100.0:.1f}%" for u in active_cuts]
+    notes.append(
+        f"sliced {len(active_cuts)} fin-safe print-in-place flexi joints at [{', '.join(cut_pct_strs)}] "
+        f"({len(non_empty)} segments, {c:.2f} mm clearance)"
+    )
     return composed, notes
+
+
+def inspect_sculpt_anatomy_file(raw_path: Path, prep: SculptPrep) -> dict:
+    """Load, orient, and scale a raw sculpt according to `prep` and return its 3D anatomical profile."""
+    raw = load_raw_mesh(raw_path)
+    mf, _ = repair_to_manifold(raw)
+    if prep.rotate_x or prep.rotate_y or prep.rotate_z:
+        mf = mf.rotate((float(prep.rotate_x), float(prep.rotate_y), float(prep.rotate_z)))
+    bb = mf.bounding_box()
+    cur_h = float(bb[5] - bb[2])
+    if prep.target_height_mm > 0 and cur_h > 1e-6:
+        s = float(prep.target_height_mm) / cur_h
+        mf = mf.scale((s, s, s))
+    mf = _place_on_bed(mf)
+    bb = mf.bounding_box()
+    sx = float(bb[3] - bb[0])
+    sy = float(bb[4] - bb[1])
+    rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
+    work = _place_on_bed(mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf)
+    flip_180 = _detect_head_flip(work)
+    if flip_180:
+        work = _place_on_bed(work.rotate((0.0, 0.0, 180.0)))
+    anat = analyze_sculpt_anatomy(
+        work,
+        n_cuts=max(1, int(prep.flexi_segments) or 5),
+        s0_pct=float(prep.flexi_start_pct),
+        s1_pct=float(prep.flexi_end_pct),
+    )
+    anat.pop("solved_cuts", None)
+    anat["spine_axis"] = "Y" if rotated_for_y else "X"
+    anat["head_flipped_180"] = flip_180
+    return anat
 
 
 def _apply_magnet_hole(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
@@ -626,9 +848,16 @@ def _apply_hollow_cavity(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifo
     return cut, [f"hollowed top cavity ({wall:.1f} mm wall)"]
 
 
-def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
-                       color: str | None = "#b8c2cc", filament: int | None = None) -> PreparedSculpt:
-    """Load, repair, orient, scale, flatten bottom, and apply optional base/keychain finishing."""
+def prepare_print_mesh(
+    raw_path: Path,
+    prep: SculptPrep,
+    name: str = "Sculpt",
+    color: str | None = "#b8c2cc",
+    filament: int | None = None,
+    cad_cuts: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    cad_unions: list[tuple[np.ndarray, np.ndarray]] | None = None,
+) -> PreparedSculpt:
+    """Load, repair, orient, scale, flatten bottom, apply hybrid CAD booleans, and cut flexi/hardware finishing."""
     raw = load_raw_mesh(raw_path)
     mf, notes = repair_to_manifold(raw)
 
@@ -642,10 +871,11 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
         mf = mf.scale((s, s, s))
 
     mf = _place_on_bed(mf)
+    has_flexi = int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)
 
     # For print-in-place flexi models, smoothly seat any floating arched tail onto Z=0 BEFORE belly flattening
     # so every flexing segment gets uniform flat bed adhesion with zero supports.
-    if prep.flexi_segments > 0:
+    if has_flexi:
         mf, seat_notes = _seat_flexi_on_bed(mf, prep)
         notes.extend(seat_notes)
 
@@ -653,7 +883,7 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
     # For print-in-place flexi models, automatically trim gently (~5% of height, capped at 3.5 mm) so every
     # flexing segment rests flat on the print bed without lopping off lower tail fin tips.
     eff_flat = float(prep.flatten_bottom_mm)
-    if prep.flexi_segments > 0 and eff_flat < 1.5:
+    if has_flexi and eff_flat < 1.5:
         bb_cur = mf.bounding_box()
         h_cur = float(bb_cur[5] - bb_cur[2])
         eff_flat = max(eff_flat, min(3.5, h_cur * 0.05))
@@ -673,7 +903,7 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
                 notes.append(f"flattened bottom by {cut:.2f} mm")
 
     # Optional display base / plinth (skip if flexi articulation is enabled so joints remain free on bed)
-    if prep.base_style != "none" and prep.flexi_segments == 0:
+    if prep.base_style != "none" and not has_flexi:
         bb = mf.bounding_box()
         sx = float(bb[3] - bb[0])
         sy = float(bb[4] - bb[1])
@@ -694,6 +924,22 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
         mf = _place_on_bed(mf + loop)
         notes.append(f"added keychain loop (Ø{prep.keychain_hole_mm:.1f} mm hole)")
 
+    # Hybrid CAD + Clay boolean operations (union or subtract parametric OpenCascade CAD bodies into the sculpt)
+    for u_pts, u_tris in (cad_unions or ()):
+        if len(u_pts) and len(u_tris):
+            u_mf, _ = repair_to_manifold(trimesh.Trimesh(vertices=u_pts, faces=u_tris, process=False))
+            unioned = mf + u_mf
+            if not unioned.is_empty() and unioned.status() == m3d.Error.NoError:
+                mf = unioned
+                notes.append("unioned parametric CAD body")
+    for c_pts, c_tris in (cad_cuts or ()):
+        if len(c_pts) and len(c_tris):
+            c_mf, _ = repair_to_manifold(trimesh.Trimesh(vertices=c_pts, faces=c_tris, process=False))
+            carved = mf - c_mf
+            if not carved.is_empty() and carved.status() == m3d.Error.NoError:
+                mf = carved
+                notes.append("subtracted parametric CAD body")
+
     # Optional functional hardware cutouts (magnet pocket, hollowed planter/cup cavity)
     if prep.magnet_hole != "none":
         mf, m_notes = _apply_magnet_hole(mf, prep)
@@ -703,7 +949,7 @@ def prepare_print_mesh(raw_path: Path, prep: SculptPrep, name: str = "Sculpt",
         notes.extend(h_notes)
 
     # Optional print-in-place flexi articulation (precision CAD hinge cuts through sculpted character)
-    if prep.flexi_segments > 0:
+    if has_flexi:
         mf, f_notes = _apply_flexi_articulation(mf, prep)
         notes.extend(f_notes)
 

@@ -356,7 +356,71 @@ def test_web_search_mcp_tool_and_agy_allowance():
     names = [t["name"] for t in tools]
     assert "web_search" in names
     assert "fetch_url" in names
+    assert "inspect_sculpt_anatomy" in names
     assert len(names) == len(set(names))  # no duplicates
     assert "search_web" in chat_module._AGY_SYSTEM_PREAMBLE
     assert "web_search" in chat_module._AGY_SYSTEM_PREAMBLE
+    assert "read_file" in chat_module._AGY_SYSTEM_PREAMBLE
     assert "search_web" in chat_module._AGY_TURN_REMINDER
+    assert "read_file" in chat_module._AGY_TURN_REMINDER
+
+
+def test_anatomy_safe_flexi_solver_and_hybrid_cad_booleans(tmp_path: Path):
+    import manifold3d as m3d
+    import numpy as np
+
+    # 1. Build a finned shark mesh with pectoral fins + dorsal fin at 40%..55% and a forked tail fin at 85%..100%
+    body = m3d.Manifold.sphere(1.0, 36).scale((55.0, 18.0, 18.0)).translate((0.0, 0.0, 18.0))
+    pect_l = m3d.Manifold.sphere(1.0, 24).scale((8.0, 18.0, 3.0)).translate((-5.0, 18.0, 8.0))
+    pect_r = m3d.Manifold.sphere(1.0, 24).scale((8.0, 18.0, 3.0)).translate((-5.0, -18.0, 8.0))
+    dorsal = m3d.Manifold.sphere(1.0, 24).scale((8.0, 3.0, 15.0)).translate((-5.0, 0.0, 35.0))
+    tail_fin = m3d.Manifold.sphere(1.0, 24).scale((7.0, 2.5, 18.0)).translate((52.0, 0.0, 22.0))
+    shark = body + pect_l + pect_r + dorsal + tail_fin
+    sm = shark.to_mesh()
+    raw_path = tmp_path / "finned_shark.stl"
+    trimesh.Trimesh(vertices=sm.vert_properties[:, :3], faces=sm.tri_verts, process=False).export(str(raw_path))
+
+    # Auto anatomy solver detects the pectoral+dorsal fin zone and avoids cutting inside it
+    from print_assist.geometry.mesh_prep import inspect_sculpt_anatomy_file
+
+    anat = inspect_sculpt_anatomy_file(raw_path, SculptPrep(target_height_mm=60.0, flexi_segments=4))
+    assert len(anat["protected_fin_zones"]) >= 1
+    for z in anat["protected_fin_zones"]:
+        for cut_p in anat["recommended_cuts_pct"]:
+            assert not (z["start_pct"] + 1.0 < cut_p < z["end_pct"] - 1.0)
+
+    # Explicit flexi_cuts_pct and hybrid CAD boolean cut_bodies via API
+    app_module.reset(tmp_path)
+    c = TestClient(app_module.app)
+    c.post("/api/projects", json={"name": "Hybrid Shark", "creation_mode": "character"})
+    up = c.post(
+        "/api/sculpts/upload",
+        params={"name": "Bruce", "target_height_mm": 60.0},
+        files={"file": ("shark.stl", raw_path.read_bytes(), "model/stl")},
+    ).json()
+    assert up["sculpt"]["id"] == "M1"
+    vol_before = up["sculpt"]["volume_mm3"]
+
+    # Inspect anatomy via API endpoint
+    anat_api = c.get("/api/sculpts/M1/anatomy").json()
+    assert anat_api["id"] == "M1" and len(anat_api["recommended_cuts_pct"]) >= 2
+
+    # Build a parametric CAD cutter box in B1 via apply_changes, then subtract it from M1 via cut_bodies=["B1"]
+    ops_res = c.post("/api/ops", json={"message": "cutter slot", "ops": [
+        {"op": "add_sketch", "name": "Slot", "placement": {"kind": "plane", "plane": "XY", "offset": 0},
+         "entities": [
+             {"id": "p1", "kind": "point", "x": -8, "y": -6}, {"id": "p2", "kind": "point", "x": 8, "y": -6},
+             {"id": "p3", "kind": "point", "x": 8, "y": 6}, {"id": "p4", "kind": "point", "x": -8, "y": 6},
+             {"id": "l1", "kind": "line", "p1": "p1", "p2": "p2"}, {"id": "l2", "kind": "line", "p1": "p2", "p2": "p3"},
+             {"id": "l3", "kind": "line", "p1": "p3", "p2": "p4"}, {"id": "l4", "kind": "line", "p1": "p4", "p2": "p1"},
+         ], "constraints": []},
+        {"op": "add_feature", "kind": "extrude", "refs": {"sketch": "S1"}, "params": {"distance": 25}, "body": "B1"},
+    ]})
+    assert ops_res.status_code == 200
+
+    prep_res = c.post("/api/sculpts/M1/prep", json={"cut_bodies": ["B1"], "flexi_segments": 3}).json()
+    assert prep_res["sculpt"]["watertight"] is True
+    assert prep_res["sculpt"]["volume_mm3"] < vol_before - 100.0
+    # Consumed tool body B1 is merged into M1 and hidden from standalone viewport bodies
+    part = c.get("/api/part").json()
+    assert [b["id"] for b in part["bodies"]] == ["M1"]

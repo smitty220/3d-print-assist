@@ -67,6 +67,7 @@ const TOOL_LABELS: Record<string, string> = {
   propose_character_design: 'creating character design',
   sculpt_character: 'molding 3D clay',
   wait_for_character_job: 'waiting for local GPU',
+  inspect_sculpt_anatomy: 'analyzing 3D mesh anatomy',
   update_mesh_prep: 'updating print mechanics',
   set_creation_mode: 'switching mode',
   list_concepts: 'checking designs',

@@ -308,27 +308,88 @@ class Workspace:
 
     # ---------- Character Mode sculpts ----------
 
+    def _consumed_cad_bodies(self) -> set[str]:
+        return {
+            bid
+            for sm in self.design.sculpts
+            for bid in (*(sm.prep.cut_bodies or []), *(sm.prep.union_bodies or []))
+        }
+
+    def _cad_tool_meshes(self, prep) -> tuple[list[tuple], list[tuple]]:
+        from ..geometry.tessellate import triangles
+
+        good = self.last_good
+        if not good or not good.parts:
+            return [], []
+        cuts = [triangles(good.parts[bid], 0.05, 0.3) for bid in (prep.cut_bodies or []) if bid in good.parts]
+        unions = [triangles(good.parts[bid], 0.05, 0.3) for bid in (prep.union_bodies or []) if bid in good.parts]
+        return cuts, unions
+
+    def _unconsumed_cad_prepared_parts(self) -> list:
+        from ..geometry.mesh_prep import PreparedPart
+        from ..geometry.tessellate import triangles
+
+        good = self.last_good
+        if not good or not good.parts:
+            return []
+        consumed = self._consumed_cad_bodies()
+        d = self.design
+        extra = []
+        for b in d.bodies:
+            if b.id in good.parts and b.id not in consumed:
+                pts, tris = triangles(good.parts[b.id], 0.05, 0.3)
+                extra.append(PreparedPart(name=b.name, points=pts, tris=tris, color=d.body_color(b), filament=b.filament))
+        return extra
+
     def _prepared_sculpts(self):
         from ..geometry.mesh_prep import MeshPrepError, prepare_print_mesh
 
         out = []
         d = self.design
+        good_id = id(self.last_good) if (self.last_good and self.last_good.parts) else 0
         for sm in d.sculpts:
             p = self.sculpts_dir / sm.source_file
             if not p.is_file():
                 continue
             fil = d.filament(sm.filament)
             color = fil.color if fil else (sm.color or "#b8c2cc")
-            key = (sm.source_file, p.stat().st_mtime, sm.prep.model_dump_json(), sm.name, color, sm.filament)
+            uses_cad = bool(sm.prep.cut_bodies or sm.prep.union_bodies)
+            key = (
+                sm.source_file,
+                p.stat().st_mtime,
+                sm.prep.model_dump_json(),
+                sm.name,
+                color,
+                sm.filament,
+                good_id if uses_cad else 0,
+            )
             cached = self._sculpt_cache.get(sm.id)
             if cached is None or cached[0] != key:
+                cuts, unions = self._cad_tool_meshes(sm.prep)
                 try:
-                    prepared = prepare_print_mesh(p, sm.prep, name=sm.name, color=color, filament=sm.filament)
+                    prepared = prepare_print_mesh(
+                        p, sm.prep, name=sm.name, color=color, filament=sm.filament,
+                        cad_cuts=cuts, cad_unions=unions,
+                    )
                 except MeshPrepError:
                     continue
                 self._sculpt_cache[sm.id] = (key, prepared)
             out.append((sm, self._sculpt_cache[sm.id][1]))
         return out
+
+    def inspect_sculpt_anatomy(self, sid: str) -> dict:
+        from ..geometry.mesh_prep import inspect_sculpt_anatomy_file
+
+        with self.lock:
+            sm = self.design.sculpt(sid)
+            if sm is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            raw_path = self.sculpts_dir / sm.source_file
+            anat = inspect_sculpt_anatomy_file(raw_path, sm.prep)
+            anat["id"] = sm.id
+            anat["name"] = sm.name
+            anat["current_prep"] = sm.prep.model_dump()
+            return anat
 
     def add_sculpt(self, actor: str, name: str, raw_bytes: bytes, ext: str = ".glb", concept_id: str = "",
                    prep=None, color: str | None = "#b8c2cc", filament: int | None = None):
@@ -394,7 +455,11 @@ class Workspace:
                 sm.filament = patch["filament"]
             fil = trial.filament(sm.filament)
             color = fil.color if fil else (sm.color or "#b8c2cc")
-            prepared = prepare_print_mesh(raw_path, new_prep, name=sm.name, color=color, filament=sm.filament)
+            cuts, unions = self._cad_tool_meshes(new_prep)
+            prepared = prepare_print_mesh(
+                raw_path, new_prep, name=sm.name, color=color, filament=sm.filament,
+                cad_cuts=cuts, cad_unions=unions,
+            )
             sm.prep = new_prep
             sm.watertight = prepared.watertight
             sm.triangles = prepared.triangles
@@ -421,16 +486,15 @@ class Workspace:
             self.log(actor, f"Removed sculpt {sid}")
 
     def export_current(self, fmt: str, path: Path) -> Path:
-        """Export either Character Mode sculpted meshes or Engineer Mode OpenCascade solids."""
+        """Export either Character Mode sculpted meshes (plus any hybrid CAD parts) or Engineer Mode OpenCascade solids."""
         from ..export import export
         from ..geometry.mesh_prep import export_prepared_meshes
 
         with self.lock:
             good = self.last_good
             sculpts = self._prepared_sculpts()
-            has_cad = bool(good and good.parts)
-            if sculpts and not has_cad:
-                parts = [p for _, ps in sculpts for p in ps.parts]
+            if sculpts:
+                parts = [p for _, ps in sculpts for p in ps.parts] + self._unconsumed_cad_prepared_parts()
                 return export_prepared_meshes(parts, self.project.printer, fmt, path, self.project.data.name, self.design)
             names = {b.id: b.name for b in self.design.bodies}
             colors = {b.id: self.design.body_color(b) for b in self.design.bodies}
@@ -543,11 +607,11 @@ class Workspace:
                 view = m[2] or "iso"
                 if view != "bottom":  # from below, the bed would hide the faces that print on it
                     bodies.append((Location((bed[0] / 2, bed[1] / 2, -0.5)) * Box(bed[0], bed[1], 1), "#44484f"))
+            elif sculpts:
+                parts = [p for _, ps in sculpts for p in ps.parts] + self._unconsumed_cad_prepared_parts()
+                return render_prepared_meshes(parts, view, size)
             elif good is not None and good.parts:
                 bodies = [(shape, colors.get(bid)) for bid, shape in good.parts.items()]
-            elif sculpts:
-                parts = [p for _, ps in sculpts for p in ps.parts]
-                return render_prepared_meshes(parts, view, size)
         return render(bodies, view, size)
 
     def _resolved(self):
@@ -719,8 +783,9 @@ class Workspace:
                 self._mesh = (id(good), meshes)
             meshes = self._mesh[1]
             d = self.design
+            consumed = self._consumed_cad_bodies()
             bodies = [{"id": b.id, "name": b.name, "color": d.body_color(b), "mesh": meshes[b.id]}
-                      for b in d.bodies if b.id in meshes]
+                      for b in d.bodies if b.id in meshes and b.id not in consumed]
             sculpt_vol = 0.0
             for sm, prepared in self._prepared_sculpts():
                 sculpt_vol += prepared.volume_mm3

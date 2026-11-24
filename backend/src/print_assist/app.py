@@ -1285,6 +1285,9 @@ class CharacterSculptIn(BaseModel):
     flexi_end_pct: float = 88.0
     flexi_clearance_mm: float = 0.45
     flexi_angle_deg: float = 12.0
+    flexi_cuts_pct: list[float] = []
+    cut_bodies: list[str] = []
+    union_bodies: list[str] = []
     magnet_hole: Literal["none", "bottom", "back"] = "none"
     magnet_dia_mm: float = 8.2
     magnet_depth_mm: float = 3.2
@@ -1310,6 +1313,9 @@ class SculptPrepPatch(BaseModel):
     flexi_end_pct: float | None = None
     flexi_clearance_mm: float | None = None
     flexi_angle_deg: float | None = None
+    flexi_cuts_pct: list[float] | None = None
+    cut_bodies: list[str] | None = None
+    union_bodies: list[str] | None = None
     magnet_hole: Literal["none", "bottom", "back"] | None = None
     magnet_dia_mm: float | None = None
     magnet_depth_mm: float | None = None
@@ -1464,6 +1470,9 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         flexi_end_pct=body.flexi_end_pct,
         flexi_clearance_mm=body.flexi_clearance_mm,
         flexi_angle_deg=body.flexi_angle_deg,
+        flexi_cuts_pct=body.flexi_cuts_pct,
+        cut_bodies=body.cut_bodies,
+        union_bodies=body.union_bodies,
         magnet_hole=body.magnet_hole,
         magnet_dia_mm=body.magnet_dia_mm,
         magnet_depth_mm=body.magnet_depth_mm,
@@ -1563,6 +1572,18 @@ def update_sculpt_prep(sid: str, body: SculptPrepPatch, x_actor: str = Header(de
     except (MeshPrepError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"sculpt": sm.model_dump(), "tree": ws().tree()}
+
+
+@app.get("/api/sculpts/{sid}/anatomy")
+def get_sculpt_anatomy(sid: str) -> dict:
+    from .geometry.mesh_prep import MeshPrepError
+
+    try:
+        return ws().inspect_sculpt_anatomy(sid)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (MeshPrepError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.delete("/api/sculpts/{sid}")

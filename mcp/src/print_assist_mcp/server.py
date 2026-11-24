@@ -315,6 +315,9 @@ def sculpt_character(
     flexi_end_pct: float = 88.0,
     flexi_clearance_mm: float = 0.45,
     flexi_angle_deg: float = 12.0,
+    flexi_cuts_pct: list[float] | None = None,
+    cut_bodies: list[str] | None = None,
+    union_bodies: list[str] | None = None,
     magnet_hole: str = "none",
     magnet_dia_mm: float = 8.2,
     magnet_depth_mm: float = 3.2,
@@ -322,14 +325,16 @@ def sculpt_character(
     hollow_wall_mm: float = 3.0,
     multicolor: bool = False,
 ) -> str:
-    """Character Mode 3D Sculptor + Print Engineering: mold a watertight, 3D-printable mesh from an approved Character
-    Design File (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` in Direct Build mode.
+    """Character Mode 3D Sculptor + Hybrid Print Engineering: mold a watertight, 3D-printable mesh from an approved
+    Character Design File (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` in Direct Build mode.
     Automatically repairs to a closed manifold solid, scales to `target_height_mm`, flattens the bottom, and applies
     exact-mm CAD mechanics on top:
-    - Print-in-Place Flexi Articulation: set `flexi_segments` (e.g. 5 for 6 sleek curved-crescent segments with
-      compact rounded bearing loops), `flexi_start_pct` (35 auto-nudges cleanly behind lateral pectoral fins),
-      `flexi_end_pct` (88 keeps tail fin solid), `flexi_clearance_mm` (0.45 mm FDM tolerance), `flexi_angle_deg` (12°).
-      Leave `flatten_bottom_mm` at default (0.4) — flexi auto-applies a gentle tail-safe belly flat!
+    - Fin-Safe Print-in-Place Flexi Articulation: set `flexi_segments` (e.g. 5). The 3D Anatomy-Aware Solver
+      automatically detects pectoral fins, dorsal fins, limbs, and tail waists so cuts are placed strictly in fin-free
+      intervals (never slicing fins/limbs in half, and seating the belly/tail flat on Z=0 with zero tail-fin knobs).
+      Optionally pass `flexi_cuts_pct` (e.g. `[35.5, 60.1, 74.9]`) to specify exact cut percentages along the spine.
+    - Hybrid CAD + Clay Booleans: pass `cut_bodies` (e.g. `["B1"]`) or `union_bodies` (e.g. `["B2"]`) to boolean-subtract
+      or boolean-union exact OpenCascade parametric CAD bodies built with `apply_changes` directly into the sculpt!
     - Functional hardware: `magnet_hole` ('none'|'bottom'|'back'), `hollow_cavity` (planter/cup), `base_style`
       ('none'|'round'|'oval'|'square'), `keychain_loop`.
     If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
@@ -351,6 +356,9 @@ def sculpt_character(
             "flexi_end_pct": flexi_end_pct,
             "flexi_clearance_mm": flexi_clearance_mm,
             "flexi_angle_deg": flexi_angle_deg,
+            "flexi_cuts_pct": flexi_cuts_pct or [],
+            "cut_bodies": cut_bodies or [],
+            "union_bodies": union_bodies or [],
             "magnet_hole": magnet_hole,
             "magnet_dia_mm": magnet_dia_mm,
             "magnet_depth_mm": magnet_depth_mm,
@@ -380,6 +388,15 @@ def wait_for_character_job(wait_s: int = 40) -> str:
 
 
 @mcp.tool()
+def inspect_sculpt_anatomy(id: str = "M1") -> str:
+    """Inspect the 3D cross-sectional anatomy of a sculpted character (`id`, e.g. "M1"): returns exact bounding box
+    and dimensions in mm, detected fin/limb protrusion zones (`protected_fin_zones`), tail waist percentage
+    (`tail_waist_pct`), safe fin-free cut intervals (`safe_cut_intervals_pct`), recommended fin-safe flexi cut
+    percentages (`recommended_cuts_pct`), and a 10% slice-by-slice width/height profile."""
+    return _text(_call("GET", f"/api/sculpts/{id}/anatomy"))
+
+
+@mcp.tool()
 def update_mesh_prep(
     id: str,
     target_height_mm: float | None = None,
@@ -393,6 +410,9 @@ def update_mesh_prep(
     flexi_end_pct: float | None = None,
     flexi_clearance_mm: float | None = None,
     flexi_angle_deg: float | None = None,
+    flexi_cuts_pct: list[float] | None = None,
+    cut_bodies: list[str] | None = None,
+    union_bodies: list[str] | None = None,
     magnet_hole: str | None = None,
     magnet_dia_mm: float | None = None,
     magnet_depth_mm: float | None = None,
@@ -402,11 +422,15 @@ def update_mesh_prep(
     rotate_y: float | None = None,
     rotate_z: float | None = None,
 ) -> str:
-    """Instantly adjust CAD print-engineering & finishing on an existing Character Mode sculpt (`id`, e.g. "M1")
-    in < 1s without re-running the 3D AI sculptor: resize in mm, flatten bottom, cut Print-in-Place Flexi Articulation
-    joints (`flexi_segments`, `flexi_start_pct`, `flexi_end_pct`, `flexi_clearance_mm`, `flexi_angle_deg`), cut magnet
-    pockets (`magnet_hole`: 'none'|'bottom'|'back'), hollow planter cavities (`hollow_cavity`), add/change display base
-    ('none'|'round'|'oval'|'square'), toggle keychain loop, or rotate."""
+    """Instantly adjust hybrid CAD print-engineering & finishing on an existing Character Mode sculpt (`id`, e.g. "M1")
+    in < 1s without re-running the 3D AI sculptor:
+    - Fin-Safe Print-in-Place Flexi Articulation: set `flexi_segments` (auto-solves fin-free cut zones so pectoral fins,
+      dorsal fins, limbs, and tail fins are never cut in half, with tail-safe bed seating) or pass `flexi_cuts_pct`
+      (e.g. `[35.5, 60.1, 74.9]`, pass `[]` to use auto fin-safe solver) for explicit cut positions along the spine.
+    - Hybrid CAD + Clay Booleans: pass `cut_bodies` (e.g. `["B1"]`) or `union_bodies` (e.g. `["B2"]`) to subtract or
+      union parametric OpenCascade CAD bodies built via `apply_changes` directly into the sculpted mesh!
+    - Resize (`target_height_mm`), flatten bottom (`flatten_bottom_mm`), cut magnet pockets (`magnet_hole`), hollow
+      planter cavities (`hollow_cavity`), add display base (`base_style`), toggle `keychain_loop`, or rotate."""
     body = {k: v for k, v in {
         "target_height_mm": target_height_mm,
         "flatten_bottom_mm": flatten_bottom_mm,
@@ -419,6 +443,9 @@ def update_mesh_prep(
         "flexi_end_pct": flexi_end_pct,
         "flexi_clearance_mm": flexi_clearance_mm,
         "flexi_angle_deg": flexi_angle_deg,
+        "flexi_cuts_pct": flexi_cuts_pct,
+        "cut_bodies": cut_bodies,
+        "union_bodies": union_bodies,
         "magnet_hole": magnet_hole,
         "magnet_dia_mm": magnet_dia_mm,
         "magnet_depth_mm": magnet_depth_mm,
