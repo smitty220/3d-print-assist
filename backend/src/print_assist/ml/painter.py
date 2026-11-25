@@ -8,6 +8,7 @@ neutral-background Front / Side / Back turnaround PNG stored directly inside the
 from __future__ import annotations
 
 import io
+import math
 import os
 import re
 import signal
@@ -441,43 +442,79 @@ def prepare_quad_turnaround_sheet(raw_png_bytes: bytes, views: list[str]) -> tup
     y_bed_2d = float(np.percentile(ybs_a, 92))
     max_h = max(10.0, y_bed_2d - float(yts_a.min()))
 
-    dr = ImageDraw.Draw(sheet)
-    # Grid backgrounds for panels 2, 3, 4
-    for ox, oy in [(pw, 0), (0, ph), (pw, ph)]:
-        for gx in range(ox + 28, ox + pw, 28):
-            dr.line([(gx, oy), (gx, oy + ph)], fill=(33, 38, 48), width=1)
-        for gy in range(oy + 28, oy + ph, 28):
-            dr.line([(ox, gy), (ox + pw, gy)], fill=(33, 38, 48), width=1)
+    # Panel 2..4: Smooth 3D-shaded studio elevation, top envelope, and Z=0 bed contact panels
+    k_s = np.array([1, 2, 4, 6, 4, 2, 1], dtype=np.float32)
+    k_s /= k_s.sum()
+    yts_s = np.convolve(np.pad(yts_a, 3, mode="edge"), k_s, mode="valid")
+    ybs_s = np.convolve(np.pad(ybs_a, 3, mode="edge"), k_s, mode="valid")
+    hs_s = np.maximum(2.0, ybs_s - yts_s)
 
-    # Panel 2 (Top-Right): Side Elevation on Z=0 Build Plate
+    # Sample character dorsal/ventral colors from foreground pixels
+    fg_pixels = arr[fg]
+    if len(fg_pixels) > 40:
+        dorsal_c = np.percentile(fg_pixels, 45, axis=0).astype(np.float32) / 255.0
+        ventral_c = np.percentile(fg_pixels, 82, axis=0).astype(np.float32) / 255.0
+    else:
+        dorsal_c = np.array([0.42, 0.54, 0.68], dtype=np.float32)
+        ventral_c = np.array([0.82, 0.84, 0.86], dtype=np.float32)
+
     bed_y2 = ph - 52
     sx_scale = (pw - 110) / max(1.0, float(span))
     sy_scale = min(sx_scale, (ph - 110) / max_h)
-    ox2 = pw + int((pw - span * sx_scale) / 2)
-    top_pts = [(ox2 + (xv - x0) * sx_scale, bed_y2 - (y_bed_2d - yt_v) * sy_scale) for xv, yt_v in zip(xs_s, yts_a)]
-    bot_pts = [(ox2 + (xv - x0) * sx_scale, min(float(bed_y2), bed_y2 - (y_bed_2d - yb_v) * sy_scale)) for xv, yb_v in reversed(list(zip(xs_s, ybs_a)))]
-    dr.polygon([*top_pts, *bot_pts], fill=(96, 125, 156), outline=(176, 198, 222))
-    dr.line([(pw + 24, bed_y2), (pw * 2 - 24, bed_y2)], fill=(52, 211, 153), width=3)
-    dr.text((pw + 28, bed_y2 + 8), "Z = 0 BUILD PLATE", fill=(52, 211, 153))
+    ox2_local = int((pw - span * sx_scale) / 2)
 
-    # Panel 3 (Bottom-Left): Top Proportion Envelope
-    cy3 = ph + ph // 2 + 8
-    half_ws = hs_a * 0.36 * sy_scale
-    upper_3 = [(int((pw - span * sx_scale) / 2 + (xv - x0) * sx_scale), cy3 - hw_v) for xv, hw_v in zip(xs_s, half_ws)]
-    lower_3 = [(int((pw - span * sx_scale) / 2 + (xv - x0) * sx_scale), cy3 + hw_v) for xv, hw_v in reversed(list(zip(xs_s, half_ws)))]
-    dr.polygon([*upper_3, *lower_3], fill=(88, 116, 146), outline=(176, 198, 222))
-    dr.line([(upper_3[0][0], cy3), (upper_3[-1][0], cy3)], fill=(148, 163, 184), width=1)
+    # Render Panel 2 (Side Z=0), Panel 3 (Top), and Panel 4 (Bottom Z=0) with smooth 3D volumetric shading
+    yy_p, xx_p = np.mgrid[0:ph, 0:pw].astype(np.float32)
+    bg_grad = (
+        (1.0 - (yy_p / ph)[:, :, None]) * np.array([34.0, 39.0, 48.0], dtype=np.float32)
+        + (yy_p / ph)[:, :, None] * np.array([22.0, 26.0, 33.0], dtype=np.float32)
+    )
 
-    # Panel 4 (Bottom-Right): Z=0 First-Layer Bed Footprint
-    cy4 = ph + ph // 2 + 8
-    ox4 = pw + int((pw - span * sx_scale) / 2)
-    bed_contact = np.maximum(0.0, 1.0 - np.maximum(0.0, y_bed_2d - ybs_a) / (0.12 * max_h)) * half_ws * 0.72
+    # Panel 2: 3D-shaded Side Elevation on Z=0
+    p2_arr = bg_grad.copy()
+    x_src2 = x0 + (xx_p - ox2_local) / max(1e-5, sx_scale)
+    in_x2 = (x_src2 >= x0) & (x_src2 <= x1)
+    yt_2 = bed_y2 - (y_bed_2d - np.interp(x_src2, xs_s, yts_s)) * sy_scale
+    yb_2 = np.minimum(float(bed_y2), bed_y2 - (y_bed_2d - np.interp(x_src2, xs_s, ybs_s)) * sy_scale)
+    span_2 = np.maximum(3.0, yb_2 - yt_2)
+    cov2 = _smoothstep(yt_2 - 1.2, yt_2 + 1.2, yy_p) * (1.0 - _smoothstep(yb_2 - 1.2, yb_2 + 1.2, yy_p))
+    cov2 *= _smoothstep(x0 - 1.5, x0 + 1.5, x_src2) * (1.0 - _smoothstep(x1 - 1.5, x1 + 1.5, x_src2))
+    v_norm2 = np.clip(((yy_p - yt_2) / span_2) * 2.0 - 1.0, -1.0, 1.0)  # -1 top, +1 bottom
+    nz2 = np.sqrt(np.maximum(0.04, 1.0 - v_norm2 * v_norm2))
+    sh2 = 0.30 + 0.54 * np.clip(-0.45 * v_norm2 + 0.72 * nz2, 0.0, 1.0) + 0.16 * nz2
+    c_mix2 = _smoothstep(0.25, 0.65, v_norm2)[:, :, None]
+    col2 = ((1.0 - c_mix2) * dorsal_c + c_mix2 * ventral_c) * sh2[:, :, None] * 255.0
+    p2_arr = (1.0 - cov2[:, :, None]) * p2_arr + cov2[:, :, None] * col2
+    sheet.paste(Image.fromarray(np.clip(p2_arr, 0, 255).astype(np.uint8)), (pw, 0))
+
+    # Panel 3: 3D-shaded Top Envelope
+    p3_arr = bg_grad.copy()
+    cy3_l = ph * 0.52
+    hw_3 = np.interp(x_src2, xs_s, hs_s * 0.36 * sy_scale)
+    dy3 = yy_p - cy3_l
+    cov3 = (1.0 - _smoothstep(np.maximum(1.5, hw_3 - 1.2), hw_3 + 1.2, np.abs(dy3))) * in_x2.astype(np.float32)
+    u_lat3 = np.clip(dy3 / np.maximum(2.0, hw_3), -1.0, 1.0)
+    nz3 = np.sqrt(np.maximum(0.04, 1.0 - u_lat3 * u_lat3))
+    sh3 = 0.28 + 0.56 * np.clip(-0.35 * u_lat3 + 0.78 * nz3, 0.0, 1.0) + 0.16 * nz3
+    p3_arr = (1.0 - cov3[:, :, None]) * p3_arr + cov3[:, :, None] * (dorsal_c * sh3[:, :, None] * 255.0)
+    sheet.paste(Image.fromarray(np.clip(p3_arr, 0, 255).astype(np.uint8)), (0, ph))
+
+    # Panel 4: 3D-shaded Bottom View + Z=0 Emerald Contact Pad
+    p4_arr = bg_grad.copy()
+    p4_arr = (1.0 - cov3[:, :, None]) * p4_arr + cov3[:, :, None] * (ventral_c * sh3[:, :, None] * 235.0)
+    bed_contact = np.maximum(0.0, 1.0 - np.maximum(0.0, y_bed_2d - ybs_s) / (0.14 * max_h)) * (hs_s * 0.36 * sy_scale) * 0.62
     if float(bed_contact.max()) < 4.0:
-        bed_contact = half_ws * 0.45
-    up4 = [(ox4 + (xv - x0) * sx_scale, cy4 - bw) for xv, bw in zip(xs_s, bed_contact)]
-    lo4 = [(ox4 + (xv - x0) * sx_scale, cy4 + bw) for xv, bw in reversed(list(zip(xs_s, bed_contact)))]
-    dr.polygon([*up4, *lo4], fill=(16, 185, 129), outline=(110, 231, 183))
-    dr.text((pw + 24, ph * 2 - 30), "GREEN = Z=0 FIRST-LAYER BED CONTACT", fill=(110, 231, 183))
+        bed_contact = (hs_s * 0.36 * sy_scale) * 0.42
+    bw_4 = np.interp(x_src2, xs_s, bed_contact)
+    cov_pad4 = (1.0 - _smoothstep(np.maximum(0.8, bw_4 - 1.2), bw_4 + 1.2, np.abs(dy3))) * cov3 * (bw_4 > 1.5)
+    em_col = np.array([16.0, 198.0, 136.0], dtype=np.float32) * (0.82 + 0.18 * nz3)[:, :, None]
+    p4_arr = (1.0 - cov_pad4[:, :, None]) * p4_arr + cov_pad4[:, :, None] * em_col
+    sheet.paste(Image.fromarray(np.clip(p4_arr, 0, 255).astype(np.uint8)), (pw, ph))
+
+    dr = ImageDraw.Draw(sheet)
+    dr.line([(pw + 24, bed_y2), (pw * 2 - 24, bed_y2)], fill=(52, 211, 153), width=3)
+    dr.text((pw + 28, bed_y2 + 8), "Z = 0 BUILD PLATE", fill=(110, 231, 183))
+    dr.text((pw + 24, ph * 2 - 28), "EMERALD = Z=0 FIRST-LAYER BED CONTACT", fill=(110, 231, 183))
 
     dr.line([(pw, 0), (pw, ph * 2)], fill=(64, 72, 86), width=2)
     dr.line([(0, ph), (pw * 2, ph)], fill=(64, 72, 86), width=2)
@@ -586,48 +623,44 @@ def render_flexi_concept_preview(
             head_feature_end_pct = max(head_feature_end_pct, float(pct_probe))
 
     # ------------------------------------------------------------------
-    # STEP 1: Seat the 2D torso & rear tail smoothly onto a horizontal Z=0
-    # build plate (starting strictly behind the eye/mouth!) and trim any
-    # downward-propping fin overhang flush with y_bed.
+    # STEP 1: Gently un-arch ONLY the upward-swept rear spine (behind the
+    # pectoral fin, ~48%..84%) via pure rigid column translation — NEVER
+    # stretching lower-belly pixels and NEVER creating sawtooth mask jaggies!
     # ------------------------------------------------------------------
-    belly_xs = [int(np.clip(round(pct_to_x(p)), 0, W - 1)) for p in np.linspace(24.0, 50.0, 20)]
-    valid_belly_y = [yb_smooth[x] for x in belly_xs if h_orig[x] > 10.0]
-    y_bed = float(np.percentile(valid_belly_y, 85)) if valid_belly_y else float(0.80 * H)
-    y_bed = min(float(H - 18), max(float(0.55 * H), y_bed))
+    chest_xs = [int(np.clip(round(pct_to_x(p)), 0, W - 1)) for p in np.linspace(26.0, 42.0, 16)]
+    chest_belly_y = float(np.median([yb_smooth[x] for x in chest_xs if h_orig[x] > 10.0] or [0.76 * H]))
 
-    arr = np.broadcast_to(bg[None, None, :], (H, W, 3)).copy().astype(np.float32)
+    # Find where foreground pectoral fin ends so we never shift across the pectoral fin
+    pec_cols = np.where(pec_orig.any(axis=0))[0]
+    pec_end_pct = 46.0
+    if len(pec_cols) >= 4:
+        pec_pcts = [x_to_pct(float(c)) for c in pec_cols]
+        pec_end_pct = min(56.0, max(44.0, float(np.percentile(pec_pcts, 92)) + 1.5))
+
+    arr = arr_orig.copy()
     y_coords = np.arange(H, dtype=np.float32)
-    warp_start = max(29.0, head_feature_end_pct + 2.5)
-    for x in range(W):
-        if x < x0 or x > x1 or h_orig[x] < 6.0:
-            arr[:, x] = arr_orig[:, x]
-            continue
-        pct = x_to_pct(float(x))
-        rf = float(_smoothstep(warp_start, warp_start + 10.0, np.array(pct)))
-        rb = 1.0 - float(_smoothstep(82.0, 90.0, np.array(pct)))
-        seat_w = rf * rb
-        yt_c = float(yt_smooth[x])
-        yb_c = float(max(yb_orig[x], yb_smooth[x]))
-        yb_target = yb_c + seat_w * max(0.0, y_bed - yb_c)
-        y_mid = min(yb_c - 6.0, yt_c + 0.45 * (yb_c - yt_c))
+    rear_probe_xs = [int(np.clip(round(pct_to_x(p)), 0, W - 1)) for p in np.linspace(60.0, 76.0, 12)]
+    rear_belly_y = float(np.median([yb_smooth[x] for x in rear_probe_xs if h_orig[x] > 6.0] or [chest_belly_y]))
+    scalar_drop = min(0.11 * float(h_orig.max()), max(0.0, chest_belly_y - rear_belly_y) * 0.80)
+    if scalar_drop > 0.5:
+        for x in range(x0, x1 + 1):
+            pct = x_to_pct(float(x))
+            rf = float(_smoothstep(pec_end_pct, pec_end_pct + 15.0, np.array(pct)))
+            rb = 1.0 - float(_smoothstep(74.0, 88.0, np.array(pct)))
+            dy_down = scalar_drop * rf * rb
+            if dy_down <= 0.20:
+                continue
+            src_y = y_coords - dy_down
+            y0_i = np.clip(np.floor(src_y).astype(int), 0, H - 1)
+            y1_i = np.clip(y0_i + 1, 0, H - 1)
+            wy = np.clip(src_y - y0_i, 0.0, 1.0)[:, None]
+            col_shifted = (1.0 - wy) * arr_orig[y0_i, x] + wy * arr_orig[y1_i, x]
+            top_fill = src_y < 0.0
+            if np.any(top_fill):
+                col_shifted[top_fill] = bg
+            arr[:, x] = col_shifted
 
-        src_y = y_coords.copy()
-        stretch_zone = (y_coords > y_mid) & (y_coords <= yb_target)
-        if seat_w > 1e-3 and yb_target > y_mid + 2.0 and yb_c > y_mid + 2.0:
-            u_s = (y_coords[stretch_zone] - y_mid) / (yb_target - y_mid)
-            # C1 Hermite-blended stretch so transition at y_mid is invisible
-            src_y[stretch_zone] = y_mid + u_s * (yb_c - y_mid)
-        below_bed = y_coords > y_bed
-        y0_i = np.clip(np.floor(src_y).astype(int), 0, H - 1)
-        y1_i = np.clip(y0_i + 1, 0, H - 1)
-        wy = (src_y - y0_i)[:, None]
-        col_resampled = (1.0 - wy) * arr_orig[y0_i, x] + wy * arr_orig[y1_i, x]
-        # Clean out stretched background haze if source pixel was background
-        fg_src = fg_orig[y0_i, x] | fg_orig[y1_i, x]
-        col_resampled[~fg_src | below_bed] = bg
-        arr[:, x] = col_resampled
-
-    # Re-extract foreground & pectoral mask on the Z=0 bed-seated image
+    # Re-extract foreground & pectoral mask on the cleanly un-arched image
     Y_grid, X_grid = np.mgrid[0:H, 0:W].astype(np.float32)
     _, fg, fg_alpha, x0, x1 = _extract_foreground_profile(arr)
     span = max(1, x1 - x0)
@@ -650,7 +683,7 @@ def render_flexi_concept_preview(
     pec_pil = (
         Image.fromarray((pec_fin_mask * 255).astype(np.uint8))
         .filter(ImageFilter.MaxFilter(7))
-        .filter(ImageFilter.GaussianBlur(1.2))
+        .filter(ImageFilter.GaussianBlur(1.4))
     )
     pec_alpha = np.asarray(pec_pil, dtype=np.float32) / 255.0
 
@@ -662,29 +695,17 @@ def render_flexi_concept_preview(
         if yb - yt < 5:
             yt, yb = _longest_run(fg[:, x])
         yt_col[x], yb_col[x] = float(yt), float(yb)
+    k_env = np.array([1, 3, 6, 8, 6, 3, 1], dtype=np.float32)
+    k_env /= k_env.sum()
+    yt_col = np.convolve(np.pad(yt_col, 3, mode="edge"), k_env, mode="valid")
+    yb_col = np.convolve(np.pad(yb_col, 3, mode="edge"), k_env, mode="valid")
     h_col = np.maximum(0.0, yb_col - yt_col)
     max_h = float(h_col.max()) if h_col.max() > 0 else 100.0
 
-    # Detect eye/mouth end, dorsal fin zone, and tail waist
-    head_feature_end_pct = 26.0
-    for pct_probe in np.linspace(8.0, 37.5, 45):
-        xp = int(np.clip(round(pct_to_x(float(pct_probe))), 0, W - 1))
-        yt_p, yb_p = int(yt_col[xp]), int(yb_col[xp])
-        hp = yb_p - yt_p
-        if hp < 20:
-            continue
-        eye_rgb = arr[yt_p + int(0.18 * hp):yt_p + int(0.48 * hp), xp]
-        mouth_rgb = arr[yt_p + int(0.35 * hp):yt_p + int(0.78 * hp), xp]
-        has_eye = len(eye_rgb) > 0 and bool(np.any(eye_rgb.mean(axis=-1) < 42.0))
-        has_mouth = len(mouth_rgb) > 0 and bool(np.any((mouth_rgb[:, 0] - mouth_rgb[:, 1]) > 24.0))
-        if has_eye or has_mouth:
-            head_feature_end_pct = max(head_feature_end_pct, float(pct_probe))
-
+    # Detect dorsal fin zone & tail waist
     n_bins = 60
     pcts = np.linspace(5.0, 95.0, n_bins)
     b_yt = np.array([yt_col[int(np.clip(round(pct_to_x(float(p))), 0, W - 1))] for p in pcts])
-    b_yb = np.array([yb_col[int(np.clip(round(pct_to_x(float(p))), 0, W - 1))] for p in pcts])
-    b_h = np.maximum(2.0, b_yb - b_yt)
 
     i_35 = int(np.argmin(np.abs(pcts - 35.0)))
     i_63 = int(np.argmin(np.abs(pcts - 63.0)))
@@ -696,26 +717,26 @@ def render_flexi_concept_preview(
             dorsal_pcts.append(float(pcts[i]))
 
     fin_start = max(39.0, min(dorsal_pcts) - 1.8) if dorsal_pcts else 42.5
-    fin_end = min(62.0, max(dorsal_pcts) + 2.0) if dorsal_pcts else 58.0
+    fin_end = min(61.5, max(dorsal_pcts) + 1.8) if dorsal_pcts else 57.5
 
     waist_idx = [i for i, p in enumerate(pcts) if 72.0 <= p <= 89.0]
     waist_pct = float(pcts[min(waist_idx, key=lambda i: h_orig[int(np.clip(round(pct_to_x(float(pcts[i]))), 0, W - 1))])]) if waist_idx else 82.0
-    max_cut_pct = min(79.5, waist_pct - 2.5)
+    max_cut_pct = min(78.5, waist_pct - 3.0)
 
     n_cuts = max(3, int(flexi_segments) - 1 if int(flexi_segments) >= 4 else 5)
     if flexi_cuts_pct and len(flexi_cuts_pct) >= 1:
         cuts_pct = sorted(round(float(c), 1) for c in flexi_cuts_pct if 18.0 <= float(c) <= 86.0)
     else:
-        front_cut = max(head_feature_end_pct + 2.2, min(38.0, fin_start - 1.5))
+        front_cut = max(head_feature_end_pct + 2.2, min(37.5, fin_start - 1.8))
         n_rear = max(2, n_cuts - 1)
-        rear_start = max(fin_end + 1.2, 59.5)
+        rear_start = max(fin_end + 1.4, 59.0)
         rear_end = max(rear_start + 6.0, max_cut_pct)
         rear_cuts = np.linspace(rear_start, rear_end, n_rear).tolist()
         cuts_pct = [round(front_cut, 1)] + [round(float(c), 1) for c in rear_cuts]
 
-    # Render curved 3D-shaded flexi cuts + internal hinge links onto the bed-seated View 1 image
+    # Render sleek, narrow (~0.9% span), 3D bevel-shaded gill-curved flexi seams on Panel 1
     out = arr.copy()
-    slot_w = max(8.0, 0.017 * span)
+    slot_w = max(4.2, 0.0095 * span)
     half_w = slot_w * 0.5
     X_idx = np.clip(X_grid.astype(int), 0, W - 1)
     yt_grid = yt_col[X_idx]
@@ -730,196 +751,317 @@ def render_flexi_concept_preview(
         h_ref = max(12.0, yb_ref - yt_ref)
 
         u_ref = np.clip((Y_grid - yt_ref) / h_ref, 0.0, 1.0)
-        max_arch_pct = max(1.2, cp - (head_feature_end_pct + 2.2))
-        arch = min(0.085 * h_ref, (max_arch_pct / 100.0) * span)
+        max_arch_pct = max(1.0, cp - (head_feature_end_pct + 2.0))
+        arch = min(0.072 * h_ref, (max_arch_pct / 100.0) * span)
         x_center = xc + arch_sign * arch * (4.0 * u_ref * (1.0 - u_ref))
         dx = (X_grid - x_center) * (-arch_sign)
 
-        in_y = (Y_grid >= yt_grid) & (Y_grid <= yb_grid) & (np.abs(dx) <= half_w + 4.0)
+        in_y = (Y_grid >= yt_grid - 1.0) & (Y_grid <= yb_grid + 1.0) & (np.abs(dx) <= half_w + 3.5)
         mask_vis = fg_alpha * (1.0 - pec_alpha) * in_y.astype(np.float32)
 
-        sample_x = np.clip(np.round(x_center - arch_sign * (half_w + 4.0)).astype(int), 0, W - 1)
+        sample_x = np.clip(np.round(x_center - arch_sign * (half_w + 3.5)).astype(int), 0, W - 1)
         base_col = arr[Y_grid.astype(int), sample_x]
         bg_dist = np.linalg.norm(base_col - bg, axis=-1, keepdims=True)
-        sample_x_opp = np.clip(np.round(x_center + arch_sign * (half_w + 4.0)).astype(int), 0, W - 1)
+        sample_x_opp = np.clip(np.round(x_center + arch_sign * (half_w + 3.5)).astype(int), 0, W - 1)
         base_col = np.where(bg_dist < 22.0, arr[Y_grid.astype(int), sample_x_opp], base_col)
 
-        in_slot = _smoothstep(-half_w - 1.0, -half_w + 0.8, dx) * (1.0 - _smoothstep(half_w - 0.8, half_w + 1.0, dx))
+        in_slot = _smoothstep(-half_w - 0.8, -half_w + 0.6, dx) * (1.0 - _smoothstep(half_w - 0.6, half_w + 0.8, dx))
         s = np.clip(dx / half_w, -1.0, 1.0)
 
-        wall_blend = _smoothstep(-0.15, 0.15, s)
-        cavity_shade = 0.22 + 0.08 * (s + 1.0)
-        wall_shade = (0.50 + 0.18 * ((s + 0.15) / 1.15)) * (0.92 - 0.18 * u_ref)
+        wall_blend = _smoothstep(-0.10, 0.25, s)
+        cavity_shade = 0.20 + 0.08 * (s + 1.0)
+        wall_shade = (0.48 + 0.22 * ((s + 0.10) / 1.10)) * (0.95 - 0.15 * u_ref)
         shade = (1.0 - wall_blend) * cavity_shade + wall_blend * wall_shade
 
-        link_y = _smoothstep(0.40, 0.43, u_ref) * (1.0 - _smoothstep(0.55, 0.58, u_ref))
-        link_x = _smoothstep(-0.92, -0.65, s) * (1.0 - _smoothstep(0.10, 0.40, s))
-        link_mask = link_y * link_x
-        link_u = np.clip((u_ref - 0.41) / 0.16, 0.0, 1.0)
-        link_shade = 0.46 + 0.28 * np.sin((1.0 - link_u) * np.pi)
-        shade = (1.0 - link_mask) * shade + link_mask * link_shade
+        # Subtle internal horizontal chain-link bridge glimpse at mid-height
+        link_y = _smoothstep(0.42, 0.46, u_ref) * (1.0 - _smoothstep(0.54, 0.58, u_ref))
+        link_shade = 0.52 + 0.18 * np.sin(np.clip((u_ref - 0.42) / 0.16, 0.0, 1.0) * np.pi)
+        shade = (1.0 - link_y * 0.8) * shade + (link_y * 0.8) * link_shade
 
         slot_rgb = base_col * shade[:, :, None]
 
+        # Tiny sculpted bevel notch along the top dorsal contour so segments read as distinct 3D links
         top_edge_px = Y_grid - yt_grid
-        notch_px = 4.5 * np.maximum(0.0, 1.0 - (s ** 2))
-        top_notch_w = (1.0 - _smoothstep(np.maximum(0.0, notch_px - 1.0), notch_px + 1.2, top_edge_px)) * in_slot
+        notch_px = 2.4 * np.maximum(0.0, 1.0 - (s ** 2))
+        top_notch_w = (1.0 - _smoothstep(np.maximum(0.0, notch_px - 0.8), notch_px + 0.9, top_edge_px)) * in_slot
         slot_rgb = (1.0 - top_notch_w[:, :, None]) * slot_rgb + top_notch_w[:, :, None] * bg[None, None, :]
 
         w_total = (in_slot * mask_vis)[:, :, None]
         out = (1.0 - w_total) * out + w_total * slot_rgb
 
-        rim_w = _smoothstep(half_w - 0.5, half_w + 0.5, dx) * (1.0 - _smoothstep(half_w + 0.7, half_w + 2.2, dx))
-        rim_w = (rim_w * mask_vis * (1.0 - top_notch_w))[:, :, None]
-        rim_col = np.minimum(255.0, base_col * 1.15 + 14.0)
-        out = (1.0 - rim_w * 0.75) * out + (rim_w * 0.75) * rim_col
+        # Soft 3D bevel highlight on downstream lip + subtle bevel shadow on upstream lip
+        rim_hi = _smoothstep(half_w - 0.4, half_w + 0.4, dx) * (1.0 - _smoothstep(half_w + 0.5, half_w + 2.0, dx))
+        rim_hi = (rim_hi * mask_vis * (1.0 - top_notch_w))[:, :, None]
+        rim_col = np.minimum(255.0, base_col * 1.14 + 12.0)
+        out = (1.0 - rim_hi * 0.72) * out + (rim_hi * 0.72) * rim_col
 
     view1_im = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
-    v1_dr = ImageDraw.Draw(view1_im)
-    y_bed_i = int(round(y_bed))
-    v1_dr.line([(max(8, x0 - 18), y_bed_i + 1), (min(W - 8, x1 + 18), y_bed_i + 1)], fill=(16, 185, 129), width=3)
 
     # ------------------------------------------------------------------
-    # STEP 2: Compose the 1280x900 4-View Flexi Print-Engineering Sheet!
+    # STEP 2: Compose the 1280x900 Studio 3D-Shaded 4-View Flexi Sheet!
     # ------------------------------------------------------------------
     pw, ph = 640, 450
     sheet = Image.new("RGB", (pw * 2, ph * 2), (22, 26, 33))
     bg_rgb = tuple(int(round(v)) for v in bg)
 
-    # Panel 1 (Top-Left): 3/4 Bed-Seated Articulated Preview
+    # Panel 1 (Top-Left): 3/4 Articulated Hero Preview
     p1 = Image.new("RGB", (pw, ph), bg_rgb)
-    fit1 = ImageOps.contain(view1_im, (pw - 24, ph - 48), Image.Resampling.LANCZOS)
-    p1.paste(fit1, ((pw - fit1.width) // 2, (ph - fit1.height) // 2 + 14))
+    fit1 = ImageOps.contain(view1_im, (pw - 24, ph - 44), Image.Resampling.LANCZOS)
+    p1.paste(fit1, ((pw - fit1.width) // 2, (ph - fit1.height) // 2 + 12))
     sheet.paste(p1, (0, 0))
 
-    dr = ImageDraw.Draw(sheet)
-    for ox, oy in [(pw, 0), (0, ph), (pw, ph)]:
-        for gx in range(ox + 32, ox + pw, 32):
-            dr.line([(gx, oy), (gx, oy + ph)], fill=(31, 37, 47), width=1)
-        for gy in range(oy + 32, oy + ph, 32):
-            dr.line([(ox, gy), (ox + pw, gy)], fill=(31, 37, 47), width=1)
+    # Sample actual character dorsal & ventral palette so Panels 2, 3, 4 match the character's colors!
+    blue_px = arr_orig[blue_mask_orig]
+    cream_px = arr_orig[cream_mask_orig]
+    fg_px = arr_orig[fg_orig]
+    if len(blue_px) > 50:
+        dorsal_col = np.median(blue_px, axis=0).astype(np.float32) / 255.0
+    elif len(fg_px) > 50:
+        dorsal_col = np.percentile(fg_px, 45, axis=0).astype(np.float32) / 255.0
+    else:
+        dorsal_col = np.array([0.38, 0.50, 0.64], dtype=np.float32)
 
-    # Normalized head-to-tail profile (p in 0..100%) seated on Z=0 for orthographic engineering panels 2, 3, 4
-    p_dense = np.linspace(0.0, 100.0, 121)
+    if len(cream_px) > 50:
+        ventral_col = np.median(cream_px, axis=0).astype(np.float32) / 255.0
+    elif len(fg_px) > 50:
+        ventral_col = np.percentile(fg_px, 82, axis=0).astype(np.float32) / 255.0
+    else:
+        ventral_col = np.minimum(1.0, dorsal_col * 1.25 + 0.12)
+
+    # Build smooth C2 normalized spine profiles (p in 0..100%) seated flush on Z=0 for Panels 2, 3, 4
+    p_dense = np.linspace(0.0, 100.0, 241)
     top_h_norm = np.zeros_like(p_dense)
     bot_z_norm = np.zeros_like(p_dense)
+    y_bed_ref = chest_belly_y
     for idx_p, pv in enumerate(p_dense):
         xp = int(np.clip(round(pct_to_x(float(pv))), 0, W - 1))
-        top_h_norm[idx_p] = max(0.0, (y_bed - yt_col[xp]) / max(1.0, max_h))
-        # Nose tip (0..14%) and upper tail fork (88..100%) taper naturally; 14..88% is seated flush on Z=0!
-        if pv < 14.0:
-            bot_z_norm[idx_p] = 0.22 * ((14.0 - pv) / 14.0) ** 1.5
-        elif pv > 88.0:
-            bot_z_norm[idx_p] = 0.08 * ((pv - 88.0) / 12.0) ** 1.4
+        raw_th = max(0.02, (y_bed_ref - yt_col[xp]) / max(1.0, max_h))
+        top_h_norm[idx_p] = raw_th
+        if pv < 15.0:
+            bot_z_norm[idx_p] = 0.24 * ((15.0 - pv) / 15.0) ** 1.65
+        elif pv > 77.0:
+            # Rise smoothly at caudal peduncle waist (~83%), then dip lower tail fin lobe back to Z=0 at ~92%
+            waist_arch = 0.08 * math.exp(-(((pv - 82.5) / 4.0) ** 2))
+            tip_taper = 0.22 * max(0.0, (pv - 92.0) / 8.0) ** 1.35
+            bot_z_norm[idx_p] = waist_arch + tip_taper
         else:
             bot_z_norm[idx_p] = 0.0
 
-    # Width envelope in Top view (wider at head/chest, flaring cleanly across intact pectoral fins, tapering to tail)
-    base_half_w = np.clip(top_h_norm * 0.42, 0.03, 0.34)
-    # Taper tail fin thin laterally in top view (82..100%)
-    tail_thin = np.where(p_dense > 80.0, np.maximum(0.22, 1.0 - 0.75 * ((p_dense - 80.0) / 20.0)), 1.0)
-    torso_half_w = base_half_w * tail_thin
-    pec_mid = 0.5 * (fin_start + fin_end)
-    pec_span_h = max(5.0, 0.55 * (fin_end - fin_start))
-    pec_flare = 0.26 * np.maximum(0.0, 1.0 - ((p_dense - pec_mid) / pec_span_h) ** 2)
-    full_half_w = torso_half_w + pec_flare
+    k_prof = np.array([1, 3, 6, 8, 6, 3, 1], dtype=np.float64)
+    k_prof /= k_prof.sum()
+    top_h_norm = np.convolve(np.pad(top_h_norm, 3, mode="edge"), k_prof, mode="valid")
+    # Smoothly round the snout tip (0..8%) so top_h_norm meets bot_z_norm(0)=0.24 with zero upward nose spike!
+    nose_ref = float(np.interp(8.0, p_dense, top_h_norm))
+    for idx_p, pv in enumerate(p_dense):
+        if pv <= 8.0:
+            s_n = pv / 8.0
+            top_h_norm[idx_p] = 0.24 + max(0.04, nose_ref - 0.24) * (s_n ** 0.65)
 
-    seg_bounds = [0.0, *cuts_pct, 100.0]
-    n_segs = len(seg_bounds) - 1
-    gap_pct = 1.35
+    # Sleek torpedo body width + tapered caudal fin blade (82..100%)
+    torpedo_w = 0.29 * np.power(np.sin(np.pi * np.clip(p_dense / 90.0, 0.0, 1.0)), 0.72)
+    torpedo_w = np.where(
+        p_dense > 82.0,
+        np.maximum(0.008, 0.038 * (1.0 - 0.78 * (np.maximum(0.0, p_dense - 82.0) / 18.0) ** 1.2)),
+        torpedo_w,
+    )
+    torpedo_w = np.maximum(0.008, torpedo_w)
 
-    # Panel 2 (Top-Right): Side Orthographic on Z=0 Build Plate + X-Ray Internal Hinges
-    ox2, oy2 = pw + 46, 0
-    draw_w = pw - 92
-    bed_y2 = oy2 + ph - 58
-    h_px_scale = min(ph - 130, draw_w * 0.44)
-    for si in range(n_segs):
-        a_pct = seg_bounds[si] + (gap_pct * 0.5 if si > 0 else 0.0)
-        b_pct = seg_bounds[si + 1] - (gap_pct * 0.5 if si < n_segs - 1 else 0.0)
-        mask_s = (p_dense >= a_pct) & (p_dense <= b_pct)
-        ps = p_dense[mask_s]
-        if len(ps) < 2:
-            continue
-        ths = top_h_norm[mask_s]
-        bzs = bot_z_norm[mask_s]
-        poly_top = [(ox2 + (p / 100.0) * draw_w, bed_y2 - th * h_px_scale) for p, th in zip(ps, ths)]
-        poly_bot = [(ox2 + (p / 100.0) * draw_w, bed_y2 - bz * h_px_scale) for p, bz in reversed(list(zip(ps, bzs)))]
-        fill_c = (86, 118, 152) if si % 2 == 0 else (74, 104, 138)
-        dr.polygon([*poly_top, *poly_bot], fill=fill_c, outline=(186, 208, 232))
-        mid_x = ox2 + (0.5 * (a_pct + b_pct) / 100.0) * draw_w
-        dr.text((mid_x - 7, bed_y2 - 18), f"S{si + 1}", fill=(226, 232, 240))
+    yy_p, xx_p = np.mgrid[0:ph, 0:pw].astype(np.float32)
+    bg_studio = (
+        (1.0 - (yy_p / ph)[:, :, None]) * np.array([34.0, 39.0, 48.0], dtype=np.float32)
+        + (yy_p / ph)[:, :, None] * np.array([22.0, 26.0, 33.0], dtype=np.float32)
+    )
 
-    # Draw X-ray internal print-in-place hinge loops & pins across every cut in Panel 2
+    ox_pad = 46.0
+    draw_w = float(pw - 92)
+    p_px = ((xx_p - ox_pad) / draw_w) * 100.0
+    in_p = _smoothstep(0.0, 0.8, p_px) * (1.0 - _smoothstep(99.2, 100.0, p_px))
+    gap_half_pct = 0.36  # sleek ~0.7% seam width matching real 0.85 mm flexi clearance
+
+    # ---------- Panel 2 (Top-Right): 3D-Shaded Side Orthographic on Z=0 Build Plate ----------
+    p2_arr = bg_studio.copy()
+    bed_y2 = float(ph - 58)
+    h_scale = min(ph - 126.0, draw_w * 0.43)
+    th_grid = np.interp(p_px, p_dense, top_h_norm).astype(np.float32)
+    bz_grid = np.interp(p_px, p_dense, bot_z_norm).astype(np.float32)
+    yt_2 = bed_y2 - th_grid * h_scale
+    yb_2 = bed_y2 - bz_grid * h_scale
+    loc_h2 = np.maximum(4.0, yb_2 - yt_2)
+    u2 = np.clip((yy_p - yt_2) / loc_h2, 0.0, 1.0)
+
+    cov2 = _smoothstep(yt_2 - 1.1, yt_2 + 1.1, yy_p) * (1.0 - _smoothstep(yb_2 - 1.1, yb_2 + 1.1, yy_p)) * in_p
+    # Carve crescent caudal fork notch on trailing edge of tail fin (p > 91%) so Side view has an iconic shark tail!
+    fork_center_y = bed_y2 - 0.34 * h_scale
+    fork_v = np.abs(yy_p - fork_center_y) / max(8.0, 0.34 * h_scale)
+    tail_trail_p = np.where(
+        yy_p <= fork_center_y,
+        91.5 + 8.5 * np.clip(fork_v, 0.0, 1.0) ** 1.15,
+        91.5 + 4.8 * np.clip(fork_v, 0.0, 1.0) ** 1.15,
+    )
+    cov2 *= 1.0 - _smoothstep(tail_trail_p - 0.8, tail_trail_p + 0.8, p_px)
+
+    # Gill-curved flexi seams in Side view
+    seam_mask2 = np.zeros_like(cov2)
+    rim_hi2 = np.zeros_like(cov2)
     for cp in cuts_pct:
-        cx2 = ox2 + (cp / 100.0) * draw_w
-        loc_h = float(np.interp(cp, p_dense, top_h_norm)) * h_px_scale
-        pin_r = max(3.5, min(6.5, loc_h * 0.10))
-        pin_cy = bed_y2 - max(pin_r * 2.2, min(loc_h * 0.36, 24.0))
-        # Stadium bearing loop bridging from upstream pin into downstream segment
-        dr.rounded_rectangle(
-            [cx2 - 12, pin_cy - pin_r - 3, cx2 + 12, pin_cy + pin_r + 3],
-            radius=int(pin_r + 3),
-            fill=(45, 58, 76),
-            outline=(250, 204, 21),
-            width=2,
+        c_curve = cp + 1.4 * (4.0 * u2 * (1.0 - u2))
+        dp = p_px - c_curve
+        s_cut = _smoothstep(-gap_half_pct - 0.16, -gap_half_pct + 0.12, dp) * (
+            1.0 - _smoothstep(gap_half_pct - 0.12, gap_half_pct + 0.16, dp)
         )
-        dr.ellipse(
-            [cx2 - 6 - pin_r, pin_cy - pin_r, cx2 - 6 + pin_r, pin_cy + pin_r],
-            fill=(250, 204, 21),
-            outline=(30, 41, 59),
+        seam_mask2 = np.maximum(seam_mask2, s_cut)
+        r_hi = _smoothstep(gap_half_pct - 0.1, gap_half_pct + 0.15, dp) * (
+            1.0 - _smoothstep(gap_half_pct + 0.2, gap_half_pct + 0.75, dp)
         )
+        rim_hi2 = np.maximum(rim_hi2, r_hi)
 
-    dr.line([(pw + 22, bed_y2 + 1), (pw * 2 - 22, bed_y2 + 1)], fill=(16, 185, 129), width=3)
-    dr.text((pw + 28, bed_y2 + 10), f"Z = 0 BUILD PLATE  |  ALL {n_segs}/{n_segs} SEGMENTS SEATED FLUSH  |  X-RAY HINGE PINS (YELLOW)", fill=(110, 231, 183))
+    v_n2 = u2 * 2.0 - 1.0
+    nz2 = np.sqrt(np.maximum(0.05, 1.0 - v_n2 * v_n2))
+    nx2 = np.gradient(th_grid, axis=1) * 2.5
+    sh2 = 0.28 + 0.56 * np.clip(-0.25 * nx2 - 0.48 * v_n2 + 0.72 * nz2, 0.0, 1.0) + 0.16 * nz2
+    # Two-tone countershade (dorsal slate -> cream belly on lower 32% of torso)
+    belly_line = 0.66 + 0.08 * _smoothstep(55.0, 85.0, p_px)
+    c_blend2 = _smoothstep(belly_line - 0.06, belly_line + 0.06, u2)[:, :, None]
+    surf_c2 = (1.0 - c_blend2) * dorsal_col + c_blend2 * ventral_col
+    rgb2 = surf_c2 * sh2[:, :, None] * 255.0
 
-    # Panel 3 (Bottom-Left): Top Orthographic — Intact Fins & Curved Wiggle Cuts
-    ox3, cy3 = 46, ph + ph // 2 + 6
-    w_px_scale = ph * 0.68
-    for si in range(n_segs):
-        a_pct = seg_bounds[si] + (gap_pct * 0.55 if si > 0 else 0.0)
-        b_pct = seg_bounds[si + 1] - (gap_pct * 0.55 if si < n_segs - 1 else 0.0)
-        mask_s = (p_dense >= a_pct) & (p_dense <= b_pct)
-        ps = p_dense[mask_s]
-        if len(ps) < 2:
-            continue
-        hws = full_half_w[mask_s] * w_px_scale
-        # Curve segment cut boundaries into a slight chevron for S-curve wiggle clearance
-        up3 = [(ox3 + (p / 100.0) * draw_w, cy3 - hw) for p, hw in zip(ps, hws)]
-        lo3 = [(ox3 + (p / 100.0) * draw_w, cy3 + hw) for p, hw in reversed(list(zip(ps, hws)))]
-        fill_c = (86, 118, 152) if si % 2 == 0 else (74, 104, 138)
-        dr.polygon([*up3, *lo3], fill=fill_c, outline=(186, 208, 232))
+    # Sculpted swept-back lateral pectoral fin (36%..52%, sitting cleanly above Z=0!)
+    pec_t = np.clip((p_px - 35.0) / 16.5, 0.0, 1.0)
+    pec_y_top = bed_y2 - (0.28 - 0.16 * pec_t) * h_scale
+    pec_y_bot = bed_y2 - (0.04 + 0.02 * (pec_t ** 2)) * h_scale
+    in_pec2 = (
+        _smoothstep(35.0, 36.5, p_px)
+        * (1.0 - _smoothstep(49.5, 51.5, p_px))
+        * _smoothstep(pec_y_top - 1.0, pec_y_top + 1.2, yy_p)
+        * (1.0 - _smoothstep(pec_y_bot - 1.2, pec_y_bot + 1.0, yy_p))
+    )
+    pec_sh = 0.36 + 0.54 * (1.0 - np.clip((yy_p - pec_y_top) / np.maximum(3.0, pec_y_bot - pec_y_top), 0.0, 1.0))
+    # Pectoral fin sits in front of seams and cream belly
+    seam_mask2 *= (1.0 - in_pec2 * 0.95)
+    rgb2 = (1.0 - (in_pec2 * 0.92)[:, :, None]) * rgb2 + (in_pec2 * 0.92)[:, :, None] * (dorsal_col * pec_sh[:, :, None] * 255.0)
 
-    # Draw centerline chain links & dorsal fin ridge on Panel 3
-    dorsal_x0 = ox3 + (fin_start / 100.0) * draw_w
-    dorsal_x1 = ox3 + (fin_end / 100.0) * draw_w
-    dr.rounded_rectangle([dorsal_x0, cy3 - 5, dorsal_x1, cy3 + 5], radius=4, fill=(56, 82, 112), outline=(191, 219, 254))
+    # Darken seam interior (leaving subtle internal link bridge) + brighten bevel lip
+    link_band2 = _smoothstep(0.45, 0.50, u2) * (1.0 - _smoothstep(0.62, 0.67, u2))
+    seam_dark2 = 0.22 + 0.30 * link_band2
+    rgb2 = (1.0 - seam_mask2[:, :, None]) * rgb2 + seam_mask2[:, :, None] * (rgb2 * seam_dark2[:, :, None])
+    rgb2 = np.minimum(255.0, rgb2 + (rim_hi2 * (1.0 - in_pec2))[:, :, None] * 26.0)
+    p2_arr = (1.0 - cov2[:, :, None]) * p2_arr + cov2[:, :, None] * rgb2
+    p2_im = Image.fromarray(np.clip(p2_arr, 0, 255).astype(np.uint8))
+    d2 = ImageDraw.Draw(p2_im)
+    # Crisp X-ray Z-axis captive post + horizontal chain-link callouts inside each joint
     for cp in cuts_pct:
-        cx3 = ox3 + (cp / 100.0) * draw_w
-        dr.rounded_rectangle([cx3 - 8, cy3 - 4, cx3 + 8, cy3 + 4], radius=3, fill=(250, 204, 21), outline=(30, 41, 59))
-    dr.text((28, ph * 2 - 30), f"PECTORAL & DORSAL FINS 100% UNCUT ({fin_start:.0f}%-{fin_end:.0f}%)  |  0.45 mm HINGE CLEARANCE", fill=(191, 219, 254))
-
-    # Panel 4 (Bottom-Right): Bottom View — Z=0 First-Layer Bed Contact Pads
-    ox4, cy4 = pw + 46, ph + ph // 2 + 6
-    for si in range(n_segs):
-        a_pct = max(8.0, seg_bounds[si] + (gap_pct * 0.7 if si > 0 else 0.0))
-        b_pct = min(90.0, seg_bounds[si + 1] - (gap_pct * 0.7 if si < n_segs - 1 else 0.0))
-        mask_s = (p_dense >= a_pct) & (p_dense <= b_pct)
-        ps = p_dense[mask_s]
-        if len(ps) < 2:
+        cx_i = ox_pad + ((cp + 1.1) / 100.0) * draw_w
+        lh_i = float(np.interp(cp, p_dense, top_h_norm)) * h_scale
+        if lh_i < 14.0:
             continue
-        # Flat first-layer adhesion footprint width (~68% of full width, including seated pectoral fin undersides)
-        pad_hws = np.maximum(0.035 * w_px_scale, full_half_w[mask_s] * w_px_scale * 0.68)
-        up4 = [(ox4 + (p / 100.0) * draw_w, cy4 - pw_v) for p, pw_v in zip(ps, pad_hws)]
-        lo4 = [(ox4 + (p / 100.0) * draw_w, cy4 + pw_v) for p, pw_v in reversed(list(zip(ps, pad_hws)))]
-        dr.polygon([*up4, *lo4], fill=(16, 185, 129), outline=(167, 243, 208))
-        mid_x = ox4 + (0.5 * (a_pct + b_pct) / 100.0) * draw_w
-        dr.text((mid_x - 7, cy4 - 5), f"S{si + 1}", fill=(6, 46, 34))
+        z_top_pin = bed_y2 - min(lh_i * 0.62, 26.0)
+        z_bot_pin = bed_y2 - max(4.0, lh_i * 0.14)
+        mid_pin = 0.5 * (z_top_pin + z_bot_pin)
+        d2.rounded_rectangle([cx_i - 6, mid_pin - 4, cx_i + 6, mid_pin + 4], radius=3, outline=(56, 189, 248), width=1)
+        d2.line([(cx_i - 3, z_top_pin), (cx_i - 3, z_bot_pin)], fill=(250, 204, 21), width=2)
+    d2.line([(20, int(bed_y2) + 1), (pw - 20, int(bed_y2) + 1)], fill=(16, 185, 129), width=3)
+    d2.text((26, int(bed_y2) + 10), f"Z = 0 BUILD PLATE  |  {len(cuts_pct) + 1}/{len(cuts_pct) + 1} SEGMENTS SEATED  |  CAPTIVE Z-PIN HINGES", fill=(110, 231, 183))
+    sheet.paste(p2_im, (pw, 0))
 
-    dr.text(
-        (pw + 28, ph * 2 - 30),
-        f"PASS: {n_segs}/{n_segs} SEGMENTS FLAT ON Z=0  |  NO SUPPORTS NEEDED  |  PRINT-IN-PLACE READY",
+    # ---------- Panel 3 (Bottom-Left) & Panel 4 (Bottom-Right): 3D-Shaded Top & Bottom Views ----------
+    cy_tb = ph * 0.51
+    w_scale = ph * 0.66
+    dy_tb = yy_p - cy_tb
+    abs_dy = np.abs(dy_tb)
+    body_hw = np.interp(p_px, p_dense, torpedo_w).astype(np.float32) * w_scale
+
+    # Swept-back hydrofoil pectoral fins (sweeping rearward at ~38° like real shark fins!)
+    u_fin = np.maximum(0.0, abs_dy - body_hw * 0.82) / (0.24 * w_scale)
+    fin_lead = 34.5 + 13.5 * (u_fin ** 1.15)
+    fin_chord = np.maximum(0.0, 11.5 * (1.0 - 0.78 * (u_fin ** 1.3)))
+    fin_trail = fin_lead + fin_chord
+    in_pec_tb = (
+        (u_fin <= 1.0)
+        & (abs_dy >= body_hw * 0.75)
+    ).astype(np.float32) * _smoothstep(fin_lead - 0.9, fin_lead + 0.9, p_px) * (
+        1.0 - _smoothstep(fin_trail - 0.9, fin_trail + 0.9, p_px)
+    ) * (1.0 - _smoothstep(0.90, 1.02, u_fin))
+
+    cov_body_tb = (1.0 - _smoothstep(np.maximum(1.2, body_hw - 1.1), body_hw + 1.1, abs_dy)) * in_p
+    cov_tb = np.clip(np.maximum(cov_body_tb, in_pec_tb), 0.0, 1.0)
+
+    u_lat = np.clip(dy_tb / np.maximum(2.5, body_hw), -1.0, 1.0)
+    nz_tb = np.sqrt(np.maximum(0.06, 1.0 - u_lat * u_lat))
+    sh_tb = 0.28 + 0.56 * np.clip(-0.36 * u_lat + 0.76 * nz_tb, 0.0, 1.0) + 0.16 * nz_tb
+    fin_blend = _smoothstep(0.0, 0.28, u_fin)
+    sh_fin = (1.0 - fin_blend) * sh_tb + fin_blend * (0.38 + 0.42 * (1.0 - 0.35 * np.clip(u_fin, 0.0, 1.0)))
+
+    # Gill-curved S-wiggle seams in Top & Bottom views (strictly outside pectoral fins!)
+    seam_tb = np.zeros_like(cov_tb)
+    rim_tb = np.zeros_like(cov_tb)
+    for cp in cuts_pct:
+        lat_frac = np.clip((abs_dy - 4.0) / np.maximum(6.0, body_hw - 4.0), 0.0, 1.0)
+        c_top = cp + 1.5 * (lat_frac * lat_frac)
+        dp_t = p_px - c_top
+        sc_t = _smoothstep(-gap_half_pct - 0.16, -gap_half_pct + 0.12, dp_t) * (
+            1.0 - _smoothstep(gap_half_pct - 0.12, gap_half_pct + 0.16, dp_t)
+        )
+        seam_tb = np.maximum(seam_tb, sc_t * (1.0 - in_pec_tb))
+        rh_t = _smoothstep(gap_half_pct - 0.1, gap_half_pct + 0.15, dp_t) * (
+            1.0 - _smoothstep(gap_half_pct + 0.2, gap_half_pct + 0.75, dp_t)
+        )
+        rim_tb = np.maximum(rim_tb, rh_t * (1.0 - in_pec_tb))
+
+    # Render Panel 3 (Top View)
+    p3_arr = bg_studio.copy()
+    rgb3_body = dorsal_col * sh_tb[:, :, None] * 255.0
+    rgb3_fin = dorsal_col * sh_fin[:, :, None] * 255.0
+    fin_w3 = (in_pec_tb * (1.0 - cov_body_tb * 0.5))[:, :, None]
+    rgb3 = (1.0 - fin_w3) * rgb3_body + fin_w3 * rgb3_fin
+    # Sculpted dorsal fin ridge along centerline (fin_start .. fin_end)
+    dor_hw = 4.8 * np.sin(np.pi * np.clip((p_px - fin_start) / max(3.0, fin_end - fin_start), 0.0, 1.0))
+    in_dor = (
+        _smoothstep(fin_start, fin_start + 1.5, p_px)
+        * (1.0 - _smoothstep(fin_end - 1.5, fin_end, p_px))
+        * (1.0 - _smoothstep(np.maximum(0.5, dor_hw - 1.0), dor_hw + 1.0, abs_dy))
+    )
+    dor_sh = 0.45 + 0.48 * np.clip(1.0 - dy_tb / np.maximum(1.5, dor_hw), 0.0, 1.2)
+    rgb3 = (1.0 - in_dor[:, :, None]) * rgb3 + in_dor[:, :, None] * np.minimum(255.0, dorsal_col * dor_sh[:, :, None] * 255.0 + 10.0)
+    rgb3 = (1.0 - seam_tb[:, :, None]) * rgb3 + seam_tb[:, :, None] * (rgb3 * 0.24)
+    rgb3 = np.minimum(255.0, rgb3 + rim_tb[:, :, None] * 24.0)
+    p3_arr = (1.0 - cov_tb[:, :, None]) * p3_arr + cov_tb[:, :, None] * rgb3
+    p3_im = Image.fromarray(np.clip(p3_arr, 0, 255).astype(np.uint8))
+    d3 = ImageDraw.Draw(p3_im)
+    for cp in cuts_pct:
+        cx3_i = ox_pad + (cp / 100.0) * draw_w
+        d3.rounded_rectangle([cx3_i - 6, cy_tb - 3.5, cx3_i + 5, cy_tb + 3.5], radius=3, outline=(56, 189, 248), width=1)
+        d3.ellipse([cx3_i - 4.5, cy_tb - 2.0, cx3_i - 0.5, cy_tb + 2.0], fill=(250, 204, 21))
+    d3.text((24, ph - 28), f"FIN-SAFE S-SWIMMING CUTS  |  DORSAL & PECTORAL FINS 100% INTACT", fill=(191, 219, 254))
+    sheet.paste(p3_im, (0, ph))
+
+    # Render Panel 4 (Bottom View — Z=0 Emerald First-Layer Bed Contact Ribbon)
+    p4_arr = bg_studio.copy()
+    rgb4_body = ventral_col * sh_tb[:, :, None] * 242.0
+    rgb4_fin = dorsal_col * sh_fin[:, :, None] * 235.0
+    rgb4 = (1.0 - fin_w3) * rgb4_body + fin_w3 * rgb4_fin
+    # Centered Z=0 ventral bed-contact ribbon across every segment (15%..77%) + caudal tail pad (89%..94%)
+    pad_hw = body_hw * 0.38 * _smoothstep(13.0, 19.0, p_px) * (1.0 - _smoothstep(74.0, 78.5, p_px))
+    tail_pad_hw = body_hw * 0.55 * _smoothstep(87.5, 89.5, p_px) * (1.0 - _smoothstep(93.5, 95.5, p_px))
+    tot_pad_hw = np.maximum(pad_hw, tail_pad_hw)
+    in_pad4 = (
+        (1.0 - _smoothstep(np.maximum(0.8, tot_pad_hw - 1.1), tot_pad_hw + 1.1, abs_dy))
+        * (tot_pad_hw > 1.2)
+        * (1.0 - seam_tb)
+    )
+    em_rgb = np.array([16.0, 198.0, 136.0], dtype=np.float32) * (0.82 + 0.18 * nz_tb)[:, :, None]
+    rgb4 = (1.0 - in_pad4[:, :, None]) * rgb4 + in_pad4[:, :, None] * em_rgb
+    rgb4 = (1.0 - seam_tb[:, :, None]) * rgb4 + seam_tb[:, :, None] * (rgb4 * 0.22)
+    p4_arr = (1.0 - cov_tb[:, :, None]) * p4_arr + cov_tb[:, :, None] * rgb4
+    p4_im = Image.fromarray(np.clip(p4_arr, 0, 255).astype(np.uint8))
+    d4 = ImageDraw.Draw(p4_im)
+    d4.text(
+        (24, ph - 28),
+        f"EMERALD = Z=0 FIRST-LAYER BED PADS  |  {len(cuts_pct) + 1}/{len(cuts_pct) + 1} SEGMENTS SUPPORT-FREE",
         fill=(110, 231, 183),
     )
+    sheet.paste(p4_im, (pw, ph))
+
+    dr = ImageDraw.Draw(sheet)
 
     # Quadrant dividers & headers
     dr.line([(pw, 0), (pw, ph * 2)], fill=(64, 72, 86), width=2)

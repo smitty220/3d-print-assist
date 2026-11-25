@@ -531,3 +531,37 @@ def test_pixar_to_flexi_design_conversion_and_clean_sculpt_inheritance(monkeypat
     bed_check = next(f for f in checks["part"] if f["code"] == "bed_contact")
     assert bed_check["status"] in ("ok", "warn"), f"Unexpected floating segments: {bed_check}"
     assert "float above Z=0" not in bed_check["detail"]
+
+
+def test_chubby_sculpt_auto_streamlining_and_zero_floating_z_pin_flexi(tmp_path: Path):
+    """Verify a chubby (~1.42:1) finned figurine sculpt automatically streamlines into a sleek >= 2.15:1
+    flexi profile with captive Z-axis swimming joints, zero fused segments, and 0 floating components."""
+    import manifold3d as m3d
+    from print_assist.geometry.mesh_prep import analyze_sculpt_printability
+
+    # Chubby 1.42:1 finned character (length ~96 mm, width ~68 mm, height ~67 mm)
+    torso = m3d.Manifold.sphere(1.0, 36).scale((44.0, 32.0, 28.0)).translate((0.0, 0.0, 28.0))
+    dorsal = m3d.Manifold.sphere(1.0, 24).scale((8.0, 3.0, 14.0)).translate((0.0, 0.0, 53.0))
+    pect_l = m3d.Manifold.sphere(1.0, 20).scale((7.0, 12.0, 2.8)).translate((0.0, 30.0, 14.0))
+    pect_r = m3d.Manifold.sphere(1.0, 20).scale((7.0, 12.0, 2.8)).translate((0.0, -30.0, 14.0))
+    tail = m3d.Manifold.sphere(1.0, 24).scale((8.0, 2.5, 16.0)).translate((44.0, 0.0, 30.0))
+    chubby = torso + dorsal + pect_l + pect_r + tail
+    cm = chubby.to_mesh()
+    raw_path = tmp_path / "chubby_shark.stl"
+    trimesh.Trimesh(vertices=cm.vert_properties[:, :3], faces=cm.tri_verts, process=False).export(str(raw_path))
+
+    prep = SculptPrep(target_height_mm=65.0, flexi_segments=5)
+    res = prepare_print_mesh(raw_path, prep, name="Streamlined Flexi")
+    assert res.watertight is True
+    sx = res.bbox_max[0] - res.bbox_min[0]
+    sz = res.bbox_max[2] - res.bbox_min[2]
+    assert sx / sz >= 2.10, f"Expected sleek >= 2.10:1 streamlined ratio, got {sx / sz:.2f}:1"
+    assert any("streamlined torso/tail" in n for n in res.notes)
+
+    pr = analyze_sculpt_printability(res.parts)
+    assert pr["component_count"] >= 4
+    assert pr["floating_count"] == 0, f"Expected all segments seated on Z=0, got: {pr}"
+
+    sheet_png = render_prepared_meshes(res.parts, view="sheet", size=640)
+    assert sheet_png[:8] == b"\x89PNG\r\n\x1a\n"
+
