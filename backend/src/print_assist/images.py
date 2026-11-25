@@ -54,16 +54,36 @@ Post = Callable[[str, dict, dict], dict]  # (url, headers, json body) -> respons
 
 
 def _post(url: str, headers: dict, body: dict) -> dict:
-    import httpx
+    import json
+    import ssl
+    import urllib.error
+    import urllib.request
 
-    r = httpx.post(url, headers=headers, json=body, timeout=180)
-    if r.status_code >= 400:
+    try:
+        import certifi
+
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        ctx = ssl.create_default_context()
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=180, context=ctx) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
         try:
-            msg = r.json().get("error", {}).get("message", r.text)
+            msg = json.loads(raw).get("error", {}).get("message", raw)
         except ValueError:
-            msg = r.text
-        raise ImageError(f"Gemini refused the request ({r.status_code}): {msg}")
-    return r.json()
+            msg = raw
+        raise ImageError(f"Gemini refused the request ({exc.code}): {msg}") from exc
+    except urllib.error.URLError as exc:
+        raise ImageError(f"Gemini connection failed: {exc.reason}") from exc
 
 
 def _last_image(obj: Any) -> tuple[str, str] | None:

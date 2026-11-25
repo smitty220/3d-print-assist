@@ -565,3 +565,56 @@ def test_chubby_sculpt_auto_streamlining_and_zero_floating_z_pin_flexi(tmp_path:
     sheet_png = render_prepared_meshes(res.parts, view="sheet", size=640)
     assert sheet_png[:8] == b"\x89PNG\r\n\x1a\n"
 
+
+def test_multiview_quad_splitting_and_multicolor_mmu3_3mf_export(tmp_path: Path):
+    """Verify 2x2 painted turnaround sheets extract all 3 orthographic views for Hunyuan3D-2mv, and
+    multi-color volumetric splitting produces watertight non-overlapping MMU3 parts + PrusaSlicer 3MF config."""
+    import manifold3d as m3d
+    from PIL import ImageDraw
+    from print_assist.geometry.mesh_prep import analyze_sculpt_printability
+    from print_assist.ml.sculptor import _split_turnaround
+
+    # 1. Verify 2x2 painted quad sheet extracts front, left, back views for Hunyuan3D-2mv
+    quad_p = tmp_path / "quad.png"
+    Image.new("RGB", (896, 672), (240, 240, 242)).save(quad_p)
+    views_out = _split_turnaround(quad_p, tmp_path / "mv", ["3/4 hero", "front", "side (Z=0)", "back"])
+    assert set(views_out.keys()) == {"front", "left", "back"}
+
+    # 2. Create a two-tone concept image (slate blue + cream belly) and a detailed >4k-face shark sculpt
+    c_im = Image.new("RGB", (512, 320), (248, 248, 250))
+    dr = ImageDraw.Draw(c_im)
+    dr.ellipse([40, 60, 470, 240], fill=(78, 108, 140))
+    dr.chord([50, 120, 460, 250], start=0, end=180, fill=(236, 230, 214))
+    concept_p = tmp_path / "concept.png"
+    c_im.save(concept_p)
+
+    # Smooth elongated solid (5,120 faces > 4000 to exercise the full SDF Flexi-Factory + MMU3 pipeline!)
+    body = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+    body.apply_scale([62.0, 22.0, 20.0])
+    body.apply_translation([0.0, 0.0, 20.0])
+    raw_p = tmp_path / "hi_shark.stl"
+    body.export(str(raw_p))
+
+    prep = SculptPrep(target_height_mm=44.0, flexi_segments=4, flexi_angle_deg=24.0, color_mode="auto")
+    res = prepare_print_mesh(raw_p, prep, name="Bruce", concept_image_path=concept_p, multi_extruder=True)
+    assert res.watertight is True
+    assert len(res.parts) == 2, f"Expected 2-color Body+Belly parts, got {[p.name for p in res.parts]}"
+    assert res.parts[0].color != res.parts[1].color
+
+    # Verify unified physical printability across multi-color parts (0 floating segments!)
+    pr = analyze_sculpt_printability(res.parts)
+    assert pr["component_count"] >= 4
+    assert pr["floating_count"] == 0, f"Multi-color flexi segments should be seated on Z=0: {pr}"
+
+    # Verify PrusaSlicer MMU3 extruder metadata is embedded in exported 3MF
+    printer = profiles().get("prusa_mk4s_mmu3") or next(iter(profiles().values()))
+    mf_out = export_prepared_meshes(res.parts, printer, "3mf", tmp_path / "bruce_mmu3.3mf", title="Flexi Bruce")
+    with zipfile.ZipFile(mf_out) as zf:
+        names = set(zf.namelist())
+        assert "3D/3dmodel.model" in names
+        assert "Metadata/Slic3r_PE_model.config" in names
+        cfg_xml = zf.read("Metadata/Slic3r_PE_model.config").decode("utf-8")
+        assert 'key="extruder" value="1"' in cfg_xml
+        assert 'key="extruder" value="2"' in cfg_xml
+
+

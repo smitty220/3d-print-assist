@@ -1289,7 +1289,7 @@ class CharacterSculptIn(BaseModel):
     flexi_start_pct: float = 35.0
     flexi_end_pct: float = 88.0
     flexi_clearance_mm: float = 0.45
-    flexi_angle_deg: float = 12.0
+    flexi_angle_deg: float = 24.0
     flexi_cuts_pct: list[float] = []
     cut_bodies: list[str] = []
     union_bodies: list[str] = []
@@ -1299,6 +1299,7 @@ class CharacterSculptIn(BaseModel):
     hollow_cavity: bool = False
     hollow_wall_mm: float = 3.0
     multicolor: bool = False
+    color_mode: Literal["auto", "single", "multicolor"] = "auto"
     color: str | None = "#b8c2cc"
     wait_s: float = -1.0
 
@@ -1329,6 +1330,8 @@ class SculptPrepPatch(BaseModel):
     rotate_x: float | None = None
     rotate_y: float | None = None
     rotate_z: float | None = None
+    max_colors: int | None = None
+    color_mode: Literal["auto", "single", "multicolor"] | None = None
     color: str | None = None
     filament: int | None = None
 
@@ -1505,7 +1508,13 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
             raise HTTPException(404, f"No concept {cid!r}")
         if c.status == "pending" and x_actor != USER and not w.project.data.settings.direct_build:
             raise HTTPException(409, f"Concept {c.id} is still waiting for the user's approval")
-        img_path = w.concepts.clean_image_path(c.id)
+        img_path = (
+            w.concepts.image_path(c.id)
+            if (len(c.views) >= 4 and "back" in " ".join(v.lower() for v in c.views) and "bottom" not in " ".join(v.lower() for v in c.views))
+            else w.concepts.clean_image_path(c.id)
+        )
+        if img_path is None:
+            img_path = w.concepts.clean_image_path(c.id)
         views = list(c.views)
         sculpt_name = sculpt_name or c.title
         if img_path is None:
@@ -1543,7 +1552,8 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         magnet_depth_mm=body.magnet_depth_mm,
         hollow_cavity=body.hollow_cavity,
         hollow_wall_mm=body.hollow_wall_mm,
-        max_colors=4 if body.multicolor else 1,
+        max_colors=4 if (body.multicolor or body.color_mode == "multicolor") else 1,
+        color_mode="multicolor" if body.multicolor else body.color_mode,
     )
 
     def _work() -> dict:

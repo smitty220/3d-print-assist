@@ -682,6 +682,303 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
     return _place_on_bed(seated), ["gently un-arched rear torso onto Z=0 bed (head, fins, and tail preserved)"]
 
 
+def _rasterize_manifold_grid(mf: m3d.Manifold, pitch: float, pad_mm: float = 3.0) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Build an exact watertight 3D boolean occupancy grid via fast C++ `manifold3d` horizontal slicing."""
+    from PIL import Image, ImageDraw
+
+    bb = mf.bounding_box()
+    x0, y0, z0, x1, y1, z1 = [float(v) for v in bb]
+    ox, oy, oz = x0 - pad_mm, y0 - pad_mm, z0 - pad_mm
+    nx = int(math.ceil((x1 - x0 + 2.0 * pad_mm) / pitch)) + 1
+    ny = int(math.ceil((y1 - y0 + 2.0 * pad_mm) / pitch)) + 1
+    nz = int(math.ceil((z1 - z0 + 2.0 * pad_mm) / pitch)) + 1
+    occ = np.zeros((nx, ny, nz), dtype=bool)
+    for iz in range(nz):
+        zv = oz + (iz + 0.5) * pitch
+        if zv < z0 - 1e-4 or zv > z1 + 1e-4:
+            continue
+        polys = mf.slice(zv).to_polygons()
+        if not polys:
+            continue
+        outers, holes = [], []
+        for poly in polys:
+            if len(poly) < 3:
+                continue
+            pts = np.asarray(poly, dtype=np.float64)
+            area = 0.5 * float(np.sum(pts[:, 0] * np.roll(pts[:, 1], -1) - np.roll(pts[:, 0], -1) * pts[:, 1]))
+            px = [(float((p[0] - ox) / pitch), float((p[1] - oy) / pitch)) for p in pts]
+            (outers if area >= 0 else holes).append(px)
+        im = Image.new("L", (nx, ny), 0)
+        dr = ImageDraw.Draw(im)
+        for px in outers:
+            dr.polygon(px, fill=255)
+        for px in holes:
+            dr.polygon(px, fill=0)
+        occ[:, :, iz] = np.asarray(im, dtype=np.uint8).T > 127
+    return occ, (ox, oy, oz)
+
+
+def _taubin_smooth_keep_bed(tm: trimesh.Trimesh, iterations: int = 16, z_lock: float = 0.25) -> trimesh.Trimesh:
+    """Fast vectorized volume-preserving Taubin smoothing that removes marching-cubes stepping while
+    keeping `Z = 0` bed vertices locked flat."""
+    verts = np.asarray(tm.vertices, dtype=np.float64).copy()
+    faces = np.asarray(tm.faces, dtype=np.int64)
+    n = len(verts)
+    if n < 8 or len(faces) < 8:
+        return tm
+    e = np.vstack((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
+    ea, eb = e[:, 0], e[:, 1]
+    deg = np.maximum(np.bincount(ea, minlength=n).astype(np.float64), 1.0)[:, None]
+    lock = verts[:, 2] <= z_lock
+
+    def _step(v: np.ndarray, lam: float) -> np.ndarray:
+        acc = np.zeros_like(v)
+        np.add.at(acc, ea, v[eb])
+        v_new = v + lam * ((acc / deg) - v)
+        v_new[lock, 2] = v[lock, 2]
+        return v_new
+
+    for _ in range(iterations):
+        verts = _step(verts, 0.50)
+        verts = _step(verts, -0.53)
+    return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+
+
+def _sdf_round_segment(
+    seg: m3d.Manifold,
+    left_cut_fn,
+    right_cut_fn,
+    fillet_r: float = 2.1,
+    bed_chamfer: float = 0.65,
+    pitch: float = 0.54,
+) -> m3d.Manifold:
+    """Apply true Flexi-Factory 3D SDF ball-rolling organic fillets (`fillet_r` mm) strictly along the
+    front/back cut rims of a segment, keeping faces/fins sharp and adding a `bed_chamfer` mm 45° bottom bevel."""
+    from scipy import ndimage
+    from skimage.measure import marching_cubes
+
+    bb = seg.bounding_box()
+    sx, sy, sz = float(bb[3] - bb[0]), float(bb[4] - bb[1]), float(bb[5] - bb[2])
+    if sx < 3.0 or sy < 4.0 or sz < 4.0:
+        return seg
+    eff_pitch = max(pitch, max(sx, sy, sz) / 130.0)
+    r_eff = min(fillet_r, sx * 0.28, sy * 0.18, sz * 0.18)
+    if r_eff < 0.55:
+        return seg
+
+    pad_mm = r_eff + 3.0 * eff_pitch
+    occ, (ox, oy, oz) = _rasterize_manifold_grid(seg, eff_pitch, pad_mm=pad_mm)
+    if int(occ.sum()) < 24:
+        return seg
+
+    sdf_raw = ndimage.distance_transform_edt(~occ) * eff_pitch - ndimage.distance_transform_edt(occ) * eff_pitch
+    sdf_smooth = ndimage.gaussian_filter(sdf_raw, sigma=1.22)
+
+    core = sdf_smooth <= -r_eff
+    if int(core.sum()) < 10:
+        return seg
+    sdf_opened = ndimage.gaussian_filter(ndimage.distance_transform_edt(~core) * eff_pitch - r_eff, sigma=0.92)
+
+    nx, ny, nz = occ.shape
+    xs = ox + (np.arange(nx, dtype=np.float32) + 0.5) * eff_pitch
+    ys = oy + (np.arange(ny, dtype=np.float32) + 0.5) * eff_pitch
+    zs = oz + (np.arange(nz, dtype=np.float32) + 0.5) * eff_pitch
+
+    dist_cut = np.full((nx, ny), 1e4, dtype=np.float32)
+    if left_cut_fn is not None:
+        lx = np.array([left_cut_fn(float(yv)) for yv in ys], dtype=np.float32)
+        dist_cut = np.minimum(dist_cut, np.abs(xs[:, None] - lx[None, :]))
+    if right_cut_fn is not None:
+        rx = np.array([right_cut_fn(float(yv)) for yv in ys], dtype=np.float32)
+        dist_cut = np.minimum(dist_cut, np.abs(xs[:, None] - rx[None, :]))
+
+    band = max(r_eff * 2.2, 4.2)
+    t_rim = np.clip((band - dist_cut) / band, 0.0, 1.0)
+    w_rim = (t_rim * t_rim * (3.0 - 2.0 * t_rim))[:, :, None]
+    z_fade = np.clip((zs - 0.55) / 1.4, 0.0, 1.0).astype(np.float32)[None, None, :]
+    w_eff = w_rim * z_fade
+
+    sdf_rounded = (1.0 - w_eff) * sdf_smooth + w_eff * np.maximum(sdf_smooth, sdf_opened)
+    z_grid = zs[None, None, :]
+    chamf_add = np.maximum(0.0, bed_chamfer - z_grid) * 0.65
+    sdf_final = np.maximum(sdf_rounded + chamf_add, -z_grid)
+
+    try:
+        verts, faces, _, _ = marching_cubes(sdf_final, level=0.0, spacing=(eff_pitch, eff_pitch, eff_pitch))
+    except Exception:  # noqa: BLE001
+        return seg
+    verts = verts + np.array([ox + 0.5 * eff_pitch, oy + 0.5 * eff_pitch, oz + 0.5 * eff_pitch])
+    tm = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    if tm.volume < 0:
+        tm.invert()
+    tm = _taubin_smooth_keep_bed(tm, iterations=16, z_lock=0.25)
+    mf_out, _ = repair_to_manifold(tm)
+    return mf_out if (not mf_out.is_empty() and mf_out.status() == m3d.Error.NoError) else seg
+
+
+def _extract_concept_palette(concept_png: Path) -> dict | None:
+    """Sample dominant dorsal/primary and ventral/accent PLA filament hex colors from a character concept PNG."""
+    from PIL import Image
+
+    if not concept_png.is_file():
+        return None
+    try:
+        with Image.open(concept_png) as im:
+            rgb = np.asarray(im.convert("RGB"), dtype=np.float32)
+    except Exception:  # noqa: BLE001
+        return None
+    H, W, _ = rgb.shape
+    if H < 32 or W < 32:
+        return None
+    border = np.concatenate([rgb[0, :], rgb[-1, :], rgb[:, 0], rgb[:, -1]], axis=0)
+    bg = np.median(border, axis=0)
+    dist = np.linalg.norm(rgb - bg, axis=-1)
+    sat = rgb.max(axis=-1) - rgb.min(axis=-1)
+    luma = rgb.mean(axis=-1)
+    Y_g, _ = np.mgrid[0:H, 0:W]
+    is_shadow = (Y_g > 0.58 * H) & (sat < 14.0) & (luma < bg.mean() - 4.0) & (luma > 135.0)
+    fg = (dist > 16.0) & ~is_shadow
+    fg_px = rgb[fg]
+    if len(fg_px) < 120:
+        return None
+    mid_px = fg_px[(fg_px.mean(axis=-1) > 48.0) & (fg_px.mean(axis=-1) < 242.0)]
+    if len(mid_px) < 60:
+        return None
+    sample = mid_px[::max(1, len(mid_px) // 3000)]
+    # Fast deterministic 2-cluster K-means++ farthest-point initialization in pure NumPy
+    mean_c = sample.mean(axis=0)
+    c1 = sample[int(np.argmax(np.sum((sample - mean_c) ** 2, axis=-1)))].copy()
+    c0 = sample[int(np.argmax(np.sum((sample - c1) ** 2, axis=-1)))].copy()
+    labels = np.zeros(len(sample), dtype=np.int32)
+    for _ in range(12):
+        d0 = np.sum((sample - c0) ** 2, axis=-1)
+        d1 = np.sum((sample - c1) ** 2, axis=-1)
+        labels = (d1 < d0).astype(np.int32)
+        if np.any(labels == 0):
+            c0 = sample[labels == 0].mean(axis=0)
+        if np.any(labels == 1):
+            c1 = sample[labels == 1].mean(axis=0)
+    counts = np.bincount(labels, minlength=2)
+    # Require both clusters to represent a meaningful fraction (>= 10%) and have distinct RGB contrast (> 38)
+    delta = float(np.linalg.norm(c0 - c1))
+    min_share = float(counts.min()) / float(max(1, counts.sum()))
+    if delta < 38.0 or min_share < 0.10:
+        return None
+    col_body, col_belly = (c0, c1) if c0.mean() < c1.mean() else (c1, c0)
+
+    def _hex(c: np.ndarray) -> str:
+        return "#{:02x}{:02x}{:02x}".format(int(np.clip(c[0], 0, 255)), int(np.clip(c[1], 0, 255)), int(np.clip(c[2], 0, 255)))
+
+    return {"body_hex": _hex(col_body), "belly_hex": _hex(col_belly), "delta": delta}
+
+
+def _split_multicolor_parts(
+    mf: m3d.Manifold,
+    prep: SculptPrep,
+    concept_png: Path | None,
+    base_name: str,
+    fallback_color: str | None = "#527292",
+    fallback_filament: int | None = None,
+) -> tuple[list[PreparedPart], list[str]]:
+    """Volumetrically partition a sculpted solid into flush, non-overlapping watertight MMU3/AMS color bodies
+    (e.g. primary dorsal Body on Extruder 1 + countershaded Belly on Extruder 2, keeping lateral fins pure body color)."""
+    pal = _extract_concept_palette(concept_png) if concept_png is not None else None
+    if pal is None:
+        if prep.color_mode != "multicolor" and prep.max_colors <= 1:
+            return [], []
+        pal = {"body_hex": fallback_color or "#527292", "belly_hex": "#ece6d6", "delta": 80.0}
+
+    bb = mf.bounding_box()
+    sx, sy = float(bb[3] - bb[0]), float(bb[4] - bb[1])
+    rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
+    work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
+    work = _place_on_bed(work)
+    flip_180 = _detect_head_flip(work)
+    if flip_180:
+        work = _place_on_bed(work.rotate((0.0, 0.0, 180.0)))
+
+    cbb = work.bounding_box()
+    cx0, cy0, cz0, cx1, cy1, cz1 = [float(v) for v in cbb]
+    csx, csy, csz = cx1 - cx0, cy1 - cy0, cz1 - cz0
+    if csx < 20.0 or csy < 8.0 or csz < 8.0:
+        return [], []
+    cyc = 0.5 * (cy0 + cy1)
+    ctm = _manifold_to_trimesh(work)
+    cv = np.asarray(ctm.vertices, dtype=np.float64)
+
+    nx_b = 40
+    # Stop countershading cleanly at 77% along the spine so rear caudal tail fins stay solid primary color
+    x_end = cx0 + (0.77 if (csx / max(1.0, csz) >= 1.75) else 0.96) * csx
+    x_e = np.linspace(cx0, x_end, nx_b + 1)
+    x_m = 0.5 * (x_e[:-1] + x_e[1:])
+    bz = np.zeros(nx_b, dtype=np.float64)
+    for i in range(nx_b):
+        sl = cv[(cv[:, 0] >= x_e[i]) & (cv[:, 0] <= x_e[i + 1]) & (np.abs(cv[:, 1] - cyc) <= csy * 0.28)]
+        if len(sl) < 4:
+            sl = cv[(cv[:, 0] >= x_e[i]) & (cv[:, 0] <= x_e[i + 1])]
+        if len(sl) < 3:
+            continue
+        t = (x_m[i] - cx0) / max(1e-6, csx)
+        zb, zt = float(sl[:, 2].min()), float(sl[:, 2].max())
+        frac = 0.35 if t < 0.25 else max(0.08, 0.26 * (1.0 - max(0.0, t - 0.35) / 0.45))
+        bz[i] = zb + (zt - zb) * frac
+    bz = np.convolve(np.pad(bz, 2, mode="edge"), np.array([0.1, 0.2, 0.4, 0.2, 0.1]), mode="valid")
+    # Counter-clockwise XZ cross-section polygon for manifold3d extrusion
+    pts_xz = [(float(x_m[0] - 4.0), -2.0), (float(x_m[-1]), -2.0)] + [
+        (float(xv), float(max(-1.0, zv))) for xv, zv in reversed(list(zip(x_m, bz)))
+    ]
+    # Clip belly slab laterally to the core torso width (ahead of pectoral fins) so lateral fins remain primary color!
+    head_chest = cv[(cv[:, 0] >= cx0 + 0.15 * csx) & (cv[:, 0] <= cx0 + 0.26 * csx)]
+    torso_w = float(np.percentile(np.abs(head_chest[:, 1] - cyc), 94)) * 1.88 if len(head_chest) > 20 else csy * 0.65
+    belly_slab = (
+        m3d.Manifold.extrude(m3d.CrossSection([pts_xz]), torso_w)
+        .translate((0.0, 0.0, -torso_w / 2.0))
+        .rotate((90.0, 0.0, 0.0))
+        .translate((0.0, cyc, 0.0))
+    )
+    if belly_slab.is_empty():
+        return [], []
+    p_belly = work ^ belly_slab
+    # Absorb tiny (< 6 mm³) disconnected belly slivers (e.g. near internal hinge ceilings) back into primary body
+    # so MMU3/AMS never wastes filament swaps on microscopic internal specks!
+    if not p_belly.is_empty():
+        b_comps = [c for c in p_belly.decompose() if abs(float(c.volume())) >= 6.0]
+        p_belly = m3d.Manifold.compose(b_comps) if b_comps else m3d.Manifold()
+    p_body = work - p_belly
+    if p_belly.is_empty() or p_body.is_empty() or abs(float(p_belly.volume())) < 25.0:
+        return [], []
+
+    # Undo canonical alignment back into the original mesh's frame (matching `_place_on_bed` centering)
+    out_mfs = [p_body, p_belly]
+    if flip_180:
+        out_mfs = [m.rotate((0.0, 0.0, 180.0)) for m in out_mfs]
+    if rotated_for_y:
+        out_mfs = [m.rotate((0.0, 0.0, 90.0)) for m in out_mfs]
+    all_bb = m3d.Manifold.compose(out_mfs).bounding_box()
+    shift = (-(all_bb[0] + all_bb[3]) / 2.0, -(all_bb[1] + all_bb[4]) / 2.0, -all_bb[2])
+    out_mfs = [m.translate(shift) for m in out_mfs]
+
+    body_tm = _manifold_to_trimesh(out_mfs[0])
+    belly_tm = _manifold_to_trimesh(out_mfs[1])
+    parts = [
+        PreparedPart(
+            name=f"{base_name} · Body",
+            points=np.asarray(body_tm.vertices, dtype=np.float64),
+            tris=np.asarray(body_tm.faces, dtype=np.int32),
+            color=pal["body_hex"],
+            filament=fallback_filament or 1,
+        ),
+        PreparedPart(
+            name=f"{base_name} · Belly",
+            points=np.asarray(belly_tm.vertices, dtype=np.float64),
+            tris=np.asarray(belly_tm.faces, dtype=np.int32),
+            color=pal["belly_hex"],
+            filament=2 if (fallback_filament or 1) != 2 else 1,
+        ),
+    ]
+    return parts, [f"split into 2-color MMU3/AMS bodies ({pal['body_hex']} body + {pal['belly_hex']} belly)"]
+
+
 def _bevel_segment_rims(seg: m3d.Manifold, bevel_mm: float = 0.45) -> m3d.Manifold:
     """Soften sharp 90° saw-cut rims into smooth pillowed designer links by tucking ONLY outer-rim vertices
     (shared between cut-cap faces `|nx| > 0.78` and outer-skin faces `|nx| <= 0.78`, above `Z = 0.40 mm`)
@@ -819,7 +1116,8 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         return mf, notes
 
     c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.80)
-    gap = max(0.82, 1.85 * c)
+    use_sdf_fillet = int(work.num_tri()) >= 4000
+    gap = max(1.12, 2.4 * c) if use_sdf_fillet else max(0.82, 1.85 * c)
     if explicit_pcts:
         sorted_pcts = sorted(explicit_pcts)
         solved_cuts = [(p / 100.0, False) for p in sorted_pcts]
@@ -834,9 +1132,13 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     bounds = [x0 - 5.0, *cuts, x1 + 5.0]
     pad_y = width_all + 40.0
     pad_z = height_all + 40.0
-    # Tight, refined flank flare (~3.5° half-angle, max 1.35 mm half-gap) so exterior seams look sleek, never gaping!
-    eff_deg = _clamp(float(prep.flexi_angle_deg), 6.0, 14.0)
-    tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.48
+    # Flexi Factory expressive ±24-28° V-shaped flank clearance on SDF-filleted sculpts!
+    if use_sdf_fillet:
+        eff_deg = _clamp(float(prep.flexi_angle_deg), 16.0, 30.0)
+        tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.72
+    else:
+        eff_deg = _clamp(float(prep.flexi_angle_deg), 6.0, 26.0)
+        tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.48
 
     joint_specs: list[dict[str, float]] = []
     active_cuts: list[float] = []
@@ -880,14 +1182,18 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
             r_loop_xy = pin_r + c + wall_xy
             slot_w = 2.0 * (r_loop_xy + c + 0.25)
 
-        u_pin = u - (gap / 2.0 + c + pin_r + 0.35)
+        u_pin = u - (gap / 2.0 + c + pin_r + (0.45 if use_sdf_fillet else 0.35))
         cavity_front_x = u_pin - (r_loop_xy + c)
         min_front = (active_cuts[-1] + gap / 2.0 + 1.2) if active_cuts else (x0 + 1.5)
         if cavity_front_x <= min_front:
             continue
 
-        curve = 0.0 if force_flat[i] else min(w_loc * 0.12, seg_pitch * 0.20, 3.8)
-        max_half_gap = min(1.45, max(gap / 2.0 + 0.25, seg_pitch * 0.16))
+        curve = 0.0 if force_flat[i] else min(w_loc * 0.12, seg_pitch * 0.20, 3.6)
+        max_half_gap = (
+            min(2.35, max(gap / 2.0 + 0.55, seg_pitch * 0.19))
+            if use_sdf_fillet
+            else min(1.45, max(gap / 2.0 + 0.25, seg_pitch * 0.16))
+        )
         active_cuts.append(u)
         joint_specs.append({
             "u": u, "yc": yc, "w_loc": w_loc, "z_bot": z_bot, "z_top": z_top, "h_loc": h_loc,
@@ -930,7 +1236,12 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         slab_prism = m3d.Manifold.extrude(m3d.CrossSection([poly]), pad_z).translate((0.0, 0.0, -5.0))
         slab_prisms.append(slab_prism)
         seg_raw = _clean_segment_slivers(work ^ slab_prism)
-        seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=0.45)
+        if use_sdf_fillet:
+            left_fn = None if seg_i == 0 else (lambda yv, idx=seg_i - 1: _cut_curve_x(idx, yv, +1.0))
+            right_fn = None if seg_i == len(active_cuts) else (lambda yv, idx=seg_i: _cut_curve_x(idx, yv, -1.0))
+            seg_raw = _sdf_round_segment(seg_raw, left_fn, right_fn, fillet_r=2.1, bed_chamfer=0.65, pitch=0.54)
+        else:
+            seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=0.45)
 
         # Ensure middle segments touch Z=0 organically BEFORE hinge pockets are cut
         ceil_z = joint_specs[min(seg_i, len(joint_specs) - 1)]["cav_z0"] - 0.2
@@ -946,7 +1257,7 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         cav_z0 = sp["cav_z0"]
         cav_z1 = sp["cav_z1"]
         u_pin = sp["u_pin"]
-        cavity_back_x = u + gap / 2.0 + 1.2
+        cavity_back_x = u + gap / 2.0 + (2.5 if use_sdf_fillet else 1.2)
 
         # 1. Segment i (upstream): subtract enclosed horizontal pocket (preserving Z=0 floor & top roof!), add vertical Z-post
         cavity = _rounded_xy_prism(
@@ -1087,6 +1398,8 @@ def prepare_print_mesh(
     filament: int | None = None,
     cad_cuts: list[tuple[np.ndarray, np.ndarray]] | None = None,
     cad_unions: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    concept_image_path: Path | None = None,
+    multi_extruder: bool = False,
 ) -> PreparedSculpt:
     """Load, repair, orient, scale, flatten bottom, apply hybrid CAD booleans, and cut flexi/hardware finishing."""
     raw = load_raw_mesh(raw_path)
@@ -1181,25 +1494,52 @@ def prepare_print_mesh(
         mf, h_notes = _apply_hollow_cavity(mf, prep)
         notes.extend(h_notes)
 
-    # Optional print-in-place flexi articulation (precision CAD hinge cuts through sculpted character)
+    # Optional print-in-place flexi articulation (SDF Flexi-Factory pillowed rims + exact CAD Z-pin hinges)
     if has_flexi:
         mf, f_notes = _apply_flexi_articulation(mf, prep)
         notes.extend(f_notes)
 
-    final_tm = _manifold_to_trimesh(mf)
     bb = mf.bounding_box()
     vol = abs(float(mf.volume()))
-    part = PreparedPart(
-        name=name,
-        points=np.asarray(final_tm.vertices, dtype=np.float64),
-        tris=np.asarray(final_tm.faces, dtype=np.int32),
-        color=color,
-        filament=filament,
+    is_organic_sculpt = len(raw.faces) >= 4000
+    want_multicolor = (
+        prep.color_mode != "single"
+        and (
+            prep.color_mode == "multicolor"
+            or int(prep.max_colors) > 1
+            or (prep.color_mode == "auto" and multi_extruder and is_organic_sculpt and concept_image_path is not None)
+        )
     )
+    parts: list[PreparedPart] = []
+    if want_multicolor:
+        mc_parts, mc_notes = _split_multicolor_parts(
+            mf, prep, concept_image_path, base_name=name, fallback_color=color, fallback_filament=filament,
+        )
+        if mc_parts:
+            parts = mc_parts
+            notes.extend(mc_notes)
+
+    if not parts:
+        final_tm = _manifold_to_trimesh(mf)
+        parts = [
+            PreparedPart(
+                name=name,
+                points=np.asarray(final_tm.vertices, dtype=np.float64),
+                tris=np.asarray(final_tm.faces, dtype=np.int32),
+                color=color,
+                filament=filament,
+            )
+        ]
+        wt = bool(mf.status() == m3d.Error.NoError and final_tm.is_watertight)
+    else:
+        wt = bool(mf.status() == m3d.Error.NoError) and all(
+            trimesh.Trimesh(vertices=p.points, faces=p.tris, process=False).is_watertight for p in parts
+        )
+
     return PreparedSculpt(
-        parts=[part],
-        watertight=bool(mf.status() == m3d.Error.NoError and final_tm.is_watertight),
-        triangles=part.triangles,
+        parts=parts,
+        watertight=wt,
+        triangles=sum(p.triangles for p in parts),
         volume_mm3=vol,
         bbox_min=[round(float(bb[0]), 4), round(float(bb[1]), 4), round(float(bb[2]), 4)],
         bbox_max=[round(float(bb[3]), 4), round(float(bb[4]), 4), round(float(bb[5]), 4)],
@@ -1448,6 +1788,17 @@ def export_prepared_meshes(parts: list[PreparedPart], printer: PrinterProfile, f
         zf.writestr("[Content_Types].xml", content_types)
         zf.writestr("_rels/.rels", rels)
         zf.writestr("3D/3dmodel.model", xml_bytes)
+        # Write PrusaSlicer MMU3 / OrcaSlicer extruder metadata so multi-color bodies map to Extruder 1, 2, ... on open!
+        if len(part_ids) > 1:
+            cfg = ET.Element("config")
+            asm_obj = ET.SubElement(cfg, "object", {"id": str(asm_id), "instances_count": "1"})
+            ET.SubElement(asm_obj, "metadata", {"type": "object", "key": "name", "value": title or "Character"})
+            for i, (pid, p) in enumerate(zip(part_ids, parts)):
+                ext_slot = str(p.filament if (p.filament and p.filament >= 1) else (i + 1))
+                p_obj = ET.SubElement(cfg, "object", {"id": str(pid), "instances_count": "1"})
+                ET.SubElement(p_obj, "metadata", {"type": "object", "key": "name", "value": p.name or f"Part {i + 1}"})
+                ET.SubElement(p_obj, "metadata", {"type": "object", "key": "extruder", "value": ext_slot})
+            zf.writestr("Metadata/Slic3r_PE_model.config", ET.tostring(cfg, encoding="utf-8", xml_declaration=True))
     return path
 
 
@@ -1474,46 +1825,58 @@ def analyze_sculpt_printability(parts: list[PreparedPart], max_overhang_deg: flo
 
     comp_rows: list[dict] = []
     overhang_area = 0.0
-    for p in parts:
-        tm = trimesh.Trimesh(vertices=p.points, faces=p.tris, process=False)
-        try:
-            comps = tm.split(only_watertight=False)
-        except Exception:  # noqa: BLE001
-            comps = [tm]
-        # Ignore microscopic dust (< 5 triangles)
-        comps = [c for c in comps if len(c.faces) >= 6] or [tm]
-        # Sort along X so segments read head-to-tail
-        comps.sort(key=lambda c: float(c.vertices[:, 0].mean()))
-        for idx, comp in enumerate(comps):
-            v = np.asarray(comp.vertices, dtype=np.float64)
-            f = np.asarray(comp.faces, dtype=np.int64)
-            z_min = float(v[:, 2].min()) - global_z0
-            v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
-            cross = np.cross(v1 - v0, v2 - v0)
-            dbl_area = np.linalg.norm(cross, axis=1)
-            areas = 0.5 * dbl_area
-            nz = np.divide(cross[:, 2], np.maximum(dbl_area, 1e-12))
-            tri_z_max = np.maximum(np.maximum(v0[:, 2], v1[:, 2]), v2[:, 2]) - global_z0
-            tri_z_min = np.minimum(np.minimum(v0[:, 2], v1[:, 2]), v2[:, 2]) - global_z0
+    # Unify flush multi-color sub-parts (e.g. Body + Belly) via exact manifold union so each physical
+    # multi-material printed link is evaluated as one solid component on Z=0!
+    eval_meshes: list[trimesh.Trimesh] = []
+    if len(parts) > 1:
+        mfs = [m for m in (_trimesh_to_manifold(trimesh.Trimesh(vertices=p.points, faces=p.tris, process=False)) for p in parts) if m is not None]
+        if len(mfs) == len(parts):
+            unified = mfs[0]
+            for nxt in mfs[1:]:
+                unified = unified + nxt
+            if not unified.is_empty() and unified.status() == m3d.Error.NoError:
+                eval_meshes = [_manifold_to_trimesh(c) for c in unified.decompose() if abs(float(c.volume())) >= 4.0]
+    if not eval_meshes:
+        for p in parts:
+            tm = trimesh.Trimesh(vertices=p.points, faces=p.tris, process=False)
+            try:
+                comps = tm.split(only_watertight=False)
+            except Exception:  # noqa: BLE001
+                comps = [tm]
+            eval_meshes.extend([c for c in comps if len(c.faces) >= 6] or [tm])
 
-            on_bed = (tri_z_max <= 0.30) & (nz < -0.65)
-            bed_area = float(areas[on_bed].sum())
-            # Count vertices near Z=0 if bottom wasn't planar-trimmed yet
-            if bed_area < 1.0 and z_min <= 0.25:
-                near_bed = (tri_z_min <= 0.35) & (nz < -0.35)
-                bed_area = float(areas[near_bed].sum()) * 0.5
+    # Sort physical printed components along X so segments read head-to-tail
+    eval_meshes.sort(key=lambda c: float(c.vertices[:, 0].mean()))
+    for idx, comp in enumerate(eval_meshes):
+        v = np.asarray(comp.vertices, dtype=np.float64)
+        f = np.asarray(comp.faces, dtype=np.int64)
+        if len(f) < 6:
+            continue
+        z_min = float(v[:, 2].min()) - global_z0
+        v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+        cross = np.cross(v1 - v0, v2 - v0)
+        dbl_area = np.linalg.norm(cross, axis=1)
+        areas = 0.5 * dbl_area
+        nz = np.divide(cross[:, 2], np.maximum(dbl_area, 1e-12))
+        tri_z_max = np.maximum(np.maximum(v0[:, 2], v1[:, 2]), v2[:, 2]) - global_z0
+        tri_z_min = np.minimum(np.minimum(v0[:, 2], v1[:, 2]), v2[:, 2]) - global_z0
 
-            # Steep downward faces above first 2 mm (excluding short internal self-bridging hinge pin ceilings)
-            steep_down = (tri_z_min > 2.2) & (nz < -cos_over)
-            overhang_area += float(areas[steep_down].sum())
+        on_bed = (tri_z_max <= 0.30) & (nz < -0.65)
+        bed_area = float(areas[on_bed].sum())
+        if bed_area < 1.0 and z_min <= 0.25:
+            near_bed = (tri_z_min <= 0.35) & (nz < -0.35)
+            bed_area = float(areas[near_bed].sum()) * 0.5
 
-            seated = (z_min <= 0.28) and (bed_area >= 4.0)
-            comp_rows.append({
-                "index": idx + 1,
-                "z_min_mm": round(z_min, 2),
-                "bed_area_mm2": round(bed_area, 1),
-                "seated": seated,
-            })
+        steep_down = (tri_z_min > 2.2) & (nz < -cos_over)
+        overhang_area += float(areas[steep_down].sum())
+
+        seated = (z_min <= 0.28) and (bed_area >= 4.0)
+        comp_rows.append({
+            "index": idx + 1,
+            "z_min_mm": round(z_min, 2),
+            "bed_area_mm2": round(bed_area, 1),
+            "seated": seated,
+        })
 
     seated_n = sum(1 for r in comp_rows if r["seated"])
     floating_n = len(comp_rows) - seated_n

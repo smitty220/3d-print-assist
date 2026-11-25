@@ -132,7 +132,13 @@ def _kill_proc(proc: subprocess.Popen) -> None:
 
 
 def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict[str, str]:
-    """Extract clean view(s) for Hunyuan3D: supports single hero, 3-panel strip, or 2x2 4-view quad sheet."""
+    """Extract clean orthographic view(s) for Hunyuan3D-2mv:
+    - 3-panel horizontal strip -> `{"front", "left", "back"}`
+    - 2x2 4-view painted turnaround sheet (`3/4 hero`, `front`, `side`, `back`) -> extracts all 3 orthographic
+      views (`front`, `left`, `back`) so `Hunyuan3D-2mv` actually uses multi-view conditioning!
+    - Single hero image -> `{"front": ...}`
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(image_path) as im:
         im = im.convert("RGB")
         w, h = im.size
@@ -149,12 +155,32 @@ def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict
                 c.save(p, format="PNG")
                 out[k] = str(p)
             return out
-        if len(views) >= 4 and w >= 512 and h >= 384 and 0.9 <= (w / max(1, h)) <= 1.65:
-            # 2x2 quad sheet fallback if clean hero wasn't separated yet: take top-left 3/4 hero quadrant
-            hero = im.crop((0, 0, w // 2, h // 2))
-            p = out_dir / "front.png"
-            hero.save(p, format="PNG")
-            return {"front": str(p)}
+        views_low = " ".join(v.lower() for v in views)
+        is_painted_quad = (
+            len(views) >= 4
+            and "back" in views_low
+            and "bottom" not in views_low
+            and w >= 512
+            and h >= 384
+            and 0.9 <= (w / max(1, h)) <= 1.65
+        )
+        if is_painted_quad:
+            # 2x2 quad painted turnaround: TL=3/4 hero, TR=front, BL=side (left), BR=back.
+            # Crop 34 px off the top of each quadrant to remove panel badge labels cleanly.
+            hw, hh = w // 2, h // 2
+            pad_top = min(36, hh // 10)
+            pad_edge = 4
+            crops = {
+                "front": im.crop((hw + pad_edge, pad_top, w - pad_edge, hh - pad_edge)),
+                "left": im.crop((pad_edge, hh + pad_top, hw - pad_edge, h - pad_edge)),
+                "back": im.crop((hw + pad_edge, hh + pad_top, w - pad_edge, h - pad_edge)),
+            }
+            out = {}
+            for k, c in crops.items():
+                p = out_dir / f"{k}.png"
+                c.save(p, format="PNG")
+                out[k] = str(p)
+            return out
         p = out_dir / "front.png"
         im.save(p, format="PNG")
         return {"front": str(p)}
@@ -163,7 +189,7 @@ def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict
 def sculpt_mesh_from_image(
     image_path: Path,
     views: list[str] | None = None,
-    steps: int = 20,
+    steps: int = 25,
     on_progress: Callable[[str], None] | None = None,
     root: Path | None = None,
 ) -> bytes:
@@ -196,8 +222,8 @@ def sculpt_mesh_from_image(
                 "views": view_files,
                 "out_path": str(out_glb),
                 "steps": max(10, min(int(steps), 50)),
-                "octree_resolution": 192 if hw.tier == "high" else 160,
-                "max_faces": 40000,
+                "octree_resolution": 288 if hw.tier == "high" else (224 if hw.tier == "balanced" else 160),
+                "max_faces": 65000 if hw.tier == "high" else 45000,
             }
             env = os.environ.copy()
             env["HY3DGEN_MODELS"] = str(r / "models" / "sculptor")

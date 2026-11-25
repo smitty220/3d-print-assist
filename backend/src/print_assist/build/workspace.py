@@ -343,12 +343,25 @@ class Workspace:
                 extra.append(PreparedPart(name=b.name, points=pts, tris=tris, color=d.body_color(b), filament=b.filament))
         return extra
 
+    def _sculpt_concept_image(self, sm) -> Path | None:
+        if getattr(sm, "concept_id", ""):
+            p = self.concepts.clean_image_path(sm.concept_id)
+            if p is not None and p.is_file():
+                return p
+        for c in reversed(self.concepts.items):
+            if c.mode == "character" or c.image_file:
+                p = self.concepts.clean_image_path(c.id)
+                if p is not None and p.is_file():
+                    return p
+        return None
+
     def _prepared_sculpts(self):
         from ..geometry.mesh_prep import MeshPrepError, prepare_print_mesh
 
         out = []
         d = self.design
         good_id = id(self.last_good) if (self.last_good and self.last_good.parts) else 0
+        multi_ex = self.project.printer.slots > 1
         for sm in d.sculpts:
             p = self.sculpts_dir / sm.source_file
             if not p.is_file():
@@ -356,6 +369,7 @@ class Workspace:
             fil = d.filament(sm.filament)
             color = fil.color if fil else (sm.color or "#b8c2cc")
             uses_cad = bool(sm.prep.cut_bodies or sm.prep.union_bodies)
+            c_img = self._sculpt_concept_image(sm)
             key = (
                 sm.source_file,
                 p.stat().st_mtime,
@@ -364,6 +378,8 @@ class Workspace:
                 color,
                 sm.filament,
                 good_id if uses_cad else 0,
+                str(c_img) if c_img else "",
+                multi_ex,
             )
             cached = self._sculpt_cache.get(sm.id)
             if cached is None or cached[0] != key:
@@ -372,6 +388,7 @@ class Workspace:
                     prepared = prepare_print_mesh(
                         p, sm.prep, name=sm.name, color=color, filament=sm.filament,
                         cad_cuts=cuts, cad_unions=unions,
+                        concept_image_path=c_img, multi_extruder=multi_ex,
                     )
                 except MeshPrepError:
                     continue
@@ -409,7 +426,12 @@ class Workspace:
             raw_path = self.sculpts_dir / fname
             raw_path.write_bytes(raw_bytes)
             use_prep = prep if isinstance(prep, SculptPrep) else SculptPrep.model_validate(prep or {})
-            prepared = prepare_print_mesh(raw_path, use_prep, name=name or sid, color=color, filament=filament)
+            c_img = self.concepts.clean_image_path(concept_id) if concept_id else None
+            multi_ex = self.project.printer.slots > 1
+            prepared = prepare_print_mesh(
+                raw_path, use_prep, name=name or sid, color=color, filament=filament,
+                concept_image_path=c_img, multi_extruder=multi_ex,
+            )
             sm = SculptMesh(
                 id=sid,
                 name=(name or sid).strip(),
@@ -428,7 +450,7 @@ class Workspace:
             self.redo_stack.clear()
             self._set(trial)
             self._sculpt_cache[sid] = (
-                (fname, raw_path.stat().st_mtime, use_prep.model_dump_json(), sm.name, color or "#b8c2cc", filament),
+                (fname, raw_path.stat().st_mtime, use_prep.model_dump_json(), sm.name, color or "#b8c2cc", filament, 0, str(c_img) if c_img else "", multi_ex),
                 prepared,
             )
             self.log(actor, f"Sculpted {sm.id} ({sm.name}): {sm.triangles:,} tris, watertight={sm.watertight}")
@@ -458,9 +480,12 @@ class Workspace:
             fil = trial.filament(sm.filament)
             color = fil.color if fil else (sm.color or "#b8c2cc")
             cuts, unions = self._cad_tool_meshes(new_prep)
+            c_img = self._sculpt_concept_image(sm)
+            multi_ex = self.project.printer.slots > 1
             prepared = prepare_print_mesh(
                 raw_path, new_prep, name=sm.name, color=color, filament=sm.filament,
                 cad_cuts=cuts, cad_unions=unions,
+                concept_image_path=c_img, multi_extruder=multi_ex,
             )
             sm.prep = new_prep
             sm.watertight = prepared.watertight

@@ -318,7 +318,7 @@ def sculpt_character(
     flexi_start_pct: float = 35.0,
     flexi_end_pct: float = 88.0,
     flexi_clearance_mm: float = 0.45,
-    flexi_angle_deg: float = 12.0,
+    flexi_angle_deg: float = 24.0,
     flexi_cuts_pct: list[float] | None = None,
     cut_bodies: list[str] | None = None,
     union_bodies: list[str] | None = None,
@@ -328,6 +328,7 @@ def sculpt_character(
     hollow_cavity: bool = False,
     hollow_wall_mm: float = 3.0,
     multicolor: bool = False,
+    color_mode: str = "auto",
 ) -> str:
     """Character Mode 3D Sculptor + Hybrid Print Engineering: mold a watertight, 3D-printable mesh from an approved
     Character Design File (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` in Direct Build mode.
@@ -369,6 +370,7 @@ def sculpt_character(
             "hollow_cavity": hollow_cavity,
             "hollow_wall_mm": hollow_wall_mm,
             "multicolor": multicolor,
+            "color_mode": color_mode,
             "wait_s": 40,
         },
         headers=ACTOR,
@@ -425,6 +427,8 @@ def update_mesh_prep(
     rotate_x: float | None = None,
     rotate_y: float | None = None,
     rotate_z: float | None = None,
+    max_colors: int | None = None,
+    color_mode: str | None = None,
 ) -> str:
     """Instantly adjust hybrid CAD print-engineering & finishing on an existing Character Mode sculpt (`id`, e.g. "M1")
     in < 1s without re-running the 3D AI sculptor:
@@ -458,6 +462,8 @@ def update_mesh_prep(
         "rotate_x": rotate_x,
         "rotate_y": rotate_y,
         "rotate_z": rotate_z,
+        "max_colors": max_colors,
+        "color_mode": color_mode,
     }.items() if v is not None}
     return _text(_call("POST", f"/api/sculpts/{id}/prep", json=body, headers=ACTOR))
 

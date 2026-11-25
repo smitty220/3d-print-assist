@@ -91,7 +91,9 @@ _AGY_SYSTEM_PREAMBLE = (
 )
 
 _AGY_TURN_REMINDER = (
-    "\n\n[System rule: Use `3d-print-assist` MCP tools (including `inspect_sculpt_anatomy` and `update_mesh_prep`), "
+    "\n\n[System rule: Use `3d-print-assist` MCP tools (including `propose_character_design` with 4-view defaults "
+    "and `from_concept_id` + `style='flexi'` for flexi conversions, `inspect_sculpt_anatomy`, `update_mesh_prep` with "
+    "Flexi-Factory SDF rounded links & `color_mode='auto'|'multicolor'|'single'`, and `render_preview(view='sheet')`), "
     "`search_web` for internet lookups, and `read_file` ONLY on offloaded `.system_generated/.../media_*.png` images "
     "from `render_preview` / `look_at_image` / `look_at_concept` so you can see them. Never use shell/run_command, "
     "python, subagents, background tasks, or wait_for_concept.]"
