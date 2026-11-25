@@ -622,6 +622,7 @@ class ConceptIn(BaseModel):
     summary: str = ""
     assumptions: list[str] = []
     questions: list[str] = []
+    views: list[str] = ["3/4 iso", "front", "side (Z=0)", "top"]
 
 
 class ConceptAnswer(BaseModel):
@@ -665,7 +666,7 @@ def propose_concept(body: ConceptIn, x_actor: str = Header(default=USER)) -> dic
 
     try:
         c = ws().propose_concept(x_actor, title=body.title, svg=body.svg, summary=body.summary,
-                                 assumptions=body.assumptions, questions=body.questions)
+                                 assumptions=body.assumptions, questions=body.questions, views=body.views)
     except ConceptError as exc:
         raise HTTPException(422, str(exc)) from exc
     return c.model_dump(exclude={"svg"})
@@ -1260,7 +1261,7 @@ class CharacterDesignIn(BaseModel):
     reference_photos: list[str] = []
     assumptions: list[str] = []
     questions: list[str] = []
-    turnaround: bool = False
+    turnaround: bool = True  # Default 4-view turnaround sheet for every design
     style: Literal["auto", "figurine", "flexi", "bust", "keychain", "magnet", "planter", "scene"] = "auto"
     from_concept_id: str = ""
     repaint: bool = False
@@ -1374,6 +1375,7 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
     from .ml.painter import (
         PainterError,
         generate_character_design_image,
+        prepare_quad_turnaround_sheet,
         render_flexi_concept_preview,
         resolve_character_style,
     )
@@ -1407,22 +1409,24 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
 
     def _work() -> dict:
         if src_c is not None and src_clean_path is not None and not body.repaint:
-            clean_png_bytes = src_clean_path.read_bytes()
-            views = list(src_c.views) or (["front", "side", "back"] if body.turnaround else ["front"])
+            raw_png_bytes = src_clean_path.read_bytes()
+            raw_views = ["front"]
         else:
             eff_refs = list(ref_paths)
             if not eff_refs and src_clean_path is not None:
                 eff_refs = [src_clean_path]
-            clean_png_bytes, views = generate_character_design_image(
+            raw_png_bytes, raw_views = generate_character_design_image(
                 prompt=body.prompt,
                 ref_paths=eff_refs or None,
-                turnaround=body.turnaround,
+                turnaround=(False if resolved_style == "flexi" else body.turnaround),
                 style=resolved_style,
                 steps=body.steps,
                 seed=body.seed,
             )
 
         if resolved_style == "flexi":
+            # Ensure clean_png_bytes is a single hero character (extract top-left if source happened to be a 4-grid)
+            _, clean_png_bytes, _ = prepare_quad_turnaround_sheet(raw_png_bytes, raw_views)
             eff_segs = body.flexi_segments if body.flexi_segments >= 3 else 6
             preview_png_bytes, cuts_pct = render_flexi_concept_preview(
                 clean_png_bytes,
@@ -1430,8 +1434,9 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
                 flexi_cuts_pct=body.flexi_cuts_pct or None,
             )
             final_segs = (len(cuts_pct) + 1) if cuts_pct else eff_segs
+            views = ["3/4 flexi (Z=0)", "side (Z=0 & hinges)", "top (fin-safe)", "bottom (Z=0 pads)"]
         else:
-            preview_png_bytes = clean_png_bytes
+            preview_png_bytes, clean_png_bytes, views = prepare_quad_turnaround_sheet(raw_png_bytes, raw_views)
             cuts_pct = []
             final_segs = 0
 

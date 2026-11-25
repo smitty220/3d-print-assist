@@ -132,11 +132,11 @@ def _kill_proc(proc: subprocess.Popen) -> None:
 
 
 def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict[str, str]:
-    """If the Design File is a 3-panel Front/Side/Back turnaround sheet, crop each view cleanly."""
+    """Extract clean view(s) for Hunyuan3D: supports single hero, 3-panel strip, or 2x2 4-view quad sheet."""
     with Image.open(image_path) as im:
         im = im.convert("RGB")
         w, h = im.size
-        if len(views) >= 3 and w >= int(h * 1.6):
+        if len(views) == 3 and w >= int(h * 1.6):
             third = w // 3
             crops = {
                 "front": im.crop((0, 0, third, h)),
@@ -149,6 +149,12 @@ def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict
                 c.save(p, format="PNG")
                 out[k] = str(p)
             return out
+        if len(views) >= 4 and w >= 512 and h >= 384 and 0.9 <= (w / max(1, h)) <= 1.65:
+            # 2x2 quad sheet fallback if clean hero wasn't separated yet: take top-left 3/4 hero quadrant
+            hero = im.crop((0, 0, w // 2, h // 2))
+            p = out_dir / "front.png"
+            hero.save(p, format="PNG")
+            return {"front": str(p)}
         p = out_dir / "front.png"
         im.save(p, format="PNG")
         return {"front": str(p)}

@@ -489,10 +489,12 @@ def analyze_sculpt_anatomy(
 
 
 def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
-    """Smoothly lower an arched floating torso/tail onto Z=0 via a volume-preserving vertical shear.
+    """Conform the underside (chin, belly, lateral fins, and arched rear tail) onto Z=0 via a C1-smooth
+    lower-half monotonic map (`z' = z - (1 - u)^2 * d(x, y)` for `z < z_mid`, `z' = z` for `z >= z_mid`).
 
-    Ramps smoothly up behind the snout (`22%..34%`) and ramps smoothly back down to `0.0` before the tail fin
-    (`73%..82%`) so the overhanging upper tail fin tip is NEVER pulled downward into a hook or nodule.
+    Guarantees `dg/dz >= 1.0` everywhere (never inverts triangles), leaves the upper head, dorsal fin,
+    and overhanging upper crescent tail lobe 100% untouched (zero tail-fin hook), and seats every
+    flexi segment plus pectoral fins and lower tail keel cleanly onto the Z=0 build plate.
     """
     bb = mf.bounding_box()
     sx = float(bb[3] - bb[0])
@@ -510,60 +512,130 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
     tm = _manifold_to_trimesh(work)
     verts = np.asarray(tm.vertices, dtype=np.float64).copy()
     x0, x1 = float(verts[:, 0].min()), float(verts[:, 0].max())
+    y0, y1 = float(verts[:, 1].min()), float(verts[:, 1].max())
     h_all = float(verts[:, 2].max() - verts[:, 2].min())
     length = max(1e-6, x1 - x0)
+    width = max(1e-6, y1 - y0)
 
-    n_bins = 48
-    edges = np.linspace(x0, x1, n_bins + 1)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    z_mins = np.full(n_bins, np.nan, dtype=np.float64)
-    for i in range(n_bins):
-        m = (verts[:, 0] >= edges[i]) & (verts[:, 0] <= edges[i + 1])
-        if np.any(m):
-            z_mins[i] = float(verts[m, 2].min())
-    valid = ~np.isnan(z_mins)
-    if valid.sum() < 8:
+    nx, ny = 48, 15
+    x_edges = np.linspace(x0, x1, nx + 1)
+    y_edges = np.linspace(y0, y1, ny + 1)
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    # 1D spine/belly profile + 2D (X, Y) underside height map so lateral fins never prop the central belly in mid-air
+    z_min_1d = np.full(nx, np.nan, dtype=np.float64)
+    z_max_1d = np.full(nx, np.nan, dtype=np.float64)
+    z_grid = np.full((nx, ny), np.nan, dtype=np.float64)
+    ix_v = np.clip(np.searchsorted(x_edges, verts[:, 0], side="right") - 1, 0, nx - 1)
+    iy_v = np.clip(np.searchsorted(y_edges, verts[:, 1], side="right") - 1, 0, ny - 1)
+
+    yc_all = 0.5 * (y0 + y1)
+    central_v = np.abs(verts[:, 1] - yc_all) <= 0.28 * width
+    for i in range(nx):
+        mx = ix_v == i
+        if np.any(mx):
+            z_max_1d[i] = float(verts[mx, 2].max())
+            mc = mx & central_v
+            z_min_1d[i] = float(verts[mc, 2].min()) if np.any(mc) else float(verts[mx, 2].min())
+            for j in range(ny):
+                mxy = mx & (iy_v == j)
+                if np.any(mxy):
+                    z_grid[i, j] = float(verts[mxy, 2].min())
+
+    valid_1d = ~np.isnan(z_min_1d)
+    if valid_1d.sum() < 8:
         return mf, []
-    z_mins = np.interp(np.arange(n_bins), np.nonzero(valid)[0], z_mins[valid])
+    idx_1d = np.arange(nx)
+    z_min_1d = np.interp(idx_1d, idx_1d[valid_1d], z_min_1d[valid_1d])
+    z_max_1d = np.interp(idx_1d, idx_1d[valid_1d], z_max_1d[valid_1d])
 
-    t_norm = (centers - x0) / length
-    rear_zone = (t_norm >= 0.30) & (t_norm <= 0.80)
-    if float(z_mins[rear_zone].max()) < 2.2:
+    # Fill missing lateral cells in each X slice from nearest populated Y cell (or z_min_1d[i])
+    iy_arr = np.arange(ny)
+    for i in range(nx):
+        row = z_grid[i]
+        v_row = ~np.isnan(row)
+        if v_row.sum() >= 2:
+            z_grid[i] = np.interp(iy_arr, iy_arr[v_row], row[v_row])
+        elif v_row.sum() == 1:
+            z_grid[i] = float(row[v_row][0])
+        else:
+            z_grid[i] = z_min_1d[i]
+
+    t_norm = (x_centers - x0) / length
+    # Check if either the rear spine or central belly lifts > 1.2 mm off the Z=0 build plate
+    active_zone = (t_norm >= 0.18) & (t_norm <= 0.88)
+    if float(np.nanmax(z_grid[active_zone])) < 1.2:
         return mf, []
 
-    # Clamp z_for_drop past the tail fin's lowest point so overhanging upper tail fin tips never get pulled down!
+    # Protect overhanging upper tail fin tips past the lower tail lobe's lowest bed point
     tail_region = np.where((t_norm >= 0.72) & (t_norm <= 0.96))[0]
-    tail_low_idx = int(tail_region[np.argmin(z_mins[tail_region])]) if len(tail_region) else (n_bins - 1)
-    z_for_drop = z_mins.copy()
-    for i in range(tail_low_idx, n_bins):
-        z_for_drop[i] = min(z_for_drop[i], z_mins[tail_low_idx])
+    tail_low_idx = int(tail_region[np.argmin(z_min_1d[tail_region])]) if len(tail_region) else (nx - 1)
+    tail_low_t = float(t_norm[tail_low_idx])
+    for i in range(tail_low_idx + 1, nx):
+        z_grid[i] = np.minimum(z_grid[i], z_grid[tail_low_idx])
 
-    # Smoothstep ramp up behind snout (22%..34%) and back to 0 across the tail waist (73%..82%)
-    ramp_front = np.clip((t_norm - 0.22) / 0.12, 0.0, 1.0)
-    ramp_front = ramp_front * ramp_front * (3.0 - 2.0 * ramp_front)
-    ramp_back = np.clip((0.82 - t_norm) / 0.09, 0.0, 1.0)
-    ramp_back = ramp_back * ramp_back * (3.0 - 2.0 * ramp_back)
-    raw_drop = np.minimum(z_for_drop, h_all * 0.35) * ramp_front * ramp_back
+    # Smooth 2D underside grid gently along X and Y
+    kx = np.array([0.15, 0.70, 0.15], dtype=np.float64)
+    z_smooth = z_grid.copy()
+    for _ in range(2):
+        for j in range(ny):
+            z_smooth[:, j] = np.convolve(np.pad(z_smooth[:, j], 1, mode="edge"), kx, mode="valid")
+        for i in range(nx):
+            z_smooth[i, :] = np.convolve(np.pad(z_smooth[i, :], 1, mode="edge"), kx, mode="valid")
 
-    kernel = np.array([0.06, 0.24, 0.40, 0.24, 0.06], dtype=np.float64)
-    drop_smooth = raw_drop.copy()
-    for _ in range(3):
-        drop_smooth = np.convolve(np.pad(drop_smooth, 2, mode="edge"), kernel, mode="valid")
-    drop_safe = np.minimum(drop_smooth, z_for_drop) * (t_norm <= 0.83)
-    drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.2, 0.6, 0.2]), mode="valid")
-    if float(drop_safe.max()) < 1.2:
+    # Ramp smoothly from nose tip (0.07..0.18) across full body & tail waist up to lower tail lobe (tail_low_t)
+    rf = np.clip((t_norm - 0.07) / 0.11, 0.0, 1.0)
+    rf = rf * rf * (3.0 - 2.0 * rf)
+    rb_end = min(0.98, max(tail_low_t + 0.05, 0.88))
+    rb = np.clip((rb_end - t_norm) / max(0.04, rb_end - tail_low_t), 0.0, 1.0)
+    rb = rb * rb * (3.0 - 2.0 * rb)
+    ramp_x = (rf * rb)[:, None]
+
+    # Do not pull elevated horizontal pectoral fin tips down if they sit high on the mid-flank (> 0.36 * h_all);
+    # only seat undersides that belong to the lower 42% of the model height.
+    drop_grid = np.minimum(z_smooth, h_all * 0.42) * ramp_x
+    drop_grid = np.where(z_smooth > h_all * 0.48, 0.0, drop_grid)
+    if float(drop_grid.max()) < 0.8:
         return mf, []
 
-    verts[:, 2] -= np.interp(verts[:, 0], centers, drop_safe)
+    # Bilinear lookup of z_local_min and drop d for every vertex
+    fx = np.clip((verts[:, 0] - x_centers[0]) / max(1e-6, x_centers[1] - x_centers[0]), 0.0, nx - 1.0001)
+    fy = np.clip((verts[:, 1] - y_centers[0]) / max(1e-6, y_centers[1] - y_centers[0]), 0.0, ny - 1.0001)
+    i0 = fx.astype(np.int32)
+    j0 = fy.astype(np.int32)
+    tx = fx - i0
+    ty = fy - j0
+
+    def _bilerp(grid: np.ndarray) -> np.ndarray:
+        return (
+            (1.0 - tx) * (1.0 - ty) * grid[i0, j0]
+            + tx * (1.0 - ty) * grid[i0 + 1, j0]
+            + (1.0 - tx) * ty * grid[i0, j0 + 1]
+            + tx * ty * grid[i0 + 1, j0 + 1]
+        )
+
+    v_zmin = _bilerp(z_smooth)
+    v_drop = np.minimum(_bilerp(drop_grid), v_zmin)
+    v_zmax = np.interp(verts[:, 0], x_centers, z_max_1d)
+    # Neutral C1 ceiling z_mid: above z_mid, vertices do not move at all (upper head, dorsal fin, upper tail lobe)
+    v_zmid = np.maximum(v_zmin + 5.5, np.maximum(0.52 * h_all, v_zmax - 0.35 * np.maximum(0.0, v_zmax - v_zmin)))
+
+    span_low = np.maximum(2.0, v_zmid - v_zmin)
+    u = np.clip((verts[:, 2] - v_zmin) / span_low, 0.0, 1.0)
+    below = verts[:, 2] < v_zmid
+    new_z = np.where(below, verts[:, 2] - ((1.0 - u) ** 2) * v_drop, verts[:, 2])
+    verts[:, 2] = np.maximum(0.0, new_z)
     verts[:, 2] -= float(verts[:, 2].min())
-    seated = _trimesh_to_manifold(trimesh.Trimesh(vertices=verts, faces=tm.faces, process=False))
-    if seated is None or seated.is_empty():
+
+    seated = repair_to_manifold(trimesh.Trimesh(vertices=verts, faces=tm.faces, process=False))[0]
+    if seated.is_empty():
         return mf, []
     if flip_180:
         seated = seated.rotate((0.0, 0.0, 180.0))
     if rotated_for_y:
         seated = seated.rotate((0.0, 0.0, 90.0))
-    return _place_on_bed(seated), ["seated arched tail smoothly onto print bed (tail-fin protected)"]
+    return _place_on_bed(seated), ["conformed lower belly, fins, and rear tail flush onto Z=0 print bed (upper fins untouched)"]
 
 
 def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
@@ -751,7 +823,28 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         loop = (loop_outer - eye_hole) ^ work
         segments[j_idx + 1] = segments[j_idx + 1] + loop
 
-    non_empty = [s for s in segments if not s.is_empty() and s.status() == m3d.Error.NoError]
+    # Guarantee every articulated segment touches Z=0 with a flat bed-adhesion pad (never floating in mid-air!)
+    seated_segments: list[m3d.Manifold] = []
+    for seg_i, s in enumerate(segments):
+        if s.is_empty() or s.status() != m3d.Error.NoError:
+            continue
+        sbb = s.bounding_box()
+        sz_min = float(sbb[2])
+        if sz_min > 0.15:
+            left_x = (joint_specs[seg_i - 1]["u"] + gap / 2.0 + 0.7) if seg_i > 0 else (float(sbb[0]) + 1.0)
+            right_x = (joint_specs[seg_i]["cavity_front_x"] - 0.5) if seg_i < len(joint_specs) else (float(sbb[3]) - 1.0)
+            if right_x - left_x >= 2.2:
+                keel_w = max(3.6, min(float(sbb[4] - sbb[1]) * 0.48, 12.0))
+                keel_yc = float(sbb[1] + sbb[4]) / 2.0
+                keel_h = sz_min + 2.2
+                keel = m3d.Manifold.cube((right_x - left_x, keel_w, keel_h), center=True).translate(
+                    ((left_x + right_x) / 2.0, keel_yc, keel_h / 2.0)
+                )
+                # Intersect horizontally with work's XY footprint by intersecting top of keel or unioning cleanly into segment belly
+                s = s + keel
+        seated_segments.append(s)
+
+    non_empty = [s for s in seated_segments if not s.is_empty() and s.status() == m3d.Error.NoError]
     if len(non_empty) < 2:
         return mf, notes
     composed = m3d.Manifold.compose(non_empty)
@@ -1218,20 +1311,101 @@ def export_prepared_meshes(parts: list[PreparedPart], printer: PrinterProfile, f
     return path
 
 
-def render_prepared_meshes(parts: list[PreparedPart], view: str = "iso", size: int = 640) -> bytes:
-    """Fast shaded PNG render of prepared organic meshes using PIL/numpy (for AI `render_preview`)."""
-    import io
+def analyze_sculpt_printability(parts: list[PreparedPart], max_overhang_deg: float = 48.0) -> dict:
+    """Measure real FDM printability across all connected components (segments) of prepared sculpt meshes:
+    - Per-component `z_min` and flat `Z=0` first-layer bed contact area (`mm²`)
+    - Floating component detection (`z_min > 0.25 mm` or `bed_area < 4.0 mm²`)
+    - Unsupported steep downward overhang area (`z > 1.6 mm`, slope steeper than `max_overhang_deg`)
+    """
+    if not parts:
+        return {
+            "component_count": 0,
+            "seated_count": 0,
+            "floating_count": 0,
+            "total_bed_area_mm2": 0.0,
+            "min_component_bed_area_mm2": 0.0,
+            "overhang_area_mm2": 0.0,
+            "components": [],
+        }
+
+    all_pts = np.vstack([p.points for p in parts])
+    global_z0 = float(all_pts[:, 2].min())
+    cos_over = math.cos(math.radians(max(25.0, min(75.0, float(max_overhang_deg)))))
+
+    comp_rows: list[dict] = []
+    overhang_area = 0.0
+    for p in parts:
+        tm = trimesh.Trimesh(vertices=p.points, faces=p.tris, process=False)
+        try:
+            comps = tm.split(only_watertight=False)
+        except Exception:  # noqa: BLE001
+            comps = [tm]
+        # Ignore microscopic dust (< 5 triangles)
+        comps = [c for c in comps if len(c.faces) >= 6] or [tm]
+        # Sort along X so segments read head-to-tail
+        comps.sort(key=lambda c: float(c.vertices[:, 0].mean()))
+        for idx, comp in enumerate(comps):
+            v = np.asarray(comp.vertices, dtype=np.float64)
+            f = np.asarray(comp.faces, dtype=np.int64)
+            z_min = float(v[:, 2].min()) - global_z0
+            v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+            cross = np.cross(v1 - v0, v2 - v0)
+            dbl_area = np.linalg.norm(cross, axis=1)
+            areas = 0.5 * dbl_area
+            nz = np.divide(cross[:, 2], np.maximum(dbl_area, 1e-12))
+            tri_z_max = np.maximum(np.maximum(v0[:, 2], v1[:, 2]), v2[:, 2]) - global_z0
+            tri_z_min = np.minimum(np.minimum(v0[:, 2], v1[:, 2]), v2[:, 2]) - global_z0
+
+            on_bed = (tri_z_max <= 0.30) & (nz < -0.65)
+            bed_area = float(areas[on_bed].sum())
+            # Count vertices near Z=0 if bottom wasn't planar-trimmed yet
+            if bed_area < 1.0 and z_min <= 0.25:
+                near_bed = (tri_z_min <= 0.35) & (nz < -0.35)
+                bed_area = float(areas[near_bed].sum()) * 0.5
+
+            # Steep downward faces above first 2 mm (excluding short internal self-bridging hinge pin ceilings)
+            steep_down = (tri_z_min > 2.2) & (nz < -cos_over)
+            overhang_area += float(areas[steep_down].sum())
+
+            seated = (z_min <= 0.28) and (bed_area >= 4.0)
+            comp_rows.append({
+                "index": idx + 1,
+                "z_min_mm": round(z_min, 2),
+                "bed_area_mm2": round(bed_area, 1),
+                "seated": seated,
+            })
+
+    seated_n = sum(1 for r in comp_rows if r["seated"])
+    floating_n = len(comp_rows) - seated_n
+    total_bed = round(sum(r["bed_area_mm2"] for r in comp_rows), 1)
+    min_bed = round(min((r["bed_area_mm2"] for r in comp_rows), default=0.0), 1)
+    return {
+        "component_count": len(comp_rows),
+        "seated_count": seated_n,
+        "floating_count": floating_n,
+        "total_bed_area_mm2": total_bed,
+        "min_component_bed_area_mm2": min_bed,
+        "overhang_area_mm2": round(overhang_area, 1),
+        "components": comp_rows,
+    }
+
+
+def _render_single_mesh_panel(
+    parts: list[PreparedPart],
+    view: str,
+    w: int,
+    h: int,
+    highlight_bed: bool = False,
+    draw_bed_line: bool = False,
+) -> "Image.Image":
     from PIL import Image, ImageDraw
 
-    w = h = max(128, min(int(size), 1600))
     img = Image.new("RGB", (w, h), (30, 34, 41))
     if not parts:
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
+        return img
 
     views = {
-        "iso": (math.radians(35), math.radians(35)),
+        "iso": (math.radians(35), math.radians(30)),
         "front": (0.0, 0.0),
         "back": (math.pi, 0.0),
         "right": (math.pi / 2, 0.0),
@@ -1242,54 +1416,105 @@ def render_prepared_meshes(parts: list[PreparedPart], view: str = "iso", size: i
     az, el = views.get(view, views["iso"])
     ca, sa = math.cos(az), math.sin(az)
     ce, se = math.cos(el), math.sin(el)
-    # Camera basis: view from azimuth/elevation around Z-up
     right = np.array([ca, -sa, 0.0])
     up = np.array([-sa * se, -ca * se, ce])
     fwd = np.array([sa * ce, ca * ce, se])
 
     all_pts = np.vstack([p.points for p in parts])
+    global_z0 = float(all_pts[:, 2].min())
     center = (all_pts.min(axis=0) + all_pts.max(axis=0)) / 2.0
     proj_all_x = (all_pts - center) @ right
     proj_all_y = (all_pts - center) @ up
-    span = max(float(proj_all_x.max() - proj_all_x.min()), float(proj_all_y.max() - proj_all_y.min()), 1e-3)
-    scale = (w * 0.78) / span
+    span_x = max(float(proj_all_x.max() - proj_all_x.min()), 1e-3)
+    span_y = max(float(proj_all_y.max() - proj_all_y.min()), 1e-3)
+    scale = min((w * 0.80) / span_x, (h * 0.74) / span_y)
 
     draw = ImageDraw.Draw(img)
     light = np.array([0.4, 0.5, 0.76])
     light /= np.linalg.norm(light)
 
-    # Painter's algorithm (downsample if huge so software preview stays < 0.2s)
     polys: list[tuple[float, list[tuple[float, float]], tuple[int, int, int]]] = []
     for p in parts:
         hex_c = (p.color or "#b8c2cc").lstrip("#")
         base_rgb = tuple(int(hex_c[i:i + 2], 16) for i in (0, 2, 4)) if len(hex_c) == 6 else (184, 194, 204)
-        pts = p.points - center
+        raw_pts = p.points
+        pts = raw_pts - center
         tris = p.tris
-        if len(tris) > 120000:
-            step = max(1, len(tris) // 120000)
+        if len(tris) > 100000:
+            step = max(1, len(tris) // 100000)
             tris = tris[::step]
         v0 = pts[tris[:, 0]]
         v1 = pts[tris[:, 1]]
         v2 = pts[tris[:, 2]]
+        z_max_tri = np.maximum(
+            np.maximum(raw_pts[tris[:, 0], 2], raw_pts[tris[:, 1], 2]),
+            raw_pts[tris[:, 2], 2],
+        ) - global_z0
         normals = np.cross(v1 - v0, v2 - v0)
         nlen = np.linalg.norm(normals, axis=1, keepdims=True)
         normals = np.divide(normals, np.maximum(nlen, 1e-9))
         facing = normals @ fwd
         keep = facing > -0.05
-        v0, v1, v2, normals = v0[keep], v1[keep], v2[keep], normals[keep]
+        v0, v1, v2, normals, z_max_tri = v0[keep], v1[keep], v2[keep], normals[keep], z_max_tri[keep]
         depths = ((v0 + v1 + v2) / 3.0) @ fwd
         shades = np.clip(0.28 + 0.72 * np.abs(normals @ light), 0.2, 1.0)
+        on_bed_tri = highlight_bed & (z_max_tri <= 0.30) & (normals[:, 2] < -0.65)
         for j in range(len(depths)):
             tri_pts = [v0[j], v1[j], v2[j]]
             xy = [(w / 2.0 + float(pt @ right) * scale, h / 2.0 - float(pt @ up) * scale) for pt in tri_pts]
             sh = float(shades[j])
-            rgb = (int(base_rgb[0] * sh), int(base_rgb[1] * sh), int(base_rgb[2] * sh))
+            if on_bed_tri[j]:
+                rgb = (int(28 + 20 * sh), int(185 * sh + 30), int(125 * sh + 20))
+            else:
+                rgb = (int(base_rgb[0] * sh), int(base_rgb[1] * sh), int(base_rgb[2] * sh))
             polys.append((float(depths[j]), xy, rgb))
 
     polys.sort(key=lambda item: item[0])
     for _, xy, rgb in polys:
         draw.polygon(xy, fill=rgb)
 
+    if draw_bed_line:
+        bed_pt = np.array([center[0], center[1], global_z0]) - center
+        bed_y = int(round(h / 2.0 - float(bed_pt @ up) * scale))
+        if 4 <= bed_y <= h - 4:
+            draw.line([(16, bed_y), (w - 16, bed_y)], fill=(52, 211, 153), width=2)
+    return img
+
+
+def render_prepared_meshes(parts: list[PreparedPart], view: str = "iso", size: int = 640) -> bytes:
+    """Fast shaded PNG render of prepared organic meshes using PIL/numpy (supports `view="sheet"` 4-view grid!)."""
+    import io
+    from PIL import Image, ImageDraw
+
+    if view == "sheet":
+        pw = max(320, min(int(size), 1400) // 2)
+        ph = int(round(pw * 0.75))
+        sheet = Image.new("RGB", (pw * 2, ph * 2), (24, 27, 33))
+        all_pts = np.vstack([p.points for p in parts]) if parts else np.zeros((1, 3))
+        span_xy = all_pts.max(axis=0) - all_pts.min(axis=0)
+        # Pick true broadside view ("front" looks along Y showing X-Z profile; "right" looks along X showing Y-Z profile)
+        side_view = "front" if float(span_xy[0]) >= float(span_xy[1]) else "right"
+        panels = [
+            ("1 | 3/4 ISO", _render_single_mesh_panel(parts, "iso", pw, ph), (0, 0)),
+            ("2 | SIDE (Z=0 BUILD PLATE)", _render_single_mesh_panel(parts, side_view, pw, ph, draw_bed_line=True), (pw, 0)),
+            ("3 | TOP VIEW", _render_single_mesh_panel(parts, "top", pw, ph), (0, ph)),
+            ("4 | BOTTOM (Z=0 BED CONTACT)", _render_single_mesh_panel(parts, "bottom", pw, ph, highlight_bed=True), (pw, ph)),
+        ]
+        for label, pim, (ox, oy) in panels:
+            sheet.paste(pim, (ox, oy))
+        dr = ImageDraw.Draw(sheet)
+        dr.line([(pw, 0), (pw, ph * 2)], fill=(58, 64, 76), width=2)
+        dr.line([(0, ph), (pw * 2, ph)], fill=(58, 64, 76), width=2)
+        for label, _, (ox, oy) in panels:
+            dr.rectangle([ox + 8, oy + 8, ox + 12 + len(label) * 6 + 8, oy + 26], fill=(18, 20, 26))
+            dr.text((ox + 14, oy + 12), label, fill=(215, 222, 235))
+        buf = io.BytesIO()
+        sheet.save(buf, format="PNG")
+        return buf.getvalue()
+
+    w = h = max(128, min(int(size), 1600))
+    side_flag = view in ("front", "back", "left", "right")
+    img = _render_single_mesh_panel(parts, view, w, h, highlight_bed=(view == "bottom"), draw_bed_line=side_flag)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()

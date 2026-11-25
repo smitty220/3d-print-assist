@@ -318,6 +318,8 @@ class Workspace:
     def _cad_tool_meshes(self, prep) -> tuple[list[tuple], list[tuple]]:
         from ..geometry.tessellate import triangles
 
+        if (prep.cut_bodies or prep.union_bodies) and (self.last_good is None or self.pending()):
+            self.update()
         good = self.last_good
         if not good or not good.parts:
             return [], []
@@ -549,7 +551,10 @@ class Workspace:
             if self._checks is None or self._checks[0] != key:
                 rep = validate(good, self.project.data.rules, self.project.printer, design=design).to_dict()
                 if sculpts:
+                    from ..geometry.mesh_prep import analyze_sculpt_printability
+
                     bed = self.project.printer.bed
+                    max_ov = float(self.project.data.rules.max_overhang)
                     all_ok = all(ps.watertight for _, ps in sculpts)
                     total_tris = sum(ps.triangles for _, ps in sculpts)
                     total_vol = sum(ps.volume_mm3 for _, ps in sculpts)
@@ -558,12 +563,60 @@ class Workspace:
                     bmax = [max(ps.bbox_max[i] for _, ps in sculpts) for i in range(3)]
                     dims = [bmax[i] - bmin[i] for i in range(3)]
                     fits = dims[0] <= bed[0] and dims[1] <= bed[1] and dims[2] <= bed[2]
+
+                    all_sculpt_parts = [p for _, ps in sculpts for p in ps.parts]
+                    pr = analyze_sculpt_printability(all_sculpt_parts, max_overhang_deg=max_ov)
+                    n_comp = pr["component_count"]
+                    n_seat = pr["seated_count"]
+                    n_float = pr["floating_count"]
+                    bed_area = pr["total_bed_area_mm2"]
+                    min_comp_area = pr["min_component_bed_area_mm2"]
+                    if n_float > 0 or bed_area < 20.0:
+                        bed_status = "fail"
+                        bed_detail = (
+                            f"{n_float} of {n_comp} part(s)/segment(s) float above Z=0 build plate "
+                            f"(bed contact {bed_area:.0f} mm²) — increase flatten_bottom_mm or re-seat on bed"
+                        )
+                    elif min_comp_area < 12.0:
+                        bed_status = "warn"
+                        bed_detail = (
+                            f"All {n_seat}/{n_comp} part(s) touch Z=0 ({bed_area:.0f} mm² total), "
+                            f"but smallest segment pad is {min_comp_area:.1f} mm² (brim or wider flatten recommended)"
+                        )
+                    else:
+                        bed_status = "ok"
+                        bed_detail = (
+                            f"All {n_seat}/{n_comp} segment(s) seated flat on Z=0 ({bed_area:.0f} mm² bed contact)"
+                            if n_comp > 1
+                            else f"Flat on Z=0 build plate ({bed_area:.0f} mm² first-layer contact)"
+                        )
+
+                    ov_area = pr["overhang_area_mm2"]
+                    ov_status = "warn" if ov_area > 180.0 else "ok"
+                    ov_detail = (
+                        f"{ov_area:.0f} mm² steeper than {max_ov:.0f}° from vertical (check jaw/chin/limbs or enable supports)"
+                        if ov_status == "warn"
+                        else f"Self-supporting (< {max_ov:.0f}° overhang budget)"
+                    )
+
                     sculpt_findings = [
                         {
                             "stage": "part", "code": "manifold", "title": "Watertight mesh",
                             "status": "ok" if all_ok else "fail",
                             "detail": f"{total_tris:,} triangles, closed solid" if all_ok else "Non-manifold edges found",
                             "value": total_tris, "quantity": "count", "refs": [sm.id for sm, _ in sculpts], "points": [],
+                        },
+                        {
+                            "stage": "part", "code": "bed_contact", "title": "Bed adhesion & Z=0 seating",
+                            "status": bed_status,
+                            "detail": bed_detail,
+                            "value": bed_area, "quantity": "area", "refs": [sm.id for sm, _ in sculpts], "points": [],
+                        },
+                        {
+                            "stage": "part", "code": "overhang", "title": "Overhangs",
+                            "status": ov_status,
+                            "detail": ov_detail,
+                            "value": ov_area, "quantity": "area", "refs": [sm.id for sm, _ in sculpts], "points": [],
                         },
                         {
                             "stage": "part", "code": "bed", "title": "Fits the bed",

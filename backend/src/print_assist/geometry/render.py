@@ -48,9 +48,36 @@ def render(bodies: list[tuple[Shape, str | None]], view: str = "iso", size: int 
            meshes: list[tuple[np.ndarray, np.ndarray, str | None]] = (),
            region: tuple[float, float, float, float, float, float] | None = None) -> bytes:
     """PNG bytes of the bodies (shape, "#rrggbb" colour) and triangle meshes (points, triangles, colour) seen from
-    `view`. `region` (xmin, ymin, zmin, xmax, ymax, zmax) keeps only what lies inside it and frames it."""
+    `view` (including `view="sheet"` for a 2x2 4-view ISO / FRONT / RIGHT / TOP sheet).
+    `region` (xmin, ymin, zmin, xmax, ymax, zmax) keeps only what lies inside it and frames it."""
+    if view == "sheet":
+        import io
+        from PIL import Image, ImageDraw
+
+        psize = max(256, min(int(size), 1600) // 2)
+        quad = [
+            ("1 | 3/4 ISO", "iso", (0, 0)),
+            ("2 | FRONT", "front", (psize, 0)),
+            ("3 | RIGHT SIDE", "right", (0, psize)),
+            ("4 | TOP", "top", (psize, psize)),
+        ]
+        sheet = Image.new("RGB", (psize * 2, psize * 2), (42, 46, 53))
+        for _, vname, (ox, oy) in quad:
+            p_bytes = render(bodies, view=vname, size=psize, tolerance=tolerance, meshes=meshes, region=region)
+            with Image.open(io.BytesIO(p_bytes)) as pim:
+                sheet.paste(pim.convert("RGB"), (ox, oy))
+        dr = ImageDraw.Draw(sheet)
+        dr.line([(psize, 0), (psize, psize * 2)], fill=(70, 76, 88), width=2)
+        dr.line([(0, psize), (psize * 2, psize)], fill=(70, 76, 88), width=2)
+        for label, _, (ox, oy) in quad:
+            dr.rectangle([ox + 8, oy + 8, ox + 16 + len(label) * 6, oy + 26], fill=(24, 26, 30))
+            dr.text((ox + 12, oy + 12), label, fill=(220, 226, 236))
+        buf = io.BytesIO()
+        sheet.save(buf, format="PNG")
+        return buf.getvalue()
+
     if view not in VIEWS:
-        raise ValueError(f"unknown view {view!r}; views: {', '.join(VIEWS)}")
+        raise ValueError(f"unknown view {view!r}; views: {', '.join((*VIEWS, 'sheet'))}")
     size = max(64, min(int(size), 2048))
     r, u, f = _basis(view)
     tris, cols, norms, lines = [], [], [], []

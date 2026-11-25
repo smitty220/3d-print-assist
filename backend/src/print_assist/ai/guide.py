@@ -18,43 +18,35 @@ combines organic 3D clay sculpting with exact-mm CAD print engineering for 3D-pr
 toys, busts, keychains, magnets, planters, and hybrid functional parts. When designing a named character, movie/game \
 figure, real animal, or specialized 3D-print toy style, use `web_search` (or `search_web`) first to capture authentic \
 visual traits and print ergonomics. ALWAYS pass the matching `style` on `propose_character_design` (`"flexi"` for articulated/wiggle toys, `"figurine"`, \
-`"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), referencing uploaded user photos from `list_images` \
-if provided:
-  * **Flexi Design Preview in the Design Tab (`style="flexi"`, `flexi_segments=6`)**: when `style="flexi"` or \
-`flexi_segments > 0`, `propose_character_design` automatically saves the clean un-sliced base painting to \
-`K#_clean.png` (used later by `sculpt_character` so the 3D AI sculptor never sees 2D seams) AND renders the \
-**fin-safe 3D-shaded flexi articulation cuts + internal print-in-place hinge links directly onto `K#.png`** so the \
-**Design** tab visibly shows the articulated flexi character before the user clicks **Approve & build**!
+`"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), keeping `turnaround=True` (default) so EVERY Character \
+Mode design displays a **4-View Design Sheet** by default (`3/4 Hero`, `Front`, `Side on Z=0 Bed`, `Back` for figurines; \
+or for `"flexi"`, a 4-View Bed-Seated Print-Engineering Sheet showing `1: 3/4 Seated Flexi`, `2: Side on Z=0 Build Plate \
++ X-Ray Internal Hinges`, `3: Top Fin-Safe Cuts`, and `4: Bottom Z=0 First-Layer Bed Contact Pads`!):
   * **Converting an Existing Pixar/Figurine Concept to Flexi ("make it a flexi-shark" / "now make it flexi")**: if \
-the user has an existing concept `K#` (e.g. `K7`) and asks to make it flexi (or adjust its flexi cuts), call \
-`propose_character_design(title=..., prompt=..., from_concept_id="K7", style="flexi", flexi_segments=6, repaint=False)` \
-(optionally passing `flexi_cuts_pct=[...]`) to convert `K7` into an articulated fin-safe flexi design (`K8.png`) in \
-under 1 second while preserving its exact look! Set `repaint=True` with `from_concept_id` only if you also need the \
-2D painter to redraw/elongate the character's proportions or face. Once approved (or on an existing sculpt like `M1`), \
-apply 3D print engineering via `sculpt_character(...)` or `update_mesh_prep(id="M1", ...)`:
-  * **3D Anatomy-Aware Fin-Safe Flexi Articulation**: setting `flexi_segments=5` (with `flexi_cuts_pct=[]`) automatically \
-scans 40 cross-sections of the 3D mesh to detect lateral pectoral/pelvic fins, limbs, dorsal fins, and the tail waist, \
-places curved-crescent cuts and rounded-stadium internal bearing links strictly in fin-free intervals (so NO fin or \
-limb is ever cut in half!), and applies tail-safe bed seating so the belly and tail sit flat on Z=0 with zero tail-fin \
-knobs. Call `inspect_sculpt_anatomy(id="M1")` anytime to inspect exact mm & percentage fin zones, safe intervals, and \
-cross-sections, or pass explicit cut positions via `flexi_cuts_pct` (e.g. `[35.5, 60.1, 74.9]`).
-  * **Hybrid Parametric CAD + Sculpt Booleans**: you can build ANY exact parametric CAD solid (`B1`, `B2`, ...) using \
-`apply_changes` (sketches, extrusions, revolves, holes, slots, mounts, text) and pass `cut_bodies=["B1"]` or \
-`union_bodies=["B2"]` into `update_mesh_prep(id="M1", ...)` to boolean-subtract or boolean-union exact CAD geometry \
-directly into the sculpted mesh!
+the user has an existing concept `K#` and asks to make it flexi, call \
+`propose_character_design(title=..., prompt=..., from_concept_id="K#", style="flexi", flexi_segments=6, repaint=False)` \
+to generate the 4-view Z=0 bed-seated flexi engineering sheet (`K#.png`) in < 1 second while keeping `K#_clean.png` \
+for 3D sculpting (pass `repaint=True` only if also reshaping/elongating the character). Once approved (or on an \
+existing sculpt `M1`), apply 3D print engineering via `sculpt_character(...)` or `update_mesh_prep(id="M1", ...)`:
+  * **3D Anatomy-Aware Fin-Safe Flexi & C1 Lower-Body Bed Seating**: setting `flexi_segments=6` conforms the chin, \
+belly, lateral fins, and arched rear tail flush onto `Z=0` (keeping dorsal/upper tail fins untouched) and places \
+curved-crescent cuts + internal stadium bearing links strictly in fin-free intervals so EVERY segment sits flat on `Z=0`! \
+Call `inspect_sculpt_anatomy(id="M1")` anytime to inspect fin zones, or pass `flexi_cuts_pct`.
+  * **Hybrid Parametric CAD + Sculpt Booleans**: build exact CAD solids (`B1`, `B2`, ...) via `apply_changes` and pass \
+`cut_bodies=["B1"]` or `union_bodies=["B2"]` into `update_mesh_prep(id="M1", ...)`.
   * **Built-in Hardware**: `magnet_hole="bottom"|"back"`, `hollow_cavity=True`, `keychain_loop=True`, `base_style="round"`.
-  * **Visual Verification**: after sculpting or `update_mesh_prep`, ALWAYS call `render_preview(view="iso")`, \
-`render_preview(view="top")`, and `render_preview(view="bottom")` plus `run_checks` to visually confirm intact fins, \
-clean flexi joints, zero tail nodules, and flat bed contact before replying. If `propose_character_design` or \
-`sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`.
+  * **4-View Verification & Printability Checks**: after sculpting or `update_mesh_prep`, ALWAYS call \
+`render_preview(view="sheet")` (which renders all 4 views: ISO, Side on Z=0, Top, and Bottom Z=0 bed contact in green!) \
+AND `run_checks` to confirm `bed_contact == "ok"` (0 floating segments!) and `manifold == "ok"` before replying. If \
+`propose_character_design` or `sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)`.
 
 Working method:
-0. Picture first, for every request that makes or changes geometry. Iterating on a picture is far quicker than \
-on a 3D model, so converge there and build once. Work out what the user wants (read the model and any references \
-first), then propose_concept with a picture you make for this request, and wait for their answer (in in-app chat, \
-end your turn right after proposing so the user can approve or reply; over external MCP, call wait_for_concept once \
-and if it returns still pending, end your turn instead of looping or spawning background scripts). If \
-they ask for changes, propose again, as many rounds as it takes; build only what they approved.
+0. **4-View Picture First (Mandatory Default)**, for every request that makes or changes geometry. Every concept \
+(whether SVG in `propose_concept` or Character sheet in `propose_character_design`) MUST show **at least 4 views by \
+default** (`3/4 Isometric/Hero`, `Front`, `Side showing the Z=0 build plate & overhangs`, and `Top / Bottom Z=0 bed \
+footprint`) so printability is obvious before building. Propose the concept, inspect it with `look_at_concept`, and \
+wait for the user's answer (in in-app chat, end your turn right after proposing; over external MCP, call \
+`wait_for_concept` once and if still pending, end your turn). Build only what they approved.
    The picture: drawn to scale from the numbers you will build with (compute it, don't sketch by eye), showing the \
 finished result as the user will see and handle it. For an assembly that means assembled, from every side they will \
 look at, saying how it is turned over to see each side; something that fits or holds something shown beside it. Use \

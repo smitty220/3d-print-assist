@@ -320,12 +320,16 @@ def test_character_archetype_resolution_and_flexi_landscape_framing():
 
     assert style_canvas_size("flexi", turnaround=False) == (768, 448)
     assert style_canvas_size("figurine", turnaround=False) == (640, 640)
-    assert style_canvas_size("flexi", turnaround=True) == (960, 384)
+    assert style_canvas_size("flexi", turnaround=True) == (768, 448)
+    assert style_canvas_size("figurine", turnaround=True) == (896, 672)
 
     flexi_prompt = build_turnaround_prompt("Bruce cartoon great white shark", style="flexi")
     assert "elongated horizontal body" in flexi_prompt
     assert "NOT chubby or spherical" in flexi_prompt
     assert "no hinge cuts" in flexi_prompt
+
+    quad_prompt = build_turnaround_prompt("Bruce cartoon great white shark", turnaround=True, style="figurine")
+    assert "2x2 four-view" in quad_prompt
 
 
 def test_sharp_edge_splitting_preserves_smooth_skin_and_splits_creases():
@@ -418,9 +422,13 @@ def test_anatomy_safe_flexi_solver_and_hybrid_cad_booleans(tmp_path: Path):
     ]})
     assert ops_res.status_code == 200
 
+    # Same flexi settings without the CAD cut first (flexi seating/bed pads change volume on their own)
+    base_res = c.post("/api/sculpts/M1/prep", json={"cut_bodies": [], "flexi_segments": 3}).json()
+    vol_flexi = base_res["sculpt"]["volume_mm3"]
+    assert vol_before > 0
     prep_res = c.post("/api/sculpts/M1/prep", json={"cut_bodies": ["B1"], "flexi_segments": 3}).json()
     assert prep_res["sculpt"]["watertight"] is True
-    assert prep_res["sculpt"]["volume_mm3"] < vol_before - 100.0
+    assert prep_res["sculpt"]["volume_mm3"] < vol_flexi - 100.0
     # Consumed tool body B1 is merged into M1 and hidden from standalone viewport bodies
     part = c.get("/api/part").json()
     assert [b["id"] for b in part["bodies"]] == ["M1"]
@@ -474,11 +482,12 @@ def test_pixar_to_flexi_design_conversion_and_clean_sculpt_inheritance(monkeypat
     }).json()
     assert k1["id"] == "K1"
     assert k1["style"] == "figurine"
+    assert len(k1["views"]) == 4
     assert k1["flexi_segments"] == 0
     assert k1["flexi_cuts_pct"] == []
     assert paint_calls["n"] == 1
 
-    # Step 2: User says "now make it a flexi-shark" -> convert K1 into articulated flexi concept K2 (repaint=False)
+    # Step 2: User says "now make it a flexi-shark" -> convert K1 into 4-view bed-seated flexi concept K2 (repaint=False)
     k2 = c.post("/api/character/design", json={
         "title": "Bruce (Articulated Flexi Shark)",
         "prompt": "Articulated print-in-place flexi shark Bruce",
@@ -489,6 +498,7 @@ def test_pixar_to_flexi_design_conversion_and_clean_sculpt_inheritance(monkeypat
     }).json()
     assert k2["id"] == "K2"
     assert k2["style"] == "flexi"
+    assert len(k2["views"]) == 4
     assert k2["flexi_segments"] == 6
     assert len(k2["flexi_cuts_pct"]) == 5
     # No second GPU paint call was needed!
@@ -497,9 +507,11 @@ def test_pixar_to_flexi_design_conversion_and_clean_sculpt_inheritance(monkeypat
     for cp in k2["flexi_cuts_pct"]:
         assert not (42.5 <= cp <= 57.5), f"2D flexi concept cut {cp}% hit the dorsal fin!"
 
-    # Verify K2.png (shown in Design tab) visibly contains the rendered flexi cuts, while K2_clean.png is un-cut
-    k2_preview_bytes = c.get("/api/concepts/K2/image").content
+    # Verify K2.png is the 1280x900 4-view bed-seated engineering sheet, while K2_clean.png is the un-cut hero
+    k2_preview_bytes = c.get("/api/concepts/K2/picture").content
     assert k2_preview_bytes != shark_png
+    with Image.open(io.BytesIO(k2_preview_bytes)) as k2_im:
+        assert k2_im.size == (1280, 900)
     ws = app_module.ws()
     clean_p = ws.concepts.clean_image_path("K2")
     assert clean_p is not None and clean_p.name == "K2_clean.png"
@@ -511,3 +523,11 @@ def test_pixar_to_flexi_design_conversion_and_clean_sculpt_inheritance(monkeypat
     assert sc["sculpt"]["watertight"] is True
     assert sc["sculpt"]["prep"]["flexi_segments"] == 6
     assert len(sculpted_from) == 1 and sculpted_from[0].name == "K2_clean.png"
+
+    # Step 4: Verify 4-view 3D render_preview("sheet") and per-segment Z=0 bed-contact printability checks
+    sheet_ren = c.get("/api/render", params={"view": "sheet", "size": 640})
+    assert sheet_ren.status_code == 200 and sheet_ren.content[:8] == b"\x89PNG\r\n\x1a\n"
+    checks = c.get("/api/checks").json()
+    bed_check = next(f for f in checks["part"] if f["code"] == "bed_contact")
+    assert bed_check["status"] in ("ok", "warn"), f"Unexpected floating segments: {bed_check}"
+    assert "float above Z=0" not in bed_check["detail"]

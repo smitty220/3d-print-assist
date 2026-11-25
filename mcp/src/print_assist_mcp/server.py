@@ -117,10 +117,10 @@ def update() -> str:
 
 
 @mcp.tool()
-def render_preview(view: str = "iso", size: int = 768) -> Image | str:
-    """A shaded picture of the last good build. Views: iso, front, back, left, right, top, bottom. Look after every
-    change: it is how you see what you made. A plate of the print layout: "plate1" (iso), "plate1-top", "plate1-bottom"
-    (from below, without the bed: the faces that print on the bed)."""
+def render_preview(view: str = "sheet", size: int = 960) -> Image | str:
+    """A shaded picture of the last good build. Defaults to `view="sheet"` (a 2x2 4-view sheet showing 3/4 ISO, Side on
+    Z=0 build plate, Top, and Bottom Z=0 bed contact!). Individual views also supported: iso, front, back, left, right,
+    top, bottom, or a plate of the print layout ("plate1", "plate1-top", "plate1-bottom"). Look after every change."""
     r = _call("GET", "/api/render", params={"view": view, "size": size})
     if isinstance(r, dict):
         return _text(r)
@@ -137,7 +137,8 @@ def print_layout() -> str:
 
 @mcp.tool()
 def run_checks() -> str:
-    """Print checks on the last good build: build errors, feature rule checks (walls, text), fit on the printer's bed,
+    """Print checks on the last good build: watertight manifold check, per-segment Z=0 bed adhesion & floating-part check
+    (`bed_contact`), overhang slope check (`overhang`), feature rule checks (walls, text), fit on the printer's bed,
     minimum wall thickness, mass and filament."""
     return _text(_call("GET", "/api/checks"))
 
@@ -226,16 +227,15 @@ def look_at_concept(svg: str = "", id: str = "", width: int = 1200) -> Image | s
 @mcp.tool()
 def propose_concept(title: str, svg: str, summary: str = "", assumptions: list[str] | None = None,
                     questions: list[str] | None = None) -> str:
-    """Before building anything for a request, show the user a picture of the result and wait for their answer;
-    rounds of pictures are much quicker than rounds of 3D, so iterate here until they approve. svg: one complete
-    <svg> document, drawn to scale from the numbers you will build with, showing the finished result as they will see
-    and handle it (an assembly assembled, from every side they look at; something that fits beside what it fits),
-    in its real colours, with hidden features ghosted and the sizes that matter dimensioned in mm. Check it with
+    """Before building anything in Engineer Mode, show the user a 4-view blueprint picture of the result and wait for
+    their answer. `svg`: one complete <svg> document drawn to scale in mm, ALWAYS showing at least 4 views by default
+    in a clean 2x2 layout (1: 3/4 Isometric, 2: Front, 3: Side showing the Z=0 build plate & overhangs, 4: Top or Bottom
+    Z=0 bed contact), in real colours with hidden features ghosted and key sizes dimensioned in mm. Check it with
     look_at_concept first. summary: what changed since the last round and what you will build. assumptions: choices
-    they did not state. questions: what they should decide (offer options with numbers where a limit applies). Then
-    call wait_for_concept with the returned id; your design changes are refused until they answer."""
+    they did not state. questions: what they should decide."""
     return _text(_call("POST", "/api/concepts", json={"title": title, "svg": svg, "summary": summary,
-                                                     "assumptions": assumptions or [], "questions": questions or []},
+                                                     "assumptions": assumptions or [], "questions": questions or [],
+                                                     "views": ["3/4 iso", "front", "side (Z=0)", "top"]},
                        headers=ACTOR))
 
 
@@ -257,34 +257,25 @@ def propose_character_design(
     summary: str = "",
     assumptions: list[str] | None = None,
     questions: list[str] | None = None,
-    turnaround: bool = False,
+    turnaround: bool = True,
     style: str = "auto",
     from_concept_id: str = "",
     repaint: bool = False,
     flexi_segments: int = 0,
     flexi_cuts_pct: list[float] | None = None,
 ) -> str:
-    """Character Mode Design File: generate a clean studio character/scene design image shown in the Design tab
-    (never in Photos) for the user to inspect and iterate on before clicking Approve & Build.
-    `style`: archetype controlling canvas aspect ratio & 3D-print framing — one of:
-    - "flexi": wide 768x448 landscape framing + automatic fin-safe 3D-shaded flexi articulation preview!
-      The clean un-sliced base painting is preserved in `K#_clean.png` for 3D sculpting, while `K#.png` in the
-      Design tab visibly renders the curved fin-safe flexi cuts and internal hinge links so the user sees the
-      actual flexi character before clicking Approve & Build.
-    - "figurine": centered upright display character (Pixar/vinyl style)
-    - "bust": chest-up portrait bust on a flat bottom
-    - "keychain": chunky sturdy pocket charm silhouette
-    - "magnet": bold front-relief flat-back fridge magnet
-    - "planter": wide-bottom cute planter pot
-    - "scene": wide landscape unified miniature scene
-    - "auto" (default): auto-detects from `prompt`/`title` keywords.
+    """Character Mode 4-View Design File: generates a 4-view Character/Engineering Design Sheet (`K#.png`, shown in the
+    Design tab, never in Photos) by default (`turnaround=True`) while preserving a clean single-hero base (`K#_clean.png`)
+    for 3D sculpting:
+    - For standard characters (`"figurine"`, `"bust"`, `"keychain"`, `"magnet"`, `"planter"`, `"scene"`): generates a
+      2x2 4-view turnaround sheet (`1: 3/4 Hero`, `2: Front`, `3: Side on Z=0 Bed`, `4: Back`).
+    - For `"flexi"` (or `flexi_segments > 0`): automatically builds a 1280x900 4-View Bed-Seated Flexi Print-Engineering
+      Sheet (`1: 3/4 Articulated Seated on Z=0`, `2: Side Orthographic on Z=0 Build Plate + X-Ray Internal Hinges`,
+      `3: Top Orthographic Fin-Safe Cuts`, `4: Bottom Z=0 First-Layer Bed Contact Pads`), proving zero floating segments!
     CONVERTING AN EXISTING PIXAR CONCEPT TO FLEXI ("make it a flexi-shark" / "now make it flexi"):
-    - Pass `from_concept_id="K#"` (e.g. `"K7"`), `style="flexi"`, `flexi_segments=6` (or 4..7), and `repaint=False`
-      to convert that existing character concept into an articulated fin-safe flexi design in < 1 second while
-      keeping its exact character face/body!
-    - Set `repaint=True` with `from_concept_id="K#"` only when you also need the 2D painter to redraw/elongate the
-      character's body proportions or facial features.
-    - Optionally pass `flexi_cuts_pct` (e.g. `[37.5, 59.5, 65.9, 72.3, 78.8]`) to customize exact cut positions.
+    - Pass `from_concept_id="K#"` (e.g. `"K1"`), `style="flexi"`, `flexi_segments=6`, `repaint=False` to convert that
+      character into a 4-view Z=0 bed-seated flexi engineering design in < 1 second! Set `repaint=True` only when
+      also redrawing/elongating the character's shape/face.
     If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
     out = _call(
         "POST",

@@ -267,8 +267,8 @@ export default function App() {
     const extra = note.trim() ? ` Additional instructions: ${note.trim()}` : ''
     const isChar = c.mode === 'character' || Boolean(c.image_file)
     const msg = isChar
-      ? `Approve and build concept ${c.id} ("${c.title}"). Call sculpt_character(concept_id="${c.id}", ...) applying every requirement we discussed (size, flexi_segments & flatten_bottom_mm if flexi/articulated, magnet_hole, hollow_cavity, base_style, keychain_loop, multicolor as requested), wait via wait_for_character_job until done, then inspect render_preview("iso") and render_preview("top") plus run_checks to confirm the 3D result matches my request before replying.${extra}`
-      : `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its drawing and build it now in 3D Print Assist.${extra}`
+      ? `Approve and build concept ${c.id} ("${c.title}"). Call sculpt_character(concept_id="${c.id}", ...) applying every requirement we discussed (size, flexi_segments & flatten_bottom_mm if flexi/articulated, magnet_hole, hollow_cavity, base_style, keychain_loop, multicolor as requested), wait via wait_for_character_job until done, then inspect render_preview("sheet") and run_checks (verifying bed_contact == "ok" with 0 floating segments!) to confirm the 3D result is 100% printable before replying.${extra}`
+      : `Build concept ${c.id} ("${c.title}"). Call look_at_concept(id="${c.id}") to inspect its 4-view drawing and build it now in 3D Print Assist, then inspect render_preview("sheet") and run_checks.${extra}`
     run(async () => {
       if (c.status === 'pending') {
         await api.answerConcept(c.id, 'approve', note)

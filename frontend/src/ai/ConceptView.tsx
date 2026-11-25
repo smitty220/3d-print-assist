@@ -78,7 +78,11 @@ export function ConceptView({ concept: c, concepts, onSelectConcept, hideAnswerI
           <h2>{c.id} · {c.title}</h2>
         )}
         <span className={`chip cstat ${c.status}`}>{STATUS[c.status]}</span>
-        {isCharacter && <span className="chip">{c.views && c.views.length > 1 ? `Character · ${c.views.join(' / ')}` : 'Character Design'}</span>}
+        {(c.views && c.views.length > 0) ? (
+          <span className="chip">{`${c.views.length} Views · ${c.views.join(' / ')}`}</span>
+        ) : (
+          isCharacter && <span className="chip">Character Design</span>
+        )}
         <span className="spacer" />
         <button className="btn" onClick={fullScreen} title="Show the drawing full screen (Esc to come back; or double-click the drawing)">⛶ Full screen</button>
         <button className="x" onClick={onClose} aria-label={pending ? 'Hide for now' : 'Close'} title={pending ? 'Hide for now (it stays in the AI panel)' : 'Close'}>×</button>
