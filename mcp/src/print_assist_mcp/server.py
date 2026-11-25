@@ -259,24 +259,33 @@ def propose_character_design(
     questions: list[str] | None = None,
     turnaround: bool = False,
     style: str = "auto",
+    from_concept_id: str = "",
+    repaint: bool = False,
+    flexi_segments: int = 0,
+    flexi_cuts_pct: list[float] | None = None,
 ) -> str:
-    """Character Mode Design File: use the local 2D Painter to generate a clean studio character/scene design image from
-    `prompt` and optional uploaded `reference_photos` (e.g. ["I1", "I2"]). Shown in the Design tab (never in Photos)
-    for the user to inspect and iterate on before clicking Approve & Build.
+    """Character Mode Design File: generate a clean studio character/scene design image shown in the Design tab
+    (never in Photos) for the user to inspect and iterate on before clicking Approve & Build.
     `style`: archetype controlling canvas aspect ratio & 3D-print framing — one of:
-    - "flexi": wide 768x448 landscape framing for sleek elongated flat-bellied print-in-place flexi animals/toys
-      (prevents chubby spherical proportions, keeps front fins near head & long tapering tail on the floor!)
-    - "figurine": centered upright display character
+    - "flexi": wide 768x448 landscape framing + automatic fin-safe 3D-shaded flexi articulation preview!
+      The clean un-sliced base painting is preserved in `K#_clean.png` for 3D sculpting, while `K#.png` in the
+      Design tab visibly renders the curved fin-safe flexi cuts and internal hinge links so the user sees the
+      actual flexi character before clicking Approve & Build.
+    - "figurine": centered upright display character (Pixar/vinyl style)
     - "bust": chest-up portrait bust on a flat bottom
     - "keychain": chunky sturdy pocket charm silhouette
     - "magnet": bold front-relief flat-back fridge magnet
     - "planter": wide-bottom cute planter pot
     - "scene": wide landscape unified miniature scene
-    - "auto" (default): auto-detects from `prompt` keywords.
-    IMPORTANT: Always design the character as a clean, solid organic form — do NOT ask the 2D painter to draw
-    tiny print-in-place flexi hinge cuts or magnet holes; those are cut mathematically during sculpting via
-    `sculpt_character` / `update_mesh_prep`. If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)`
-    until `status == "done"` (never call `propose_character_design` a second time while running)."""
+    - "auto" (default): auto-detects from `prompt`/`title` keywords.
+    CONVERTING AN EXISTING PIXAR CONCEPT TO FLEXI ("make it a flexi-shark" / "now make it flexi"):
+    - Pass `from_concept_id="K#"` (e.g. `"K7"`), `style="flexi"`, `flexi_segments=6` (or 4..7), and `repaint=False`
+      to convert that existing character concept into an articulated fin-safe flexi design in < 1 second while
+      keeping its exact character face/body!
+    - Set `repaint=True` with `from_concept_id="K#"` only when you also need the 2D painter to redraw/elongate the
+      character's body proportions or facial features.
+    - Optionally pass `flexi_cuts_pct` (e.g. `[37.5, 59.5, 65.9, 72.3, 78.8]`) to customize exact cut positions.
+    If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
     out = _call(
         "POST",
         "/api/character/design",
@@ -289,6 +298,10 @@ def propose_character_design(
             "questions": questions or [],
             "turnaround": turnaround,
             "style": style,
+            "from_concept_id": from_concept_id,
+            "repaint": repaint,
+            "flexi_segments": flexi_segments,
+            "flexi_cuts_pct": flexi_cuts_pct or [],
             "wait_s": 40,
         },
         headers=ACTOR,

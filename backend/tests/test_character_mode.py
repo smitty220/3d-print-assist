@@ -424,3 +424,90 @@ def test_anatomy_safe_flexi_solver_and_hybrid_cad_booleans(tmp_path: Path):
     # Consumed tool body B1 is merged into M1 and hidden from standalone viewport bodies
     part = c.get("/api/part").json()
     assert [b["id"] for b in part["bodies"]] == ["M1"]
+
+
+def test_pixar_to_flexi_design_conversion_and_clean_sculpt_inheritance(monkeypatch, tmp_path: Path):
+    """First create a Pixar shark concept (K1), then convert it to a flexi-shark concept (K2) via from_concept_id,
+    and verify K2.png shows the articulated flexi cuts while sculpt_character sculpts K2_clean.png and inherits flexi."""
+    from PIL import Image, ImageDraw
+    from print_assist.ml import painter, sculptor
+
+    app_module.reset(tmp_path)
+    c = TestClient(app_module.app)
+    c.post("/api/projects", json={"name": "Pixar to Flexi", "creation_mode": "character"})
+
+    # Build a synthetic shark-like 2D concept image on a light studio background
+    im = Image.new("RGB", (640, 400), (250, 250, 252))
+    dr = ImageDraw.Draw(im)
+    # Dorsal fin peak in the middle, blue upper body, cream belly
+    dr.polygon([(270, 150), (335, 65), (360, 160)], fill=(85, 112, 138))
+    dr.ellipse([60, 130, 560, 290], fill=(85, 112, 138))
+    dr.chord([75, 160, 540, 295], start=10, end=170, fill=(232, 228, 212))
+    # Pectoral fin hanging below cream belly
+    dr.polygon([(275, 255), (385, 340), (330, 250)], fill=(82, 108, 134))
+    # Tail fin
+    dr.polygon([(520, 210), (605, 115), (585, 210), (605, 295)], fill=(85, 112, 138))
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    shark_png = buf.getvalue()
+
+    paint_calls = {"n": 0}
+
+    def _mock_paint(**kw):
+        paint_calls["n"] += 1
+        return shark_png, ["front"]
+
+    sculpted_from: list[Path] = []
+
+    def _mock_sculpt(img_path: Path, **kw):
+        sculpted_from.append(Path(img_path))
+        return _glb_bytes()
+
+    monkeypatch.setattr(painter, "generate_character_design_image", _mock_paint)
+    monkeypatch.setattr(sculptor, "sculpt_mesh_from_image", _mock_sculpt)
+
+    # Step 1: Propose initial Pixar-style figurine concept K1 ("It's ok to make it pixar the first time")
+    k1 = c.post("/api/character/design", json={
+        "title": "Bruce (Pixar Figurine)",
+        "prompt": "Pixar style great white shark Bruce",
+        "style": "figurine",
+    }).json()
+    assert k1["id"] == "K1"
+    assert k1["style"] == "figurine"
+    assert k1["flexi_segments"] == 0
+    assert k1["flexi_cuts_pct"] == []
+    assert paint_calls["n"] == 1
+
+    # Step 2: User says "now make it a flexi-shark" -> convert K1 into articulated flexi concept K2 (repaint=False)
+    k2 = c.post("/api/character/design", json={
+        "title": "Bruce (Articulated Flexi Shark)",
+        "prompt": "Articulated print-in-place flexi shark Bruce",
+        "from_concept_id": "K1",
+        "style": "flexi",
+        "flexi_segments": 6,
+        "repaint": False,
+    }).json()
+    assert k2["id"] == "K2"
+    assert k2["style"] == "flexi"
+    assert k2["flexi_segments"] == 6
+    assert len(k2["flexi_cuts_pct"]) == 5
+    # No second GPU paint call was needed!
+    assert paint_calls["n"] == 1
+    # None of the fin-safe cuts fall inside the dorsal fin (42..57%)
+    for cp in k2["flexi_cuts_pct"]:
+        assert not (42.5 <= cp <= 57.5), f"2D flexi concept cut {cp}% hit the dorsal fin!"
+
+    # Verify K2.png (shown in Design tab) visibly contains the rendered flexi cuts, while K2_clean.png is un-cut
+    k2_preview_bytes = c.get("/api/concepts/K2/image").content
+    assert k2_preview_bytes != shark_png
+    ws = app_module.ws()
+    clean_p = ws.concepts.clean_image_path("K2")
+    assert clean_p is not None and clean_p.name == "K2_clean.png"
+    assert clean_p.read_bytes() == shark_png
+
+    # Step 3: User clicks "Approve and build" on K2 -> sculpts from K2_clean.png and inherits flexi_segments=6
+    c.post("/api/concepts/K2/answer", json={"decision": "approve", "note": "Build flexi shark"})
+    sc = c.post("/api/character/sculpt", json={"concept_id": "K2", "target_height_mm": 60.0}).json()
+    assert sc["sculpt"]["watertight"] is True
+    assert sc["sculpt"]["prep"]["flexi_segments"] == 6
+    assert len(sculpted_from) == 1 and sculpted_from[0].name == "K2_clean.png"

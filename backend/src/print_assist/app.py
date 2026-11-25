@@ -1262,6 +1262,10 @@ class CharacterDesignIn(BaseModel):
     questions: list[str] = []
     turnaround: bool = False
     style: Literal["auto", "figurine", "flexi", "bust", "keychain", "magnet", "planter", "scene"] = "auto"
+    from_concept_id: str = ""
+    repaint: bool = False
+    flexi_segments: int = 0
+    flexi_cuts_pct: list[float] = []
     steps: int = 14
     seed: int = -1
     wait_s: float = -1.0  # -1 = block until done; >= 0 = async job waiting up to wait_s seconds
@@ -1367,7 +1371,12 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
     from .concepts import ConceptError
     from .images import ImageError
     from .ml import start_character_job
-    from .ml.painter import PainterError, generate_character_design_image
+    from .ml.painter import (
+        PainterError,
+        generate_character_design_image,
+        render_flexi_concept_preview,
+        resolve_character_style,
+    )
 
     w = ws()
     ref_paths = []
@@ -1377,15 +1386,55 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
         except ImageError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    src_cid = body.from_concept_id.strip()
+    src_c = None
+    src_clean_path = None
+    if src_cid:
+        w.concepts.sync()
+        if src_cid.lower() == "latest" and w.concepts.items:
+            src_c = w.concepts.items[-1]
+        else:
+            src_c = w.concepts.get(src_cid)
+        if src_c is not None:
+            src_clean_path = w.concepts.clean_image_path(src_c.id)
+
+    combined_text = f"{body.title} {body.prompt} {body.summary}"
+    resolved_style = (
+        "flexi"
+        if (body.flexi_segments > 0 or len(body.flexi_cuts_pct) > 0)
+        else resolve_character_style(combined_text, body.style)
+    )
+
     def _work() -> dict:
-        png_bytes, views = generate_character_design_image(
-            prompt=body.prompt,
-            ref_paths=ref_paths or None,
-            turnaround=body.turnaround,
-            style=body.style,
-            steps=body.steps,
-            seed=body.seed,
-        )
+        if src_c is not None and src_clean_path is not None and not body.repaint:
+            clean_png_bytes = src_clean_path.read_bytes()
+            views = list(src_c.views) or (["front", "side", "back"] if body.turnaround else ["front"])
+        else:
+            eff_refs = list(ref_paths)
+            if not eff_refs and src_clean_path is not None:
+                eff_refs = [src_clean_path]
+            clean_png_bytes, views = generate_character_design_image(
+                prompt=body.prompt,
+                ref_paths=eff_refs or None,
+                turnaround=body.turnaround,
+                style=resolved_style,
+                steps=body.steps,
+                seed=body.seed,
+            )
+
+        if resolved_style == "flexi":
+            eff_segs = body.flexi_segments if body.flexi_segments >= 3 else 6
+            preview_png_bytes, cuts_pct = render_flexi_concept_preview(
+                clean_png_bytes,
+                flexi_segments=eff_segs,
+                flexi_cuts_pct=body.flexi_cuts_pct or None,
+            )
+            final_segs = (len(cuts_pct) + 1) if cuts_pct else eff_segs
+        else:
+            preview_png_bytes = clean_png_bytes
+            cuts_pct = []
+            final_segs = 0
+
         c = w.propose_concept(
             x_actor,
             title=body.title,
@@ -1393,14 +1442,18 @@ def create_character_design(body: CharacterDesignIn, x_actor: str = Header(defau
             assumptions=body.assumptions,
             questions=body.questions,
             mode="character",
-            image_bytes=png_bytes,
+            image_bytes=preview_png_bytes,
+            clean_image_bytes=clean_png_bytes,
             image_ext=".png",
             reference_photos=body.reference_photos,
             views=views,
+            style=resolved_style,
+            flexi_segments=final_segs,
+            flexi_cuts_pct=cuts_pct,
         )
         return c.model_dump(exclude={"svg"})
 
-    if body.wait_s < 0:
+    if body.wait_s < 0 or (src_c is not None and src_clean_path is not None and not body.repaint):
         try:
             return _work()
         except (PainterError, ConceptError) as exc:
@@ -1421,7 +1474,7 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
     from .geometry.mesh_prep import MeshPrepError
     from .images import ImageError
     from .ml import ml_job_update, start_character_job
-    from .ml.painter import PainterError, generate_character_design_image
+    from .ml.painter import PainterError, generate_character_design_image, render_flexi_concept_preview
     from .ml.sculptor import SculptorError, sculpt_mesh_from_image
 
     w = ws()
@@ -1436,6 +1489,8 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         except ImageError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    eff_flexi_segments = body.flexi_segments
+    eff_flatten_bottom_mm = body.flatten_bottom_mm
     if cid:
         c = w.concepts.get(cid)
         if c is None:
@@ -1445,11 +1500,16 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
             raise HTTPException(404, f"No concept {cid!r}")
         if c.status == "pending" and x_actor != USER and not w.project.data.settings.direct_build:
             raise HTTPException(409, f"Concept {c.id} is still waiting for the user's approval")
-        img_path = w.concepts.image_path(c.id)
+        img_path = w.concepts.clean_image_path(c.id)
         views = list(c.views)
         sculpt_name = sculpt_name or c.title
         if img_path is None:
             raise HTTPException(422, f"Concept {c.id} does not have a Character Mode design image")
+        if eff_flexi_segments == 0 and (
+            c.flexi_segments > 0 or c.style == "flexi" or "flexi" in c.title.lower()
+        ):
+            eff_flexi_segments = c.flexi_segments if c.flexi_segments >= 3 else 6
+            eff_flatten_bottom_mm = max(eff_flatten_bottom_mm, 0.4)
     elif not body.prompt.strip() and not ref_paths:
         raise HTTPException(422, "Provide concept_id, prompt, or reference_photos to sculpt")
     elif not body.prompt.strip() and ref_paths:
@@ -1458,13 +1518,13 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
 
     prep = SculptPrep(
         target_height_mm=body.target_height_mm,
-        flatten_bottom_mm=body.flatten_bottom_mm,
+        flatten_bottom_mm=eff_flatten_bottom_mm,
         base_style=body.base_style,
         base_height_mm=body.base_height_mm,
         base_margin_mm=body.base_margin_mm,
         keychain_loop=body.keychain_loop,
         keychain_hole_mm=body.keychain_hole_mm,
-        flexi_segments=body.flexi_segments,
+        flexi_segments=eff_flexi_segments,
         flexi_axis=body.flexi_axis,
         flexi_start_pct=body.flexi_start_pct,
         flexi_end_pct=body.flexi_end_pct,
@@ -1486,27 +1546,39 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         if img_path is None:
             # Direct Build bypass: synthesize clean hero image with matching archetype framing, then sculpt
             auto_style = (
-                "flexi" if body.flexi_segments > 0
+                "flexi" if prep.flexi_segments > 0
                 else "magnet" if body.magnet_hole != "none"
                 else "planter" if body.hollow_cavity
                 else "keychain" if body.keychain_loop
                 else "auto"
             )
-            png_bytes, views = generate_character_design_image(
+            clean_png_bytes, views = generate_character_design_image(
                 prompt=body.prompt, ref_paths=ref_paths or None, turnaround=False, style=auto_style
             )
+            if auto_style == "flexi" or prep.flexi_segments > 0:
+                preview_png_bytes, cuts_pct = render_flexi_concept_preview(
+                    clean_png_bytes,
+                    flexi_segments=prep.flexi_segments or 6,
+                    flexi_cuts_pct=prep.flexi_cuts_pct or None,
+                )
+            else:
+                preview_png_bytes, cuts_pct = clean_png_bytes, []
             c_new = w.propose_concept(
                 x_actor,
                 title=sculpt_name or body.prompt[:48],
                 summary=body.prompt,
                 mode="character",
-                image_bytes=png_bytes,
+                image_bytes=preview_png_bytes,
+                clean_image_bytes=clean_png_bytes,
                 reference_photos=body.reference_photos,
                 views=views,
+                style=auto_style,
+                flexi_segments=prep.flexi_segments,
+                flexi_cuts_pct=cuts_pct,
             )
             w.answer_concept(c_new.id, "approve", "Direct Build")
             cid = c_new.id
-            img_path = w.concepts.image_path(c_new.id)
+            img_path = w.concepts.clean_image_path(c_new.id)
             sculpt_name = sculpt_name or c_new.title
         assert img_path is not None
         raw_glb = sculpt_mesh_from_image(img_path, views=views)

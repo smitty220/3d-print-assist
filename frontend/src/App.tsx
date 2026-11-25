@@ -294,7 +294,7 @@ export default function App() {
       if (note.trim() && (ai?.mode === 'api' || !ai?.chat.running)) {
         if (ai?.mode !== 'api') await api.settings({ ai_mode: 'api' })
         const toolHint = (c.mode === 'character' || Boolean(c.image_file))
-          ? 'propose_character_design'
+          ? `propose_character_design (pass from_concept_id="${c.id}", style="flexi" and flexi_segments=6 if flexi/articulated, and repaint=false when converting to flexi or adjusting cuts while keeping the character shape, or repaint=true if redrawing the character's shape/face)`
           : 'propose_concept'
         await api.chat(`Revise concept ${c.id} ("${c.title}"): ${note.trim()}. Call look_at_concept(id="${c.id}") first, then call ${toolHint} with the revised design.`)
       }

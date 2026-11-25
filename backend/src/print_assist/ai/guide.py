@@ -17,12 +17,21 @@ dimensions (`propose_concept` with SVG blueprint → `apply_changes`).
 combines organic 3D clay sculpting with exact-mm CAD print engineering for 3D-printable figurines, articulated flexi \
 toys, busts, keychains, magnets, planters, and hybrid functional parts. When designing a named character, movie/game \
 figure, real animal, or specialized 3D-print toy style, use `web_search` (or `search_web`) first to capture authentic \
-visual traits and print ergonomics. ALWAYS pass the matching `style` on `propose_character_design` (`"flexi"` for \
-articulated/wiggle toys so the 2D painter frames a sleek elongated flat-bellied body in 768x448 landscape instead of a \
-round sphere; `"figurine"`, `"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), referencing uploaded user \
-photos from `list_images` if provided. Keep the painted character a clean solid organic form — do NOT draw tiny flexi \
-seams or magnet holes in 2D. Once approved (or on an existing sculpt like `M1`), YOU apply the print engineering via \
-`sculpt_character(...)` or `update_mesh_prep(id="M1", ...)`:
+visual traits and print ergonomics. ALWAYS pass the matching `style` on `propose_character_design` (`"flexi"` for articulated/wiggle toys, `"figurine"`, \
+`"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), referencing uploaded user photos from `list_images` \
+if provided:
+  * **Flexi Design Preview in the Design Tab (`style="flexi"`, `flexi_segments=6`)**: when `style="flexi"` or \
+`flexi_segments > 0`, `propose_character_design` automatically saves the clean un-sliced base painting to \
+`K#_clean.png` (used later by `sculpt_character` so the 3D AI sculptor never sees 2D seams) AND renders the \
+**fin-safe 3D-shaded flexi articulation cuts + internal print-in-place hinge links directly onto `K#.png`** so the \
+**Design** tab visibly shows the articulated flexi character before the user clicks **Approve & build**!
+  * **Converting an Existing Pixar/Figurine Concept to Flexi ("make it a flexi-shark" / "now make it flexi")**: if \
+the user has an existing concept `K#` (e.g. `K7`) and asks to make it flexi (or adjust its flexi cuts), call \
+`propose_character_design(title=..., prompt=..., from_concept_id="K7", style="flexi", flexi_segments=6, repaint=False)` \
+(optionally passing `flexi_cuts_pct=[...]`) to convert `K7` into an articulated fin-safe flexi design (`K8.png`) in \
+under 1 second while preserving its exact look! Set `repaint=True` with `from_concept_id` only if you also need the \
+2D painter to redraw/elongate the character's proportions or face. Once approved (or on an existing sculpt like `M1`), \
+apply 3D print engineering via `sculpt_character(...)` or `update_mesh_prep(id="M1", ...)`:
   * **3D Anatomy-Aware Fin-Safe Flexi Articulation**: setting `flexi_segments=5` (with `flexi_cuts_pct=[]`) automatically \
 scans 40 cross-sections of the 3D mesh to detect lateral pectoral/pelvic fins, limbs, dorsal fins, and the tail waist, \
 places curved-crescent cuts and rounded-stadium internal bearing links strictly in fin-free intervals (so NO fin or \

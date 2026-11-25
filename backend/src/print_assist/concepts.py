@@ -26,6 +26,10 @@ class Concept(BaseModel):
     svg: str = ""
     mode: Literal["engineer", "character"] = "engineer"
     image_file: str = ""  # Character Mode turnaround PNG kept in concepts/ (never in Photos/images)
+    clean_image_file: str = ""  # Un-sliced source painting used for 3D sculpting when image_file shows flexi cuts
+    style: str = "auto"
+    flexi_segments: int = 0
+    flexi_cuts_pct: list[float] = Field(default_factory=list)
     reference_photos: list[str] = Field(default_factory=list)
     views: list[str] = Field(default_factory=list)  # e.g. ["front", "side", "back"]
     assumptions: list[str] = Field(default_factory=list)
@@ -122,17 +126,35 @@ class Concepts:
         p = self.folder / c.image_file
         return p if p.is_file() else None
 
+    def clean_image_path(self, cid: str) -> Path | None:
+        c = self.get(cid)
+        if c is None:
+            return None
+        if c.clean_image_file:
+            p_clean = self.folder / c.clean_image_file
+            if p_clean.is_file():
+                return p_clean
+        alt_clean = self.folder / f"{c.id}_clean.png"
+        if alt_clean.is_file():
+            return alt_clean
+        return self.image_path(cid)
+
     def propose(self, title: str, svg: str = "", summary: str = "", assumptions: list[str] | None = None,
                 questions: list[str] | None = None, actor: str = "claude-code",
                 mode: Literal["engineer", "character"] = "engineer",
                 image_bytes: bytes | None = None, image_ext: str = ".png",
                 reference_photos: list[str] | None = None,
-                views: list[str] | None = None) -> Concept:
+                views: list[str] | None = None,
+                clean_image_bytes: bytes | None = None,
+                style: str = "auto",
+                flexi_segments: int = 0,
+                flexi_cuts_pct: list[float] | None = None) -> Concept:
         if not title.strip():
             raise ConceptError("a concept needs a title")
         n = max((int(c.id[1:]) for c in self.items if c.id[1:].isdigit()), default=0) + 1
         cid = f"K{n}"
         image_file = ""
+        clean_image_file = ""
         if image_bytes is not None:
             import base64
             import io
@@ -142,6 +164,9 @@ class Concepts:
             ext = image_ext if image_ext in (".png", ".jpg", ".webp") else ".png"
             image_file = f"{cid}{ext}"
             (self.folder / image_file).write_bytes(image_bytes)
+            if clean_image_bytes is not None:
+                clean_image_file = f"{cid}_clean{ext}"
+                (self.folder / clean_image_file).write_bytes(clean_image_bytes)
             with PILImage.open(io.BytesIO(image_bytes)) as im:
                 iw, ih = im.size
             mime = "image/jpeg" if ext == ".jpg" else "image/webp" if ext == ".webp" else "image/png"
@@ -158,7 +183,9 @@ class Concepts:
                 self._save(old)
         c = Concept(
             id=cid, title=title.strip(), summary=summary.strip(), svg=drawing,
-            mode=mode, image_file=image_file,
+            mode=mode, image_file=image_file, clean_image_file=clean_image_file,
+            style=style, flexi_segments=max(0, int(flexi_segments)),
+            flexi_cuts_pct=list(flexi_cuts_pct or []),
             reference_photos=list(reference_photos or []),
             views=list(views or []),
             assumptions=[a for a in (assumptions or []) if a.strip()],
