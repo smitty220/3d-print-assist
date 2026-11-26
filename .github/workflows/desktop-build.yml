@@ -47,6 +47,9 @@ jobs:
           uv python install 3.12
           uv sync --extra desktop
 
+      - name: Stage headless Blender 4.5 LTS
+        run: uv --directory backend run python ../scripts/stage_blender.py
+
       - name: Build desktop bundle (PyInstaller)
         working-directory: backend
         run: uv run pyinstaller 3d-print-assist.spec --noconfirm --clean

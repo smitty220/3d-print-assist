@@ -382,6 +382,84 @@ def sculpt_character(
 
 
 @mcp.tool()
+def build_blender_character(
+    name: str,
+    script: str,
+    concept_id: str = "",
+    replace_sculpt_id: str = "",
+    target_height_mm: float = 0.0,
+    flatten_bottom_mm: float = 0.0,
+    base_style: str = "none",
+    keychain_loop: bool = False,
+    flexi_segments: int = 0,
+    flexi_clearance_mm: float = 0.45,
+    flexi_angle_deg: float = 24.0,
+    cut_bodies: list[str] | None = None,
+    union_bodies: list[str] | None = None,
+    magnet_hole: str = "none",
+    magnet_dia_mm: float = 8.2,
+    magnet_depth_mm: float = 3.2,
+    hollow_cavity: bool = False,
+    hollow_wall_mm: float = 3.0,
+    color_mode: str = "auto",
+) -> str:
+    """Headless Blender 4.5 LTS SubSurf & Flexi-Factory Character Engine (~2-4 seconds, 100% local & free!).
+    PREFERRED engine for stylized Pixar/cartoon characters, animals, collectibles, multi-color MMU3/AMS models,
+    and print-in-place Flexi-Factory articulated toys with glass-smooth Catmull-Clark Subdivision Surfaces!
+    (Use `sculpt_character` / Hunyuan3D-2mv instead only for uploaded real-world photos / portraits / pets.)
+
+    Write a clean Python `script` (1 Blender unit = 1 mm, Z-up, print bed at Z=0, face character toward -X for flexis).
+    `bpy` and all `pa_blender_lib` helpers are pre-imported automatically:
+      - `pa_loft_profile(name, sections, ring_verts=28, subsurf=2)`: glass-smooth quad body loft along X; each section
+        is `{"x", "ry", "z_bot", "z_top", "belly_flat": 0..0.9}` (`z_bot=0.0, belly_flat=0.75` seats flush on Z=0!).
+      - `pa_sculpt_fin_strip(name, stations, ring_verts=16, subsurf=2, mirror_y=False)`: airfoil fins, tails, wings,
+        ears, limbs; each station is `{"center": (x,y,z), "chord_vec": (dx,dy,dz), "thick_vec": (tx,ty,tz)}`.
+      - `pa_quad_sphere(name, center, radius_xyz, rot_deg=(0,0,0), subsurf=2, mirror_y=False)`: smooth eyes, brows, cheeks, tongue.
+      - `pa_cone(name, base_center, tip_point, radius_base, radius_tip=0.3, subsurf=1, mirror_y=False)`: teeth, horns, spikes.
+      - `pa_box(name, center, size_xyz)`, `pa_cylinder(name, center, radius, height)`, `pa_extrude_polygon_z(name, pts_xy, z0, z1)`.
+      - `pa_bool(target, tool, op="UNION"|"DIFFERENCE"|"INTERSECT", delete_tool=True)`: Blender 4.5 fast MANIFOLD boolean.
+      - `pa_join(objs, name)`: merge multiple meshes of the same filament color into one object.
+      - `pa_assign_color(obj, part_name, hex_color, filament=1..5)`: exact sRGB filament hex color & MMU3/AMS extruder slot!
+      - `pa_flexi_articulate(primary_body, detail_parts=[mouth, eyes, teeth], color_zones=[belly], cuts_x=[...], clearance_mm=0.45, angle_deg=26.0, bevel_mm=1.4, flatten_bottom_mm=0.7)`:
+        slices `primary_body` into smooth beveled flexi links with wide ±26° V-flank swing gaps + captive vertical Z-axis
+        pins & chain-link tongues! Pass additive 3D features (Eyes, Teeth, Mouth) in `detail_parts` and volumetric paint
+        masks (Belly, Stripes, Spots — wider than body so they paint the outer skin!) in `color_zones`.
+      - `pa_partition_colors(primary_body, detail_parts=[...], color_zones=[...], flatten_bottom_mm=0.4)`: for non-flexi multi-color characters.
+      - `pa_export_glb(OUT_GLB, baked_flexi=True|False)`: exports Z-up mm `.glb` preserving all colors & manifold solids.
+
+    Pass `replace_sculpt_id="M1"` when revising an existing character so the viewport updates cleanly in place!
+    Leave `target_height_mm=0.0` to keep your exact mm script coordinates (or set e.g. `80.0` to rescale uniformly).
+    After calling this, ALWAYS call `render_preview(view="sheet")` + `run_checks` to visually inspect all 4 views!"""
+    return _text(_call(
+        "POST",
+        "/api/character/blender",
+        json={
+            "name": name,
+            "script": script,
+            "concept_id": concept_id,
+            "replace_sculpt_id": replace_sculpt_id,
+            "target_height_mm": target_height_mm,
+            "flatten_bottom_mm": flatten_bottom_mm,
+            "base_style": base_style,
+            "keychain_loop": keychain_loop,
+            "flexi_segments": flexi_segments,
+            "flexi_clearance_mm": flexi_clearance_mm,
+            "flexi_angle_deg": flexi_angle_deg,
+            "cut_bodies": cut_bodies or [],
+            "union_bodies": union_bodies or [],
+            "magnet_hole": magnet_hole,
+            "magnet_dia_mm": magnet_dia_mm,
+            "magnet_depth_mm": magnet_depth_mm,
+            "hollow_cavity": hollow_cavity,
+            "hollow_wall_mm": hollow_wall_mm,
+            "color_mode": color_mode,
+        },
+        headers=ACTOR,
+        timeout=140,
+    ))
+
+
+@mcp.tool()
 def wait_for_character_job(wait_s: int = 40) -> str:
     """Wait up to `wait_s` seconds (max 45s) for the active Character Mode GPU painting or 3D sculpting job.
     Returns `status: "done"` with the finished Concept or Sculpt result, `status: "running"` with live progress

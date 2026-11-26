@@ -411,7 +411,8 @@ class Workspace:
             return anat
 
     def add_sculpt(self, actor: str, name: str, raw_bytes: bytes, ext: str = ".glb", concept_id: str = "",
-                   prep=None, color: str | None = "#b8c2cc", filament: int | None = None):
+                   prep=None, color: str | None = "#b8c2cc", filament: int | None = None,
+                   replace_id: str = "", source_script: str = ""):
         from ..features.model import SculptMesh, SculptPrep
         from ..geometry.mesh_prep import prepare_print_mesh
 
@@ -420,16 +421,23 @@ class Workspace:
             norm_ext = ".glb"
         with self.lock:
             trial = self.design.model_copy(deep=True)
-            sid = trial.next_sculpt_id()
-            fname = f"{sid}_raw{norm_ext}"
+            rep_id = (replace_id or "").strip()
+            existing = trial.sculpt(rep_id) if rep_id else None
+            sid = existing.id if existing is not None else trial.next_sculpt_id()
+            # Keep distinct filenames on replacement so Undo restores the prior mesh cleanly.
+            fname = f"{sid}_r{self.rev + 1}{norm_ext}" if existing is not None else f"{sid}_raw{norm_ext}"
             self.sculpts_dir.mkdir(parents=True, exist_ok=True)
             raw_path = self.sculpts_dir / fname
             raw_path.write_bytes(raw_bytes)
+            if source_script:
+                (self.sculpts_dir / f"{sid}_blender.py").write_text(source_script, encoding="utf-8")
             use_prep = prep if isinstance(prep, SculptPrep) else SculptPrep.model_validate(prep or {})
+            cuts, unions = self._cad_tool_meshes(use_prep)
             c_img = self.concepts.clean_image_path(concept_id) if concept_id else None
             multi_ex = self.project.printer.slots > 1
             prepared = prepare_print_mesh(
                 raw_path, use_prep, name=name or sid, color=color, filament=filament,
+                cad_cuts=cuts, cad_unions=unions,
                 concept_image_path=c_img, multi_extruder=multi_ex,
             )
             sm = SculptMesh(
@@ -444,13 +452,18 @@ class Workspace:
                 triangles=prepared.triangles,
                 volume_mm3=round(prepared.volume_mm3, 2),
             )
-            trial.sculpts.append(sm)
+            if existing is not None:
+                idx = next(i for i, s in enumerate(trial.sculpts) if s.id == sid)
+                trial.sculpts[idx] = sm
+            else:
+                trial.sculpts.append(sm)
             self.undo_stack.append(Step(self.working.model_dump_json(), f"Sculpt {sm.name}", actor))
             del self.undo_stack[:-UNDO_LIMIT]
             self.redo_stack.clear()
             self._set(trial)
+            good_id = id(self.last_good) if (self.last_good and self.last_good.parts and (use_prep.cut_bodies or use_prep.union_bodies)) else 0
             self._sculpt_cache[sid] = (
-                (fname, raw_path.stat().st_mtime, use_prep.model_dump_json(), sm.name, color or "#b8c2cc", filament, 0, str(c_img) if c_img else "", multi_ex),
+                (fname, raw_path.stat().st_mtime, use_prep.model_dump_json(), sm.name, color or "#b8c2cc", filament, good_id, str(c_img) if c_img else "", multi_ex),
                 prepared,
             )
             self.log(actor, f"Sculpted {sm.id} ({sm.name}): {sm.triangles:,} tris, watertight={sm.watertight}")

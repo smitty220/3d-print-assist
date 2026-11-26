@@ -155,10 +155,11 @@ export class Viewer {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 
     const opacity = style.opacity ?? 1
+    const isSculptMesh = data.faces.length === 1 && data.faces[0]?.type === 'mesh'
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      metalness: 0.2,
-      roughness: 0.55,
+      metalness: isSculptMesh ? 0.05 : 0.2,
+      roughness: isSculptMesh ? 0.42 : 0.55,
       transparent: opacity < 1,
       opacity,
       depthWrite: opacity >= 1,
@@ -464,7 +465,17 @@ export class Viewer {
     const range = p?.faceRanges.get(pick.faceId)
     if (!p || !range) return
     const lit = this.highlight?.part === pick.part && this.highlight.faces.has(pick.faceId)
-    const color = same(pick, this.selected) ? SELECT : same(pick, this.hover) ? HOVER : lit ? HIGHLIGHT : p.base
+    const isSculptMesh = p.data.faces.length === 1 && p.data.faces[0]?.type === 'mesh'
+    let color: THREE.Color
+    if (isSculptMesh) {
+      // Never flood a full organic character body bright orange on hover/select; keep true filament colors visible.
+      if (same(pick, this.selected)) color = p.base.clone().lerp(SELECT, 0.22)
+      else if (same(pick, this.hover)) color = p.base.clone().lerp(new THREE.Color(0xffffff), 0.08)
+      else if (lit) color = p.base.clone().lerp(HIGHLIGHT, 0.22)
+      else color = p.base
+    } else {
+      color = same(pick, this.selected) ? SELECT : same(pick, this.hover) ? HOVER : lit ? HIGHLIGHT : p.base
+    }
     const attr = p.mesh.geometry.getAttribute('color') as THREE.BufferAttribute
     const [start, count] = range
     for (let i = start; i < start + count; i++) attr.setXYZ(i, color.r, color.g, color.b)

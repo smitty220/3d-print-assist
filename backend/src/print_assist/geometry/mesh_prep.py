@@ -57,6 +57,47 @@ class PreparedSculpt:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass
+class RawMeshPart:
+    name: str
+    mesh: trimesh.Trimesh
+    color: str | None = None
+    filament: int | None = None
+    is_color_zone: bool = False
+
+
+def _linear_to_srgb_hex(rgba: list[float] | tuple[float, ...] | None) -> str | None:
+    if not rgba or len(rgba) < 3:
+        return None
+    out: list[int] = []
+    for c in rgba[:3]:
+        cv = max(0.0, min(1.0, float(c)))
+        s = 12.92 * cv if cv <= 0.0031308 else 1.055 * (cv ** (1.0 / 2.4)) - 0.055
+        out.append(int(round(max(0.0, min(1.0, s)) * 255.0)))
+    return "#{:02x}{:02x}{:02x}".format(out[0], out[1], out[2])
+
+
+def _read_glb_json(path: Path) -> dict | None:
+    """Parse the JSON header chunk of a binary `.glb` file to read exact node/material colors & extras."""
+    import json
+    import struct
+
+    if path.suffix.lower() != ".glb":
+        return None
+    try:
+        with open(path, "rb") as f:
+            header = f.read(20)
+            if len(header) < 20:
+                return None
+            magic, _ver, _length, chunk_len, chunk_type = struct.unpack("<5I", header)
+            if magic != 0x46546C67 or chunk_type != 0x4E4F534A:  # 'glTF', 'JSON'
+                return None
+            raw_json = f.read(chunk_len)
+        return json.loads(raw_json.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _to_trimesh(raw: trimesh.Trimesh | trimesh.Scene) -> trimesh.Trimesh:
     if isinstance(raw, trimesh.Scene):
         geoms = [g for g in raw.dump() if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0]
@@ -80,6 +121,87 @@ def load_raw_mesh(path: Path) -> trimesh.Trimesh:
     except Exception as exc:  # noqa: BLE001
         raise MeshPrepError(f"could not read mesh {path.name}: {exc}") from exc
     return _to_trimesh(loaded)
+
+
+def load_raw_parts(path: Path) -> tuple[list[RawMeshPart], dict]:
+    """Load a raw mesh file preserving separate named, colored sub-parts when present (e.g. Blender multi-color GLB).
+
+    Returns `(parts, meta)` where `meta` may include `flexi_baked: bool` from glTF node extras.
+    """
+    if not path.is_file():
+        raise MeshPrepError(f"mesh file not found: {path.name}")
+
+    gltf = _read_glb_json(path)
+    node_meta_by_name: dict[str, dict] = {}
+    node_meta_list: list[dict] = []
+    flexi_baked = False
+    if gltf:
+        mats = gltf.get("materials") or []
+        meshes_json = gltf.get("meshes") or []
+        for nd in gltf.get("nodes") or []:
+            if "mesh" not in nd:
+                continue
+            ex = nd.get("extras") or {}
+            if ex.get("pa_flexi_baked"):
+                flexi_baked = True
+            col = ex.get("pa_color")
+            fil = ex.get("pa_filament")
+            pname = ex.get("pa_part_name") or nd.get("name") or ""
+            if not col:
+                m_idx = nd.get("mesh")
+                if isinstance(m_idx, int) and 0 <= m_idx < len(meshes_json):
+                    prims = meshes_json[m_idx].get("primitives") or []
+                    if prims and "material" in prims[0]:
+                        mat_idx = prims[0]["material"]
+                        if isinstance(mat_idx, int) and 0 <= mat_idx < len(mats):
+                            mobj = mats[mat_idx]
+                            col = (mobj.get("extras") or {}).get("pa_color") or _linear_to_srgb_hex(
+                                (mobj.get("pbrMetallicRoughness") or {}).get("baseColorFactor")
+                            )
+            info = {
+                "name": str(pname),
+                "color": str(col) if col else None,
+                "filament": int(fil) if fil is not None else None,
+                "is_color_zone": bool(ex.get("pa_color_zone", False)),
+            }
+            if nd.get("name"):
+                node_meta_by_name[str(nd["name"])] = info
+            node_meta_list.append(info)
+
+    try:
+        loaded = trimesh.load(str(path), force="scene")
+    except Exception:  # noqa: BLE001
+        return [RawMeshPart(name="Body", mesh=load_raw_mesh(path))], {"flexi_baked": flexi_baked}
+
+    if isinstance(loaded, trimesh.Trimesh):
+        return [RawMeshPart(name="Body", mesh=loaded.copy())], {"flexi_baked": flexi_baked}
+
+    parts: list[RawMeshPart] = []
+    idx = 0
+    for node_name in loaded.graph.nodes_geometry:
+        transform, geom_name = loaded.graph[node_name]
+        geom = loaded.geometry.get(geom_name)
+        if not isinstance(geom, trimesh.Trimesh) or len(geom.faces) == 0 or len(geom.vertices) == 0:
+            continue
+        tm = geom.copy()
+        if transform is not None:
+            tm.apply_transform(transform)
+        info = node_meta_by_name.get(str(node_name))
+        if info is None:
+            stem = str(node_name).split(".")[0]
+            info = node_meta_by_name.get(stem)
+        if info is None and idx < len(node_meta_list):
+            info = node_meta_list[idx]
+        idx += 1
+        pname = (info or {}).get("name") or str(node_name)
+        pcol = (info or {}).get("color")
+        pfil = (info or {}).get("filament")
+        pzone = bool((info or {}).get("is_color_zone", False))
+        parts.append(RawMeshPart(name=pname, mesh=tm, color=pcol, filament=pfil, is_color_zone=pzone))
+
+    if not parts:
+        return [RawMeshPart(name="Body", mesh=load_raw_mesh(path))], {"flexi_baked": flexi_baked}
+    return parts, {"flexi_baked": flexi_baked}
 
 
 def _manifold_to_trimesh(mf: m3d.Manifold) -> trimesh.Trimesh:
@@ -122,6 +244,20 @@ def _drop_tiny_debris(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 def repair_to_manifold(mesh: trimesh.Trimesh, max_voxel_res: int = 128) -> tuple[m3d.Manifold, list[str]]:
     """Repair an arbitrary triangle mesh into a guaranteed watertight `manifold3d.Manifold`."""
     notes: list[str] = []
+
+    # Fast exact path: if the raw mesh is already a valid manifold (e.g. from Blender 4.5 MANIFOLD solver),
+    # convert directly BEFORE running trimesh's fuzzy `merge_vertices()` which can collapse narrow boolean triangles.
+    direct = _trimesh_to_manifold(mesh)
+    if direct is not None:
+        if float(direct.volume()) < 0:
+            inv = mesh.copy()
+            inv.invert()
+            direct_inv = _trimesh_to_manifold(inv)
+            if direct_inv is not None and float(direct_inv.volume()) > 0:
+                return direct_inv, notes
+        else:
+            return direct, notes
+
     work = mesh.copy()
     work.merge_vertices()
     work.update_faces(work.nondegenerate_faces())
@@ -136,12 +272,13 @@ def repair_to_manifold(mesh: trimesh.Trimesh, max_voxel_res: int = 128) -> tuple
         trimesh.repair.fill_holes(work)
         trimesh.repair.fix_normals(work, multibody=True)
 
-    if work.is_watertight:
-        if work.volume < 0:
-            work.invert()
-        mf = _trimesh_to_manifold(work)
-        if mf is not None:
-            return mf, notes
+    # Always attempt direct manifold3d conversion before voxel fallback: manifold3d natively handles
+    # valid pinch-vertices/edges where trimesh's stricter `is_watertight` check can return False.
+    if work.volume < 0:
+        work.invert()
+    mf = _trimesh_to_manifold(work)
+    if mf is not None:
+        return mf, notes
 
     # Fallback: voxel solid remesh guarantees a closed manifold solid even for open/self-intersecting AI meshes.
     extents = np.asarray(work.extents, dtype=np.float64)
@@ -682,140 +819,6 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
     return _place_on_bed(seated), ["gently un-arched rear torso onto Z=0 bed (head, fins, and tail preserved)"]
 
 
-def _rasterize_manifold_grid(mf: m3d.Manifold, pitch: float, pad_mm: float = 3.0) -> tuple[np.ndarray, tuple[float, float, float]]:
-    """Build an exact watertight 3D boolean occupancy grid via fast C++ `manifold3d` horizontal slicing."""
-    from PIL import Image, ImageDraw
-
-    bb = mf.bounding_box()
-    x0, y0, z0, x1, y1, z1 = [float(v) for v in bb]
-    ox, oy, oz = x0 - pad_mm, y0 - pad_mm, z0 - pad_mm
-    nx = int(math.ceil((x1 - x0 + 2.0 * pad_mm) / pitch)) + 1
-    ny = int(math.ceil((y1 - y0 + 2.0 * pad_mm) / pitch)) + 1
-    nz = int(math.ceil((z1 - z0 + 2.0 * pad_mm) / pitch)) + 1
-    occ = np.zeros((nx, ny, nz), dtype=bool)
-    for iz in range(nz):
-        zv = oz + (iz + 0.5) * pitch
-        if zv < z0 - 1e-4 or zv > z1 + 1e-4:
-            continue
-        polys = mf.slice(zv).to_polygons()
-        if not polys:
-            continue
-        outers, holes = [], []
-        for poly in polys:
-            if len(poly) < 3:
-                continue
-            pts = np.asarray(poly, dtype=np.float64)
-            area = 0.5 * float(np.sum(pts[:, 0] * np.roll(pts[:, 1], -1) - np.roll(pts[:, 0], -1) * pts[:, 1]))
-            px = [(float((p[0] - ox) / pitch), float((p[1] - oy) / pitch)) for p in pts]
-            (outers if area >= 0 else holes).append(px)
-        im = Image.new("L", (nx, ny), 0)
-        dr = ImageDraw.Draw(im)
-        for px in outers:
-            dr.polygon(px, fill=255)
-        for px in holes:
-            dr.polygon(px, fill=0)
-        occ[:, :, iz] = np.asarray(im, dtype=np.uint8).T > 127
-    return occ, (ox, oy, oz)
-
-
-def _taubin_smooth_keep_bed(tm: trimesh.Trimesh, iterations: int = 16, z_lock: float = 0.25) -> trimesh.Trimesh:
-    """Fast vectorized volume-preserving Taubin smoothing that removes marching-cubes stepping while
-    keeping `Z = 0` bed vertices locked flat."""
-    verts = np.asarray(tm.vertices, dtype=np.float64).copy()
-    faces = np.asarray(tm.faces, dtype=np.int64)
-    n = len(verts)
-    if n < 8 or len(faces) < 8:
-        return tm
-    e = np.vstack((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
-    ea, eb = e[:, 0], e[:, 1]
-    deg = np.maximum(np.bincount(ea, minlength=n).astype(np.float64), 1.0)[:, None]
-    lock = verts[:, 2] <= z_lock
-
-    def _step(v: np.ndarray, lam: float) -> np.ndarray:
-        acc = np.zeros_like(v)
-        np.add.at(acc, ea, v[eb])
-        v_new = v + lam * ((acc / deg) - v)
-        v_new[lock, 2] = v[lock, 2]
-        return v_new
-
-    for _ in range(iterations):
-        verts = _step(verts, 0.50)
-        verts = _step(verts, -0.53)
-    return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-
-
-def _sdf_round_segment(
-    seg: m3d.Manifold,
-    left_cut_fn,
-    right_cut_fn,
-    fillet_r: float = 2.1,
-    bed_chamfer: float = 0.65,
-    pitch: float = 0.54,
-) -> m3d.Manifold:
-    """Apply true Flexi-Factory 3D SDF ball-rolling organic fillets (`fillet_r` mm) strictly along the
-    front/back cut rims of a segment, keeping faces/fins sharp and adding a `bed_chamfer` mm 45° bottom bevel."""
-    from scipy import ndimage
-    from skimage.measure import marching_cubes
-
-    bb = seg.bounding_box()
-    sx, sy, sz = float(bb[3] - bb[0]), float(bb[4] - bb[1]), float(bb[5] - bb[2])
-    if sx < 3.0 or sy < 4.0 or sz < 4.0:
-        return seg
-    eff_pitch = max(pitch, max(sx, sy, sz) / 130.0)
-    r_eff = min(fillet_r, sx * 0.28, sy * 0.18, sz * 0.18)
-    if r_eff < 0.55:
-        return seg
-
-    pad_mm = r_eff + 3.0 * eff_pitch
-    occ, (ox, oy, oz) = _rasterize_manifold_grid(seg, eff_pitch, pad_mm=pad_mm)
-    if int(occ.sum()) < 24:
-        return seg
-
-    sdf_raw = ndimage.distance_transform_edt(~occ) * eff_pitch - ndimage.distance_transform_edt(occ) * eff_pitch
-    sdf_smooth = ndimage.gaussian_filter(sdf_raw, sigma=1.22)
-
-    core = sdf_smooth <= -r_eff
-    if int(core.sum()) < 10:
-        return seg
-    sdf_opened = ndimage.gaussian_filter(ndimage.distance_transform_edt(~core) * eff_pitch - r_eff, sigma=0.92)
-
-    nx, ny, nz = occ.shape
-    xs = ox + (np.arange(nx, dtype=np.float32) + 0.5) * eff_pitch
-    ys = oy + (np.arange(ny, dtype=np.float32) + 0.5) * eff_pitch
-    zs = oz + (np.arange(nz, dtype=np.float32) + 0.5) * eff_pitch
-
-    dist_cut = np.full((nx, ny), 1e4, dtype=np.float32)
-    if left_cut_fn is not None:
-        lx = np.array([left_cut_fn(float(yv)) for yv in ys], dtype=np.float32)
-        dist_cut = np.minimum(dist_cut, np.abs(xs[:, None] - lx[None, :]))
-    if right_cut_fn is not None:
-        rx = np.array([right_cut_fn(float(yv)) for yv in ys], dtype=np.float32)
-        dist_cut = np.minimum(dist_cut, np.abs(xs[:, None] - rx[None, :]))
-
-    band = max(r_eff * 2.2, 4.2)
-    t_rim = np.clip((band - dist_cut) / band, 0.0, 1.0)
-    w_rim = (t_rim * t_rim * (3.0 - 2.0 * t_rim))[:, :, None]
-    z_fade = np.clip((zs - 0.55) / 1.4, 0.0, 1.0).astype(np.float32)[None, None, :]
-    w_eff = w_rim * z_fade
-
-    sdf_rounded = (1.0 - w_eff) * sdf_smooth + w_eff * np.maximum(sdf_smooth, sdf_opened)
-    z_grid = zs[None, None, :]
-    chamf_add = np.maximum(0.0, bed_chamfer - z_grid) * 0.65
-    sdf_final = np.maximum(sdf_rounded + chamf_add, -z_grid)
-
-    try:
-        verts, faces, _, _ = marching_cubes(sdf_final, level=0.0, spacing=(eff_pitch, eff_pitch, eff_pitch))
-    except Exception:  # noqa: BLE001
-        return seg
-    verts = verts + np.array([ox + 0.5 * eff_pitch, oy + 0.5 * eff_pitch, oz + 0.5 * eff_pitch])
-    tm = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
-    if tm.volume < 0:
-        tm.invert()
-    tm = _taubin_smooth_keep_bed(tm, iterations=16, z_lock=0.25)
-    mf_out, _ = repair_to_manifold(tm)
-    return mf_out if (not mf_out.is_empty() and mf_out.status() == m3d.Error.NoError) else seg
-
-
 def _extract_concept_palette(concept_png: Path) -> dict | None:
     """Sample dominant dorsal/primary and ventral/accent PLA filament hex colors from a character concept PNG."""
     from PIL import Image
@@ -1059,9 +1062,9 @@ def _seat_single_segment_organic(seg: m3d.Manifold, ceiling_z: float) -> m3d.Man
     if z_min <= 0.14 and cur_bed_area >= 6.5:
         return seg
 
-    eff_ceil = max(ceiling_z, z_min + 2.4)
-    span = max(1.6, eff_ceil - z_min)
-    extra_pad = 0.58 if cur_bed_area < 6.5 else 0.35
+    eff_ceil = max(ceiling_z, z_min + 4.0)
+    span = max(2.0, eff_ceil - z_min)
+    extra_pad = 1.45 if cur_bed_area < 4.5 else (0.75 if cur_bed_area < 6.5 else 0.35)
     u = np.clip((v[:, 2] - z_min) / span, 0.0, 1.0)
     below = v[:, 2] < eff_ceil
     v[:, 2] = np.where(below, v[:, 2] - ((1.0 - u) ** 2) * (max(0.0, z_min) + extra_pad), v[:, 2])
@@ -1116,8 +1119,7 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         return mf, notes
 
     c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.80)
-    use_sdf_fillet = int(work.num_tri()) >= 4000
-    gap = max(1.12, 2.4 * c) if use_sdf_fillet else max(0.82, 1.85 * c)
+    gap = max(1.05, 2.3 * c)
     if explicit_pcts:
         sorted_pcts = sorted(explicit_pcts)
         solved_cuts = [(p / 100.0, False) for p in sorted_pcts]
@@ -1132,13 +1134,9 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     bounds = [x0 - 5.0, *cuts, x1 + 5.0]
     pad_y = width_all + 40.0
     pad_z = height_all + 40.0
-    # Flexi Factory expressive ±24-28° V-shaped flank clearance on SDF-filleted sculpts!
-    if use_sdf_fillet:
-        eff_deg = _clamp(float(prep.flexi_angle_deg), 16.0, 30.0)
-        tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.72
-    else:
-        eff_deg = _clamp(float(prep.flexi_angle_deg), 6.0, 26.0)
-        tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.48
+    # Flexi Factory expressive ±24° V-shaped flank clearance (non-destructive — zero full-mesh voxelization!)
+    eff_deg = _clamp(float(prep.flexi_angle_deg), 10.0, 30.0)
+    tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.65
 
     joint_specs: list[dict[str, float]] = []
     active_cuts: list[float] = []
@@ -1182,18 +1180,14 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
             r_loop_xy = pin_r + c + wall_xy
             slot_w = 2.0 * (r_loop_xy + c + 0.25)
 
-        u_pin = u - (gap / 2.0 + c + pin_r + (0.45 if use_sdf_fillet else 0.35))
+        u_pin = u - (gap / 2.0 + c + pin_r + 0.40)
         cavity_front_x = u_pin - (r_loop_xy + c)
         min_front = (active_cuts[-1] + gap / 2.0 + 1.2) if active_cuts else (x0 + 1.5)
         if cavity_front_x <= min_front:
             continue
 
         curve = 0.0 if force_flat[i] else min(w_loc * 0.12, seg_pitch * 0.20, 3.6)
-        max_half_gap = (
-            min(2.35, max(gap / 2.0 + 0.55, seg_pitch * 0.19))
-            if use_sdf_fillet
-            else min(1.45, max(gap / 2.0 + 0.25, seg_pitch * 0.16))
-        )
+        max_half_gap = min(2.25, max(gap / 2.0 + 0.50, seg_pitch * 0.19))
         active_cuts.append(u)
         joint_specs.append({
             "u": u, "yc": yc, "w_loc": w_loc, "z_bot": z_bot, "z_top": z_top, "h_loc": h_loc,
@@ -1236,12 +1230,7 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         slab_prism = m3d.Manifold.extrude(m3d.CrossSection([poly]), pad_z).translate((0.0, 0.0, -5.0))
         slab_prisms.append(slab_prism)
         seg_raw = _clean_segment_slivers(work ^ slab_prism)
-        if use_sdf_fillet:
-            left_fn = None if seg_i == 0 else (lambda yv, idx=seg_i - 1: _cut_curve_x(idx, yv, +1.0))
-            right_fn = None if seg_i == len(active_cuts) else (lambda yv, idx=seg_i: _cut_curve_x(idx, yv, -1.0))
-            seg_raw = _sdf_round_segment(seg_raw, left_fn, right_fn, fillet_r=2.1, bed_chamfer=0.65, pitch=0.54)
-        else:
-            seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=0.45)
+        seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=0.55)
 
         # Ensure middle segments touch Z=0 organically BEFORE hinge pockets are cut
         ceil_z = joint_specs[min(seg_i, len(joint_specs) - 1)]["cav_z0"] - 0.2
@@ -1257,7 +1246,7 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         cav_z0 = sp["cav_z0"]
         cav_z1 = sp["cav_z1"]
         u_pin = sp["u_pin"]
-        cavity_back_x = u + gap / 2.0 + (2.5 if use_sdf_fillet else 1.2)
+        cavity_back_x = u + gap / 2.0 + 1.8
 
         # 1. Segment i (upstream): subtract enclosed horizontal pocket (preserving Z=0 floor & top roof!), add vertical Z-post
         cavity = _rounded_xy_prism(
@@ -1390,6 +1379,275 @@ def _apply_hollow_cavity(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifo
     return cut, [f"hollowed top cavity ({wall:.1f} mm wall)"]
 
 
+def _prepare_multicolor_parts(
+    raw_parts: list[RawMeshPart],
+    meta: dict,
+    prep: SculptPrep,
+    name: str,
+    fallback_color: str | None,
+    fallback_filament: int | None,
+    cad_cuts: list[tuple[np.ndarray, np.ndarray]] | None,
+    cad_unions: list[tuple[np.ndarray, np.ndarray]] | None,
+) -> PreparedSculpt:
+    """Print-prep pipeline for multi-part colored `.glb` scenes (e.g. Blender SubSurf MMU3/AMS characters).
+
+    Preserves every sub-mesh's exact color, filament slot, and registration while applying uniform scaling,
+    Z=0 bed seating, hybrid CAD booleans, hardware cutouts, and optional flexi articulation.
+    """
+    notes: list[str] = []
+    flexi_baked = bool(meta.get("flexi_baked"))
+    repaired: list[tuple[RawMeshPart, m3d.Manifold]] = []
+    for rp in raw_parts:
+        mf_p, p_notes = repair_to_manifold(rp.mesh)
+        if mf_p.is_empty():
+            continue
+        repaired.append((rp, mf_p))
+        for n in p_notes:
+            if n not in notes:
+                notes.append(n)
+    if not repaired:
+        raise MeshPrepError("multi-color mesh contains no repairable geometry")
+
+    # Apply uniform rotation across all parts
+    if prep.rotate_x or prep.rotate_y or prep.rotate_z:
+        rot = (float(prep.rotate_x), float(prep.rotate_y), float(prep.rotate_z))
+        repaired = [(rp, mf.rotate(rot)) for rp, mf in repaired]
+
+    # Compute physical bounding box from real solids (excluding volumetric paint-mask color_zones)
+    def _all_bbox(items: list[tuple[RawMeshPart, m3d.Manifold]], include_zones: bool = False) -> tuple[float, float, float, float, float, float]:
+        chosen = items if include_zones else ([it for it in items if not it[0].is_color_zone] or items)
+        bbs = [m.bounding_box() for _, m in chosen]
+        return (
+            min(float(b[0]) for b in bbs),
+            min(float(b[1]) for b in bbs),
+            min(float(b[2]) for b in bbs),
+            max(float(b[3]) for b in bbs),
+            max(float(b[4]) for b in bbs),
+            max(float(b[5]) for b in bbs),
+        )
+
+    bb = _all_bbox(repaired)
+    cur_h = bb[5] - bb[2]
+    if prep.target_height_mm > 0 and cur_h > 1e-6:
+        s = float(prep.target_height_mm) / cur_h
+        repaired = [(rp, mf.scale((s, s, s))) for rp, mf in repaired]
+        bb = _all_bbox(repaired)
+
+    shift0 = (-(bb[0] + bb[3]) / 2.0, -(bb[1] + bb[4]) / 2.0, -bb[2])
+    repaired = [(rp, mf.translate(shift0)) for rp, mf in repaired]
+    bb = _all_bbox(repaired)
+
+    # Clip volumetric paint-mask color_zones (e.g. Belly) strictly inside the physical silhouette via exact C++ manifold3d!
+    if any(rp.is_color_zone for rp, _ in repaired):
+        phys_mfs = [mf for rp, mf in repaired if not rp.is_color_zone]
+        if phys_mfs:
+            phys_union = phys_mfs[0]
+            for nxt in phys_mfs[1:]:
+                phys_union = phys_union + nxt
+            clipped_repaired: list[tuple[RawMeshPart, m3d.Manifold]] = []
+            for rp, mf in repaired:
+                if rp.is_color_zone:
+                    z_clip = mf ^ phys_union
+                    # Drop microscopic floating specks (< 4 mm³)
+                    if not z_clip.is_empty():
+                        z_comps = [c for c in z_clip.decompose() if abs(float(c.volume())) >= 4.0]
+                        z_clip = m3d.Manifold.compose(z_comps) if z_comps else m3d.Manifold()
+                    if not z_clip.is_empty():
+                        clipped_repaired.append((RawMeshPart(rp.name, rp.mesh, rp.color, rp.filament, False), z_clip))
+                else:
+                    clipped_repaired.append((rp, mf))
+            if clipped_repaired:
+                repaired = clipped_repaired
+                bb = _all_bbox(repaired, include_zones=True)
+
+    has_flexi = int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)
+    # Skip bottom trim if Blender already baked flexi Z=0 bed seating unless user asks for deeper flatten (> 0.6 mm)
+    eff_flat = float(prep.flatten_bottom_mm)
+    if flexi_baked and eff_flat <= 0.6:
+        eff_flat = 0.0
+    if eff_flat > 0.01:
+        cut = min(eff_flat, max(0.0, (bb[5] - bb[2]) * 0.15))
+        if cut > 0.01:
+            span_x = (bb[3] - bb[0]) + 40.0
+            span_y = (bb[4] - bb[1]) + 40.0
+            span_z = (bb[5] - bb[2]) + 40.0
+            keep_box = m3d.Manifold.cube((span_x, span_y, span_z), center=True).translate(
+                ((bb[0] + bb[3]) / 2.0, (bb[1] + bb[4]) / 2.0, cut + span_z / 2.0)
+            )
+            trimmed_list = []
+            for rp, mf in repaired:
+                tr = mf ^ keep_box
+                if not tr.is_empty() and tr.status() == m3d.Error.NoError:
+                    trimmed_list.append((rp, tr.translate((0.0, 0.0, -cut))))
+            if trimmed_list:
+                repaired = trimmed_list
+                notes.append(f"flattened bottom by {cut:.2f} mm")
+
+    # Optional display base / keychain loop attach to primary part (index 0)
+    if prep.base_style != "none" and not has_flexi and not flexi_baked:
+        bb = _all_bbox(repaired)
+        bh = max(1.5, float(prep.base_height_mm))
+        overlap = min(0.6, bh * 0.3)
+        base = _build_base(prep.base_style, bb[3] - bb[0], bb[4] - bb[1], bh, prep.base_margin_mm)
+        repaired = [(rp, mf.translate((0.0, 0.0, bh - overlap))) for rp, mf in repaired]
+        repaired[0] = (repaired[0][0], repaired[0][1] + base)
+        notes.append(f"added {prep.base_style} display base ({bh:.1f} mm)")
+
+    if prep.keychain_loop:
+        bb = _all_bbox(repaired)
+        tm0 = _manifold_to_trimesh(repaired[0][1])
+        top_z = float(tm0.vertices[:, 2].max())
+        near_top = tm0.vertices[tm0.vertices[:, 2] >= top_z - 2.0]
+        tx = float(near_top[:, 0].mean()) if len(near_top) else 0.0
+        ty = float(near_top[:, 1].mean()) if len(near_top) else 0.0
+        loop = _build_keychain_loop(prep.keychain_hole_mm, tx, ty, top_z)
+        repaired[0] = (repaired[0][0], repaired[0][1] + loop)
+        notes.append(f"added keychain loop (Ø{prep.keychain_hole_mm:.1f} mm hole)")
+
+    # Hybrid CAD booleans across parts (unions merge into primary body; cuts carve through all color parts)
+    for u_pts, u_tris in (cad_unions or ()):
+        if len(u_pts) and len(u_tris):
+            u_mf, _ = repair_to_manifold(trimesh.Trimesh(vertices=u_pts, faces=u_tris, process=False))
+            u_res = repaired[0][1] + u_mf
+            if not u_res.is_empty() and u_res.status() == m3d.Error.NoError:
+                repaired[0] = (repaired[0][0], u_res)
+                notes.append("unioned parametric CAD body")
+    for c_pts, c_tris in (cad_cuts or ()):
+        if len(c_pts) and len(c_tris):
+            c_mf, _ = repair_to_manifold(trimesh.Trimesh(vertices=c_pts, faces=c_tris, process=False))
+            repaired = [(rp, (mf - c_mf) if not (mf - c_mf).is_empty() else mf) for rp, mf in repaired]
+            notes.append("subtracted parametric CAD body")
+
+    if prep.magnet_hole != "none":
+        bb = _all_bbox(repaired)
+        cx, cy, cz = (bb[0] + bb[3]) / 2.0, (bb[1] + bb[4]) / 2.0, (bb[2] + bb[5]) / 2.0
+        r = float(prep.magnet_dia_mm) / 2.0
+        depth = float(prep.magnet_depth_mm)
+        if prep.magnet_hole == "bottom":
+            cyl = m3d.Manifold.cylinder(depth + 1.0, r, r, circular_segments=48).translate((cx, cy, bb[2] - 1.0))
+        else:
+            cyl = (
+                m3d.Manifold.cylinder(depth + 1.0, r, r, circular_segments=48)
+                .rotate((-90.0, 0.0, 0.0))
+                .translate((cx, bb[1] - 1.0, cz))
+            )
+        repaired = [(rp, mf - cyl) for rp, mf in repaired if not (mf - cyl).is_empty()]
+        notes.append(f"cut {prep.magnet_hole} magnet pocket (Ø{prep.magnet_dia_mm:.1f} × {depth:.1f} mm)")
+
+    if prep.hollow_cavity:
+        bb = _all_bbox(repaired)
+        sx, sy, sz = bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]
+        wall = max(1.5, float(prep.hollow_wall_mm))
+        rx, ry = sx / 2.0 - wall, sy / 2.0 - wall
+        if rx >= 4.0 and ry >= 4.0 and sz >= wall * 2.5:
+            cav = (
+                m3d.Manifold.cylinder(sz + 5.0, 1.0, 1.0, circular_segments=48)
+                .scale((rx, ry, 1.0))
+                .translate(((bb[0] + bb[3]) / 2.0, (bb[1] + bb[4]) / 2.0, bb[2] + wall))
+            )
+            repaired = [(rp, mf - cav) for rp, mf in repaired if not (mf - cav).is_empty()]
+            notes.append(f"hollowed top cavity ({wall:.1f} mm wall)")
+
+    # If flexi articulation is requested on a multi-color model that wasn't already baked in Blender,
+    # articulate the unified solid and partition every color part strictly inside the articulated shell!
+    if has_flexi and not flexi_baked:
+        unified = repaired[0][1]
+        for _, mf in repaired[1:]:
+            unified = unified + mf
+        flexi_mf, f_notes = _apply_flexi_articulation(unified, prep)
+        notes.extend(f_notes)
+        # Re-align flexi_mf center shift and clip each secondary color part inside flexi_mf
+        new_details: list[tuple[RawMeshPart, m3d.Manifold]] = []
+        body_rem = flexi_mf
+        for rp, mf in repaired[1:]:
+            clipped = mf ^ flexi_mf
+            if not clipped.is_empty() and abs(float(clipped.volume())) >= 1.5:
+                new_details.append((rp, clipped))
+                body_rem = body_rem - clipped
+        repaired = [(repaired[0][0], body_rem), *new_details]
+    elif flexi_baked:
+        notes.append("preserved Blender SubSurf flexi articulation & beveled cut rims")
+
+    # Enforce strict disjoint non-overlapping MMU3 volumes (or merge into 1 solid if color_mode == "single")
+    if prep.color_mode == "single":
+        merged = repaired[0][1]
+        for _, mf in repaired[1:]:
+            merged = merged + mf
+        merged = _place_on_bed(merged)
+        tm = _manifold_to_trimesh(merged)
+        bb = merged.bounding_box()
+        return PreparedSculpt(
+            parts=[PreparedPart(
+                name=name,
+                points=np.asarray(tm.vertices, dtype=np.float64),
+                tris=np.asarray(tm.faces, dtype=np.int32),
+                color=repaired[0][0].color or fallback_color,
+                filament=fallback_filament or 1,
+            )],
+            watertight=bool(merged.status() == m3d.Error.NoError and tm.is_watertight),
+            triangles=int(len(tm.faces)),
+            volume_mm3=abs(float(merged.volume())),
+            bbox_min=[round(float(bb[0]), 4), round(float(bb[1]), 4), round(float(bb[2]), 4)],
+            bbox_max=[round(float(bb[3]), 4), round(float(bb[4]), 4), round(float(bb[5]), 4)],
+            notes=[*notes, "merged multi-color parts into single-filament solid"],
+        )
+
+    # Sort parts cleanly by filament priority (primary body filament 1 first, accents/details after)
+    # so disjoint subtraction lets details (Eyes, Teeth, Mouth, Belly) carve cleanly into Body!
+    repaired.sort(key=lambda item: (
+        0 if (item[0].filament == 1 or item[0].name.lower() in ("body", "primary", "main")) else (
+            1 if "belly" in item[0].name.lower() else (item[0].filament or 9)
+        )
+    ))
+
+    # Disjoint subtraction: higher-index detail parts (eyes/teeth/mouth) take priority over lower-index (body/belly)
+    disjoint: list[tuple[RawMeshPart, m3d.Manifold]] = []
+    claimed: m3d.Manifold | None = None
+    for rp, mf in reversed(repaired):
+        cur = mf - claimed if claimed is not None else mf
+        if cur.is_empty() or abs(float(cur.volume())) < 0.25:
+            continue
+        disjoint.append((rp, cur))
+        claimed = cur if claimed is None else (claimed + cur)
+    disjoint.reverse()
+    if not disjoint:
+        disjoint = repaired
+
+    bb = _all_bbox(disjoint)
+    shift_final = (-(bb[0] + bb[3]) / 2.0, -(bb[1] + bb[4]) / 2.0, -bb[2])
+    disjoint = [(rp, mf.translate(shift_final)) for rp, mf in disjoint]
+    bb = _all_bbox(disjoint)
+
+    parts: list[PreparedPart] = []
+    total_vol = 0.0
+    all_wt = True
+    for i, (rp, mf) in enumerate(disjoint):
+        tm = _manifold_to_trimesh(mf)
+        total_vol += abs(float(mf.volume()))
+        if mf.status() != m3d.Error.NoError or not tm.is_watertight:
+            all_wt = False
+        p_label = rp.name.strip() or f"Part {i + 1}"
+        p_full = p_label if p_label.lower().startswith(name.lower()) else f"{name} · {p_label}"
+        parts.append(PreparedPart(
+            name=p_full,
+            points=np.asarray(tm.vertices, dtype=np.float64),
+            tris=np.asarray(tm.faces, dtype=np.int32),
+            color=rp.color or (fallback_color if i == 0 else "#ece6d6"),
+            filament=rp.filament if (rp.filament and rp.filament >= 1) else (i + 1),
+        ))
+
+    notes.append(f"preserved {len(parts)}-color MMU3/AMS parts ({', '.join(rp.name for rp, _ in disjoint)})")
+    return PreparedSculpt(
+        parts=parts,
+        watertight=all_wt,
+        triangles=sum(p.triangles for p in parts),
+        volume_mm3=total_vol,
+        bbox_min=[round(float(bb[0]), 4), round(float(bb[1]), 4), round(float(bb[2]), 4)],
+        bbox_max=[round(float(bb[3]), 4), round(float(bb[4]), 4), round(float(bb[5]), 4)],
+        notes=notes,
+    )
+
+
 def prepare_print_mesh(
     raw_path: Path,
     prep: SculptPrep,
@@ -1402,7 +1660,17 @@ def prepare_print_mesh(
     multi_extruder: bool = False,
 ) -> PreparedSculpt:
     """Load, repair, orient, scale, flatten bottom, apply hybrid CAD booleans, and cut flexi/hardware finishing."""
-    raw = load_raw_mesh(raw_path)
+    raw_parts, meta = load_raw_parts(raw_path)
+    distinct_colors = {rp.color.lower() for rp in raw_parts if rp.color}
+    if len(raw_parts) >= 2 and (len(distinct_colors) >= 2 or meta.get("flexi_baked")):
+        return _prepare_multicolor_parts(
+            raw_parts, meta, prep, name=name, fallback_color=color, fallback_filament=filament,
+            cad_cuts=cad_cuts, cad_unions=cad_unions,
+        )
+
+    raw = raw_parts[0].mesh if len(raw_parts) == 1 else load_raw_mesh(raw_path)
+    if len(raw_parts) == 1 and raw_parts[0].color and (not color or color.lower() == "#b8c2cc"):
+        color = raw_parts[0].color
     mf, notes = repair_to_manifold(raw)
 
     if prep.rotate_x or prep.rotate_y or prep.rotate_z:
@@ -1415,7 +1683,8 @@ def prepare_print_mesh(
         mf = mf.scale((s, s, s))
 
     mf = _place_on_bed(mf)
-    has_flexi = int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)
+    flexi_baked = bool(meta.get("flexi_baked"))
+    has_flexi = (int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)) and not flexi_baked
 
     # For print-in-place flexi models, streamline chubby figurine proportions behind the head and gently un-arch
     # any floating rear belly onto Z=0 BEFORE subtle belly bed-ribbon trimming.

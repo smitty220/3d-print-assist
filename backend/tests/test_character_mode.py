@@ -618,3 +618,115 @@ def test_multiview_quad_splitting_and_multicolor_mmu3_3mf_export(tmp_path: Path)
         assert 'key="extruder" value="2"' in cfg_xml
 
 
+def test_blender_engine_discovery_and_ml_status(tmp_path: Path):
+    """Verify headless Blender discovery reports ready status in /api/ml/status and respects env overrides."""
+    from print_assist.ml.blender import blender_status, find_blender_executable
+
+    app_module.reset(tmp_path)
+    c = TestClient(app_module.app)
+    st = c.get("/api/ml/status").json()
+    assert "blender_ready" in st
+    assert "blender_version" in st
+    assert "blender_source" in st
+    exe = find_blender_executable()
+    bl = blender_status()
+    assert bl["ready"] == (exe is not None)
+    assert st["blender_ready"] == bl["ready"]
+
+
+def test_blender_multicolor_subsurf_flexi_end_to_end(tmp_path: Path):
+    """Verify bundled headless Blender 4.5 LTS builds a glass-smooth 4-color SubSurf Flexi-Factory character,
+    preserves every filament color & Z=0 seated link without voxel fallback, supports replace_sculpt_id,
+    and exports multi-extruder MMU3 3MF."""
+    import pytest
+    from print_assist.ml.blender import find_blender_executable
+
+    if find_blender_executable() is None:
+        pytest.skip("Headless Blender not staged in this environment")
+
+    app_module.reset(tmp_path)
+    c = TestClient(app_module.app)
+    c.post("/api/projects", json={"name": "Blender Flexi Test", "creation_mode": "character"})
+
+    script = """
+body = pa_loft_profile("Body", [
+    {"x": -55.0, "ry": 8.0,  "z_bot": 5.0, "z_top": 18.0, "belly_flat": 0.25},
+    {"x": -35.0, "ry": 19.0, "z_bot": 0.0, "z_top": 32.0, "belly_flat": 0.72},
+    {"x": -5.0,  "ry": 20.0, "z_bot": 0.0, "z_top": 34.0, "belly_flat": 0.75},
+    {"x": 25.0,  "ry": 13.0, "z_bot": 0.0, "z_top": 22.0, "belly_flat": 0.75},
+    {"x": 48.0,  "ry": 6.5,  "z_bot": 0.0, "z_top": 12.0, "belly_flat": 0.70},
+], ring_verts=20, subsurf=2)
+pa_assign_color(body, "Body", "#4b6e91", filament=1)
+
+belly = pa_loft_profile("Belly", [
+    {"x": -60.0, "ry": 24.0, "z_bot": -4.0, "z_top": 11.0, "belly_flat": 0.9},
+    {"x": 0.0,   "ry": 24.0, "z_bot": -4.0, "z_top": 10.0, "belly_flat": 0.9},
+    {"x": 45.0,  "ry": 14.0, "z_bot": -4.0, "z_top": 4.5,  "belly_flat": 0.9},
+], ring_verts=16, subsurf=1)
+pa_assign_color(belly, "Belly", "#f2ecdf", filament=2)
+
+eyes = pa_quad_sphere("Eyes", (-40.0, 14.0, 21.0), (3.8, 3.2, 3.8), subsurf=2, mirror_y=True)
+pa_assign_color(eyes, "Eyes", "#16191f", filament=3)
+
+hl = pa_quad_sphere("Highlights", (-42.2, 15.8, 22.4), (1.2, 1.1, 1.2), subsurf=1, mirror_y=True)
+pa_assign_color(hl, "Highlights", "#f8f8fa", filament=4)
+
+pa_flexi_articulate(
+    primary_body=body,
+    detail_parts=[eyes, hl],
+    color_zones=[belly],
+    cuts_x=[-18.0, 5.0, 24.0],
+    clearance_mm=0.45,
+    angle_deg=24.0,
+    bevel_mm=1.1,
+    flatten_bottom_mm=0.6,
+)
+pa_export_glb(OUT_GLB, baked_flexi=True)
+"""
+    r = c.post("/api/character/blender", json={"name": "Flexi Critter", "script": script})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["sculpt"]["id"] == "M1"
+    assert data["sculpt"]["watertight"] is True
+    assert len(data["parts"]) == 4
+    colors = {p["color"].lower() for p in data["parts"]}
+    assert {"#4b6e91", "#f2ecdf", "#16191f", "#f8f8fa"} == colors
+    assert not any("voxel remesh" in n for n in data["notes"]), f"Unexpected voxel fallback: {data['notes']}"
+    assert data["printability"]["component_count"] == 4
+    assert data["printability"]["floating_count"] == 0
+
+    # Verify Three.js /api/part exposes all 4 colored bodies cleanly
+    part_res = c.get("/api/part").json()
+    sculpt_bodies = [b for b in part_res["bodies"] if b["id"].startswith("M1")]
+    assert len(sculpt_bodies) == 4
+
+    # Verify 4-view sheet render & print checks pass cleanly
+    ren = c.get("/api/render", params={"view": "sheet", "size": 640})
+    assert ren.status_code == 200 and ren.content[:8] == b"\x89PNG\r\n\x1a\n"
+    chk = c.get("/api/checks").json()
+    bed_c = next(f for f in chk["part"] if f["code"] == "bed_contact")
+    assert bed_c["status"] == "ok", bed_c
+
+    # Verify 3MF export writes PrusaSlicer multi-extruder config for all 4 slots
+    exp = c.get("/api/export/3mf")
+    assert exp.status_code == 200
+    mf_path = tmp_path / "blender_4color.3mf"
+    mf_path.write_bytes(exp.content)
+    with zipfile.ZipFile(mf_path) as zf:
+        cfg_xml = zf.read("Metadata/Slic3r_PE_model.config").decode("utf-8")
+        for slot in ("1", "2", "3", "4"):
+            assert f'key="extruder" value="{slot}"' in cfg_xml
+
+    # Verify replace_sculpt_id="M1" + color_mode="single" updates M1 cleanly in place
+    r2 = c.post(
+        "/api/character/blender",
+        json={"name": "Flexi Critter Single", "script": script, "replace_sculpt_id": "M1", "color_mode": "single"},
+    )
+    assert r2.status_code == 200, r2.text
+    d2 = r2.json()
+    assert d2["sculpt"]["id"] == "M1"
+    assert len(d2["tree"]["sculpts"]) == 1
+    assert len(d2["parts"]) == 1
+
+
+

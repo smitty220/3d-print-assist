@@ -1618,6 +1618,111 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
     return res
 
 
+class CharacterBlenderIn(BaseModel):
+    name: str
+    script: str
+    concept_id: str = ""
+    replace_sculpt_id: str = ""
+    target_height_mm: float = 0.0  # 0 keeps exact mm dimensions produced by the Blender script
+    flatten_bottom_mm: float = 0.0
+    base_style: Literal["none", "round", "oval", "square"] = "none"
+    base_height_mm: float = 3.0
+    base_margin_mm: float = 4.0
+    keychain_loop: bool = False
+    keychain_hole_mm: float = 4.5
+    flexi_segments: int = 0  # Leave 0 when script calls pa_flexi_articulate(...) directly
+    flexi_axis: Literal["auto", "x", "y"] = "auto"
+    flexi_clearance_mm: float = 0.45
+    flexi_angle_deg: float = 24.0
+    flexi_cuts_pct: list[float] = []
+    cut_bodies: list[str] = []
+    union_bodies: list[str] = []
+    magnet_hole: Literal["none", "bottom", "back"] = "none"
+    magnet_dia_mm: float = 8.2
+    magnet_depth_mm: float = 3.2
+    hollow_cavity: bool = False
+    hollow_wall_mm: float = 3.0
+    color_mode: Literal["auto", "single", "multicolor"] = "auto"
+    color: str | None = "#4b6e91"
+    timeout_s: int = 120
+
+
+@app.post("/api/character/blender")
+def create_blender_character(body: CharacterBlenderIn, x_actor: str = Header(default=USER)) -> dict:
+    """Build a glass-smooth Catmull-Clark SubSurf, multi-color, print-in-place Flexi-Factory character
+    directly inside the bundled headless Blender 4.5 LTS engine (~2-4 seconds, zero cloud cost)."""
+    from .features.model import SculptPrep
+    from .geometry.mesh_prep import MeshPrepError, analyze_sculpt_printability
+    from .ml.blender import BlenderError, run_blender_character_script
+
+    if not body.script.strip():
+        raise HTTPException(422, "Provide a non-empty Blender Python `script`")
+
+    w = ws()
+    try:
+        raw_glb, report = run_blender_character_script(
+            body.script,
+            timeout_s=max(15, min(int(body.timeout_s), 240)),
+        )
+    except BlenderError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    prep = SculptPrep(
+        target_height_mm=body.target_height_mm,
+        flatten_bottom_mm=body.flatten_bottom_mm,
+        base_style=body.base_style,
+        base_height_mm=body.base_height_mm,
+        base_margin_mm=body.base_margin_mm,
+        keychain_loop=body.keychain_loop,
+        keychain_hole_mm=body.keychain_hole_mm,
+        flexi_segments=body.flexi_segments,
+        flexi_axis=body.flexi_axis,
+        flexi_clearance_mm=body.flexi_clearance_mm,
+        flexi_angle_deg=body.flexi_angle_deg,
+        flexi_cuts_pct=body.flexi_cuts_pct,
+        cut_bodies=body.cut_bodies,
+        union_bodies=body.union_bodies,
+        magnet_hole=body.magnet_hole,
+        magnet_dia_mm=body.magnet_dia_mm,
+        magnet_depth_mm=body.magnet_depth_mm,
+        hollow_cavity=body.hollow_cavity,
+        hollow_wall_mm=body.hollow_wall_mm,
+        max_colors=5 if body.color_mode != "single" else 1,
+        color_mode=body.color_mode,
+    )
+    try:
+        sm = w.add_sculpt(
+            actor=x_actor,
+            name=body.name.strip() or "Blender Character",
+            raw_bytes=raw_glb,
+            ext=".glb",
+            concept_id=body.concept_id.strip(),
+            prep=prep,
+            color=body.color,
+            replace_id=body.replace_sculpt_id.strip(),
+            source_script=body.script,
+        )
+    except (MeshPrepError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    cached = w._sculpt_cache.get(sm.id)
+    prepared = cached[1] if cached else None
+    part_summary = (
+        [{"name": p.name, "color": p.color, "filament": p.filament, "triangles": p.triangles} for p in prepared.parts]
+        if prepared
+        else []
+    )
+    printability = analyze_sculpt_printability(prepared.parts) if prepared else {}
+    return {
+        "sculpt": sm.model_dump(),
+        "blender": report,
+        "parts": part_summary,
+        "printability": printability,
+        "notes": prepared.notes if prepared else [],
+        "tree": w.tree(),
+    }
+
+
 @app.get("/api/sculpts")
 def list_sculpts() -> list[dict]:
     return [s.model_dump() for s in ws().design.sculpts]

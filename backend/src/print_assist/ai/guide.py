@@ -13,32 +13,16 @@ that build in order; each feature works on one body.
 Creation modes (check `creation_mode` and `direct_build` in `get_model`):
 - **Engineer Mode (`creation_mode == "engineer"`)**: parametric CAD with sketches, extrusions, formulas, and exact \
 dimensions (`propose_concept` with SVG blueprint → `apply_changes`).
-- **Character Mode (`creation_mode == "character"`) — Hybrid Clay Sculpting + Precision CAD Print Engineering**: \
-combines organic 3D clay sculpting with exact-mm CAD print engineering for 3D-printable figurines, articulated flexi \
-toys, busts, keychains, magnets, planters, and hybrid functional parts. When designing a named character, movie/game \
-figure, real animal, or specialized 3D-print toy style, use `web_search` (or `search_web`) first to capture authentic \
-visual traits and print ergonomics. ALWAYS pass the matching `style` on `propose_character_design` (`"flexi"` for articulated/wiggle toys, `"figurine"`, \
-`"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), keeping `turnaround=True` (default) so EVERY Character \
-Mode design displays a **4-View Design Sheet** by default (`3/4 Hero`, `Front`, `Side on Z=0 Bed`, `Back` for figurines; \
-or for `"flexi"`, a 4-View Bed-Seated Print-Engineering Sheet showing `1: 3/4 Seated Flexi`, `2: Side on Z=0 Build Plate \
-+ X-Ray Internal Hinges`, `3: Top Fin-Safe Cuts`, and `4: Bottom Z=0 First-Layer Bed Contact Pads`!):
-  * **Converting an Existing Pixar/Figurine Concept to Flexi ("make it a flexi-shark" / "now make it flexi")**: if \
-the user has an existing concept `K#` and asks to make it flexi, call \
-`propose_character_design(title=..., prompt=..., from_concept_id="K#", style="flexi", flexi_segments=6, repaint=False)` \
-to generate the 4-view Z=0 bed-seated flexi engineering sheet (`K#.png`) in < 1 second while keeping `K#_clean.png` \
-for 3D sculpting (pass `repaint=True` only if also reshaping/elongating the character). Once approved (or on an \
-existing sculpt `M1`), apply 3D print engineering via `sculpt_character(...)` or `update_mesh_prep(id="M1", ...)`:
-  * **3D Anatomy-Aware Fin-Safe Flexi & C1 Lower-Body Bed Seating**: setting `flexi_segments=6` conforms the chin, \
-belly, lateral fins, and arched rear tail flush onto `Z=0` (keeping dorsal/upper tail fins untouched) and places \
-curved-crescent cuts + internal stadium bearing links strictly in fin-free intervals so EVERY segment sits flat on `Z=0`! \
-Call `inspect_sculpt_anatomy(id="M1")` anytime to inspect fin zones, or pass `flexi_cuts_pct`.
-  * **Hybrid Parametric CAD + Sculpt Booleans**: build exact CAD solids (`B1`, `B2`, ...) via `apply_changes` and pass \
-`cut_bodies=["B1"]` or `union_bodies=["B2"]` into `update_mesh_prep(id="M1", ...)`.
+- **Character Mode (`creation_mode == "character"`) — Dual-Engine Organic Sculpting (Headless Blender 4.5 LTS + Local 3D Sculptor) + Precision CAD Print Engineering**: \
+combines bundled headless **Blender 4.5 LTS** Subdivision-Surface modeling (`build_blender_character`), local 3D diffusion sculpting (`sculpt_character`), and exact-mm OpenCascade CAD print engineering for 3D-printable Pixar/cartoon figurines, Flexi-Factory articulated toys, busts, keychains, magnets, planters, and hybrid functional parts:
+  * **Choosing the Right 3D Engine (CRITICAL):**
+    1. **Bundled Headless Blender 4.5 LTS (`build_blender_character`) — DEFAULT for stylized Pixar/cartoon characters, animals, mascots, multi-color MMU3/AMS toys, and Flexi-Factory articulated prints!** Builds glass-smooth Catmull-Clark SubSurf meshes in ~2-4 seconds with zero lumps, true multi-color sub-meshes (`Body`, `Belly`, `Eyes`, `Teeth`, `Mouth` mapped to MMU3/AMS extruders 1-5), native beveled flexi links (`pa_flexi_articulate` with wide ±24-26° V-gaps + captive vertical Z-pins + 100% Z=0 bed seating), and instant iteration via `replace_sculpt_id="M1"`!
+    2. **Local 3D Sculptor (`sculpt_character` / Hunyuan3D-2mv)** — use ONLY for complex uploaded real-world photos, human/pet portraits, or photo-derived organic statues where procedural SubSurf isn't suitable.
+  * When designing a named character, movie/game figure, real animal, or specialized 3D-print toy style, use `web_search` (or `search_web`) first to capture authentic visual traits and print ergonomics. ALWAYS pass the matching `style` on `propose_character_design` (`"flexi"` for articulated/wiggle toys, `"figurine"`, `"bust"`, `"keychain"`, `"magnet"`, `"planter"`, or `"scene"`), keeping `turnaround=True` (default) so EVERY Character Mode design displays a **4-View Design Sheet** by default (`3/4 Hero`, `Front`, `Side on Z=0 Bed`, `Back` for figurines; or for `"flexi"`, a 4-View Bed-Seated Print-Engineering Sheet)!
+  * **Converting an Existing Pixar/Figurine Concept to Flexi ("make it a flexi-shark" / "now make it flexi")**: if the user has an existing concept `K#` and asks to make it flexi, call `propose_character_design(title=..., prompt=..., from_concept_id="K#", style="flexi", flexi_segments=6, repaint=False)` to show the 4-view Z=0 flexi sheet first (or build directly with `build_blender_character(..., replace_sculpt_id="M1")` when the user asks to build/rebuild the 3D model!).
+  * **Hybrid Parametric CAD + Character Booleans**: build exact OpenCascade CAD solids (`B1`, `B2`, ...) via `apply_changes` and pass `cut_bodies=["B1"]` or `union_bodies=["B2"]` into `build_blender_character(...)` or `update_mesh_prep(id="M1", ...)`.
   * **Built-in Hardware**: `magnet_hole="bottom"|"back"`, `hollow_cavity=True`, `keychain_loop=True`, `base_style="round"`.
-  * **4-View Verification & Printability Checks**: after sculpting or `update_mesh_prep`, ALWAYS call \
-`render_preview(view="sheet")` (which renders all 4 views: ISO, Side on Z=0, Top, and Bottom Z=0 bed contact in green!) \
-AND `run_checks` to confirm `bed_contact == "ok"` (0 floating segments!) and `manifold == "ok"` before replying. If \
-`propose_character_design` or `sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)`.
+  * **4-View Verification & Printability Checks**: after `build_blender_character`, `sculpt_character`, or `update_mesh_prep`, ALWAYS call `render_preview(view="sheet")` (renders all 4 views: ISO, Side on Z=0, Top, and Bottom Z=0 bed contact in green!) AND `run_checks` to confirm `bed_contact == "ok"` (0 floating segments!), crisp multi-color facial details, intact fins, and `manifold == "ok"` before replying. If `propose_character_design` or `sculpt_character` returns `status: "running"`, call `wait_for_character_job(wait_s=40)`.
 
 Working method:
 0. **4-View Picture First (Mandatory Default)**, for every request that makes or changes geometry. Every concept \

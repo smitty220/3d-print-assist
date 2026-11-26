@@ -191,16 +191,22 @@ class EngineInstaller:
         self._thread: threading.Thread | None = None
 
     def status(self, root: Path | None = None) -> dict[str, Any]:
+        from .blender import blender_status
+
         r = root or ml_root()
         hw = detect_hardware()
         p_ok = painter_ready(r)
         s_ok = sculptor_ready(r)
+        bl = blender_status(r if root is not None else None)
         with self._lock:
             st = self._state.to_dict()
         return {
             "ready": p_ok and s_ok,
             "painter_ready": p_ok,
             "sculptor_ready": s_ok,
+            "blender_ready": bl["ready"],
+            "blender_version": bl["version"],
+            "blender_source": bl["source"],
             "engine_dir": str(r),
             "disk_gb": _dir_size_gb(r),
             "hardware": hw.to_dict(),
