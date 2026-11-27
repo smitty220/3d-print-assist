@@ -18,6 +18,9 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
 
 from ..concepts import Concept, Concepts
 from ..features.design import BuildResult
@@ -355,6 +358,51 @@ class Workspace:
                     return p
         return None
 
+    def _sculpt_paint_path(self, sid: str) -> Path:
+        return self.sculpts_dir / f"{sid}_paint.json"
+
+    def _load_sculpt_paint(self, sid: str) -> dict | None:
+        pp = self._sculpt_paint_path(sid)
+        if not pp.is_file():
+            return None
+        try:
+            data = json.loads(pp.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "rle" in data and "face_filaments" not in data:
+                # Decode compact run-length encoding `[slot, count, slot, count, ...]`
+                fils: list[int] = []
+                rle = data["rle"]
+                for i in range(0, len(rle) - 1, 2):
+                    fils.extend([int(rle[i])] * int(rle[i + 1]))
+                data["face_filaments"] = fils
+            return data
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _encode_rle(vals: list[int]) -> list[int]:
+        if not vals:
+            return []
+        out: list[int] = []
+        cur = int(vals[0])
+        cnt = 1
+        for v in vals[1:]:
+            iv = int(v)
+            if iv == cur:
+                cnt += 1
+            else:
+                out.extend((cur, cnt))
+                cur = iv
+                cnt = 1
+        out.extend((cur, cnt))
+        return out
+
+    @staticmethod
+    def _decode_rle(rle: list[int]) -> list[int]:
+        out: list[int] = []
+        for i in range(0, len(rle) - 1, 2):
+            out.extend([int(rle[i])] * int(rle[i + 1]))
+        return out
+
     def _prepared_sculpts(self):
         from ..geometry.mesh_prep import MeshPrepError, prepare_print_mesh
 
@@ -370,6 +418,8 @@ class Workspace:
             color = fil.color if fil else (sm.color or "#b8c2cc")
             uses_cad = bool(sm.prep.cut_bodies or sm.prep.union_bodies)
             c_img = self._sculpt_concept_image(sm)
+            pp = self._sculpt_paint_path(sm.id)
+            paint_mtime = pp.stat().st_mtime if pp.is_file() else 0.0
             key = (
                 sm.source_file,
                 p.stat().st_mtime,
@@ -380,22 +430,206 @@ class Workspace:
                 good_id if uses_cad else 0,
                 str(c_img) if c_img else "",
                 multi_ex,
+                paint_mtime,
             )
             cached = self._sculpt_cache.get(sm.id)
             if cached is None or cached[0] != key:
                 cuts, unions = self._cad_tool_meshes(sm.prep)
+                paint_ov = self._load_sculpt_paint(sm.id) if paint_mtime > 0.0 else None
                 try:
                     prepared = prepare_print_mesh(
                         p, sm.prep, name=sm.name, color=color, filament=sm.filament,
                         cad_cuts=cuts, cad_unions=unions,
                         concept_image_path=c_img, multi_extruder=multi_ex,
                         printer_slots=self.project.printer.slots,
+                        paint_override=paint_ov,
                     )
                 except MeshPrepError:
                     continue
                 self._sculpt_cache[sm.id] = (key, prepared)
             out.append((sm, self._sculpt_cache[sm.id][1]))
         return out
+
+    def _ensure_paint_palette(self, base_pal: dict[int, str] | None, primary_color: str | None) -> dict[int, str]:
+        from ..geometry.mesh_paint import normalize_hex
+
+        defaults = {
+            1: normalize_hex(primary_color, "#527292"),
+            2: "#ece6d6",
+            3: "#f5f7fa",
+            4: "#1d2128",
+            5: "#cc3b3b",
+        }
+        pal = dict(defaults)
+        if base_pal:
+            for k, v in base_pal.items():
+                pal[int(k)] = normalize_hex(v)
+        return pal
+
+    def get_sculpt_paint(self, sid: str) -> dict:
+        with self.lock:
+            sm = self.design.sculpt(sid)
+            if sm is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            prepared = next((ps for s, ps in self._prepared_sculpts() if s.id == sid), None)
+            if prepared is None or not prepared.parts:
+                raise ChangeRefused(f"sculpt {sid!r} is not built")
+            part0 = prepared.parts[0]
+            saved = self._load_sculpt_paint(sid)
+            pal = self._ensure_paint_palette(part0.palette, part0.color or sm.color)
+            counts: dict[str, int] = {}
+            if part0.face_filaments is not None and len(part0.face_filaments) == len(part0.tris):
+                uniq, cnt = np.unique(part0.face_filaments, return_counts=True)
+                counts = {str(int(u)): int(c) for u, c in zip(uniq, cnt)}
+            else:
+                counts = {"1": len(part0.tris)}
+            return {
+                "id": sid,
+                "name": sm.name,
+                "triangles": len(part0.tris),
+                "palette": {str(k): v for k, v in sorted(pal.items())},
+                "slot_counts": counts,
+                "can_undo": bool(saved and saved.get("undo")),
+                "has_custom_paint": saved is not None,
+            }
+
+    def apply_sculpt_paint_stroke(
+        self,
+        actor: str,
+        sid: str,
+        *,
+        mode: str,
+        hit_point: list[float],
+        filament: int,
+        crease_deg: float = 26.0,
+        radius_mm: float = 4.0,
+    ) -> dict:
+        from ..geometry.mesh_paint import (
+            brush_paint_triangles,
+            bucket_fill_triangles,
+            smart_fill_triangles,
+        )
+
+        with self.lock:
+            sm = self.design.sculpt(sid)
+            if sm is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            prepared = next((ps for s, ps in self._prepared_sculpts() if s.id == sid), None)
+            if prepared is None or not prepared.parts:
+                raise ChangeRefused(f"sculpt {sid!r} is not built")
+            part0 = prepared.parts[0]
+            n_tris = len(part0.tris)
+            if part0.face_filaments is not None and len(part0.face_filaments) == n_tris:
+                cur_fils = np.asarray(part0.face_filaments, dtype=np.int32).copy()
+            else:
+                cur_fils = np.ones(n_tris, dtype=np.int32)
+
+            saved = self._load_sculpt_paint(sid) or {}
+            undo_list = list(saved.get("undo") or [])
+            pal = self._ensure_paint_palette(part0.palette, part0.color or sm.color)
+            slot = max(1, min(8, int(filament)))
+
+            if mode == "brush":
+                new_fils, n_painted = brush_paint_triangles(
+                    part0.points, part0.tris, cur_fils, hit_point, slot,
+                    radius_mm=radius_mm, crease_deg=crease_deg,
+                )
+            elif mode == "bucket":
+                new_fils, n_painted = bucket_fill_triangles(
+                    part0.points, part0.tris, cur_fils, hit_point, slot,
+                )
+            else:
+                new_fils, n_painted = smart_fill_triangles(
+                    part0.points, part0.tris, cur_fils, hit_point, slot,
+                    crease_deg=crease_deg,
+                )
+
+            if n_painted > 0:
+                undo_list.append(self._encode_rle(cur_fils.tolist()))
+                del undo_list[:-20]
+                payload = {
+                    "palette": {str(k): v for k, v in sorted(pal.items())},
+                    "rle": self._encode_rle(new_fils.tolist()),
+                    "undo": undo_list,
+                }
+                self.sculpts_dir.mkdir(parents=True, exist_ok=True)
+                self._sculpt_paint_path(sid).write_text(json.dumps(payload), encoding="utf-8")
+                self._sculpt_cache.pop(sid, None)
+                self.rev += 1
+                self.built_rev = self.rev
+                self.log(actor, f"Painted {n_painted:,} tris on {sid} (Slot {slot}, {mode})")
+
+            state = self.get_sculpt_paint(sid)
+            state["painted_triangles"] = int(n_painted)
+            return state
+
+    def update_sculpt_palette(self, actor: str, sid: str, palette_patch: dict[str, str]) -> dict:
+        from ..geometry.mesh_paint import normalize_hex
+
+        with self.lock:
+            sm = self.design.sculpt(sid)
+            if sm is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            prepared = next((ps for s, ps in self._prepared_sculpts() if s.id == sid), None)
+            if prepared is None or not prepared.parts:
+                raise ChangeRefused(f"sculpt {sid!r} is not built")
+            part0 = prepared.parts[0]
+            saved = self._load_sculpt_paint(sid) or {}
+            pal = self._ensure_paint_palette(part0.palette, part0.color or sm.color)
+            for k, v in palette_patch.items():
+                if str(k).isdigit():
+                    sl = max(1, min(8, int(k)))
+                    pal[sl] = normalize_hex(v, pal.get(sl, "#527292"))
+            cur_fils = (
+                part0.face_filaments.tolist()
+                if (part0.face_filaments is not None and len(part0.face_filaments) == len(part0.tris))
+                else [1] * len(part0.tris)
+            )
+            payload = {
+                "palette": {str(k): v for k, v in sorted(pal.items())},
+                "rle": self._encode_rle(cur_fils),
+                "undo": list(saved.get("undo") or []),
+            }
+            self.sculpts_dir.mkdir(parents=True, exist_ok=True)
+            self._sculpt_paint_path(sid).write_text(json.dumps(payload), encoding="utf-8")
+            self._sculpt_cache.pop(sid, None)
+            self.rev += 1
+            self.built_rev = self.rev
+            self.log(actor, f"Updated paint palette for {sid}")
+            return self.get_sculpt_paint(sid)
+
+    def undo_sculpt_paint(self, actor: str, sid: str) -> dict:
+        with self.lock:
+            if self.design.sculpt(sid) is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            saved = self._load_sculpt_paint(sid)
+            if saved and saved.get("undo"):
+                undo_list = list(saved["undo"])
+                prev_rle = undo_list.pop()
+                payload = {
+                    "palette": saved.get("palette") or {},
+                    "rle": prev_rle,
+                    "undo": undo_list,
+                }
+                self._sculpt_paint_path(sid).write_text(json.dumps(payload), encoding="utf-8")
+                self._sculpt_cache.pop(sid, None)
+                self.rev += 1
+                self.built_rev = self.rev
+                self.log(actor, f"Undid last paint stroke on {sid}")
+            return self.get_sculpt_paint(sid)
+
+    def reset_sculpt_paint(self, actor: str, sid: str) -> dict:
+        with self.lock:
+            if self.design.sculpt(sid) is None:
+                raise ChangeRefused(f"no sculpt {sid!r}")
+            pp = self._sculpt_paint_path(sid)
+            if pp.is_file():
+                pp.unlink()
+            self._sculpt_cache.pop(sid, None)
+            self.rev += 1
+            self.built_rev = self.rev
+            self.log(actor, f"Reset custom paint on {sid}")
+            return self.get_sculpt_paint(sid)
 
     def inspect_sculpt_anatomy(self, sid: str) -> dict:
         from ..geometry.mesh_prep import inspect_sculpt_anatomy_file

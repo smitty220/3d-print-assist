@@ -34,6 +34,7 @@ interface PartEntry {
   mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>
   edges: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>
   base: THREE.Color
+  faceColors: Map<number, THREE.Color>
   faceRanges: Map<number, [start: number, count: number]>
   faceOfVertex: Uint32Array
   edgeOfSegment: Uint32Array
@@ -54,10 +55,14 @@ const VIEWS: Record<ViewName, [theta: number, phi: number]> = {
  *  and edge picking, and a section tool. Scene units are mm, Z up (the print bed is Z = 0). */
 export class Viewer {
   onSelect?: (pick: FacePick | null) => void
+  /** Called in Character Paint Mode when the user clicks or Shift-drags on a mesh surface. */
+  onPaintPoint?: (pick: FacePick) => void
   /** Called while the section handle is dragged, with the plane's movement along its normal in mm. */
   onSectionDrag?: (deltaMm: number) => void
   /** What a click picks: B-rep faces (default) or edges (for blends). */
   pickMode: PickMode = 'face'
+  /** When true, left-click on a sculpt calls `onPaintPoint` instead of regular selection. */
+  paintMode = false
 
   private el: HTMLElement
   private renderer: THREE.WebGLRenderer
@@ -134,28 +139,49 @@ export class Viewer {
   addPart(data: ShapeMesh, style: PartStyle) {
     this.removePart(data.name)
     const positions: number[] = []
+    const normals: number[] = []
     const indices: number[] = []
     const faceIds: number[] = []
     const faceRanges = new Map<number, [number, number]>()
+    const faceColors = new Map<number, THREE.Color>()
+    const base = new THREE.Color(style.color)
+    let hasAllNormals = data.faces.length > 0
     for (const f of data.faces) {
       const start = positions.length / 3
       for (const v of f.positions) positions.push(v) // no spread: topology surfaces have ~10⁵ values
+      if (f.normals && f.normals.length === f.positions.length) {
+        for (const n of f.normals) normals.push(n)
+      } else {
+        hasAllNormals = false
+      }
       for (const i of f.indices) indices.push(i + start)
       const count = f.positions.length / 3
       for (let i = 0; i < count; i++) faceIds.push(f.id)
       faceRanges.set(f.id, [start, count])
+      if (f.color && /^#[0-9a-f]{6}$/i.test(f.color)) {
+        faceColors.set(f.id, new THREE.Color(f.color))
+      }
     }
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     geo.setIndex(indices)
-    geo.computeVertexNormals()
-    const base = new THREE.Color(style.color)
+    if (hasAllNormals && normals.length === positions.length) {
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3))
+    } else {
+      geo.computeVertexNormals()
+    }
     const colors = new Float32Array(positions.length)
-    for (let i = 0; i < colors.length; i += 3) base.toArray(colors, i)
+    for (const f of data.faces) {
+      const range = faceRanges.get(f.id)
+      if (!range) continue
+      const c = faceColors.get(f.id) ?? base
+      const [start, count] = range
+      for (let i = start; i < start + count; i++) c.toArray(colors, i * 3)
+    }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
 
     const opacity = style.opacity ?? 1
-    const isSculptMesh = data.faces.length === 1 && data.faces[0]?.type === 'mesh'
+    const isSculptMesh = data.faces.length > 0 && data.faces.every((f) => f.type === 'mesh')
     const mat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       metalness: isSculptMesh ? 0.05 : 0.2,
@@ -189,7 +215,7 @@ export class Viewer {
     group.add(mesh, edges)
     group.userData.part = data.name
     this.scene.add(group)
-    const entry: PartEntry = { data, group, mesh, edges, base, faceRanges, faceOfVertex: Uint32Array.from(faceIds),
+    const entry: PartEntry = { data, group, mesh, edges, base, faceColors, faceRanges, faceOfVertex: Uint32Array.from(faceIds),
       edgeOfSegment: Uint32Array.from(edgeOfSegment) }
     this.parts.set(data.name, entry)
     if (this.plateMode) { group.visible = false; this.shownBefore.set(`part:${data.name}`, true) }
@@ -465,16 +491,18 @@ export class Viewer {
     const range = p?.faceRanges.get(pick.faceId)
     if (!p || !range) return
     const lit = this.highlight?.part === pick.part && this.highlight.faces.has(pick.faceId)
-    const isSculptMesh = p.data.faces.length === 1 && p.data.faces[0]?.type === 'mesh'
+    const isSculptMesh = p.data.faces.length > 0 && p.data.faces.every((f) => f.type === 'mesh')
+    const faceBase = p.faceColors.get(pick.faceId) ?? p.base
     let color: THREE.Color
     if (isSculptMesh) {
       // Never flood a full organic character body bright orange on hover/select; keep true filament colors visible.
-      if (same(pick, this.selected)) color = p.base.clone().lerp(SELECT, 0.22)
-      else if (same(pick, this.hover)) color = p.base.clone().lerp(new THREE.Color(0xffffff), 0.08)
-      else if (lit) color = p.base.clone().lerp(HIGHLIGHT, 0.22)
-      else color = p.base
+      if (this.paintMode) color = faceBase
+      else if (same(pick, this.selected)) color = faceBase.clone().lerp(SELECT, 0.22)
+      else if (same(pick, this.hover)) color = faceBase.clone().lerp(new THREE.Color(0xffffff), 0.08)
+      else if (lit) color = faceBase.clone().lerp(HIGHLIGHT, 0.22)
+      else color = faceBase
     } else {
-      color = same(pick, this.selected) ? SELECT : same(pick, this.hover) ? HOVER : lit ? HIGHLIGHT : p.base
+      color = same(pick, this.selected) ? SELECT : same(pick, this.hover) ? HOVER : lit ? HIGHLIGHT : faceBase
     }
     const attr = p.mesh.geometry.getAttribute('color') as THREE.BufferAttribute
     const [start, count] = range
@@ -657,7 +685,11 @@ export class Viewer {
     window.addEventListener('mouseup', (e) => {
       const b = names[e.button]
       if (!b) return
-      if (b === 'L' && clickStart && !btn.M && moved < 4 && e.target === cv) this.select(this.pickAt(e.clientX, e.clientY))
+      if (b === 'L' && clickStart && !btn.M && moved < 4 && e.target === cv) {
+        const hit = this.pickAt(e.clientX, e.clientY)
+        if (this.paintMode && hit?.point) this.onPaintPoint?.(hit)
+        else this.select(hit)
+      }
       btn[b] = false
       if (b === 'L') {
         clickStart = false

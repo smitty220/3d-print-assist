@@ -38,6 +38,27 @@ PAINTER_FILES: tuple[tuple[str, str, str, int], ...] = (
 )
 
 HUNYUAN3D_GIT = "https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git"
+TEX_PAINTER_REPO = "tencent/Hunyuan3D-2"
+TEX_PAINTER_SUBFOLDER = "hunyuan3d-paint-v2-0-turbo"
+
+# Verified file manifest for `hunyuan3d-paint-v2-0-turbo` (skips the redundant 7.3 GB fp32 unet `.bin`
+# duplicate and unused `image_encoder`, keeping the 3.72 GB `.safetensors` weights -> ~5.42 GB total).
+TEX_PAINTER_FILES: tuple[tuple[str, int], ...] = (
+    ("model_index.json", 1),
+    ("feature_extractor/preprocessor_config.json", 1),
+    ("scheduler/scheduler_config.json", 1),
+    ("text_encoder/config.json", 1),
+    ("text_encoder/pytorch_model.bin", 1362),
+    ("tokenizer/merges.txt", 1),
+    ("tokenizer/special_tokens_map.json", 1),
+    ("tokenizer/tokenizer_config.json", 1),
+    ("tokenizer/vocab.json", 1),
+    ("unet/config.json", 1),
+    ("unet/modules.py", 1),
+    ("unet/diffusion_pytorch_model.safetensors", 3722),
+    ("vae/config.json", 1),
+    ("vae/diffusion_pytorch_model.bin", 335),
+)
 
 
 @dataclass
@@ -93,6 +114,24 @@ def sculptor_ready(root: Path | None = None) -> bool:
     r = root or ml_root()
     marker = r / "sculptor_ready.json"
     return sculptor_python(r).is_file() and marker.is_file()
+
+
+def tex_painter_dir(root: Path | None = None) -> Path:
+    return (root or ml_root()) / "models" / "tex_painter" / TEX_PAINTER_REPO / TEX_PAINTER_SUBFOLDER
+
+
+def tex_painter_ready(root: Path | None = None) -> bool:
+    r = root or ml_root()
+    if not sculptor_ready(r):
+        return False
+    tdir = tex_painter_dir(r)
+    required = (
+        "model_index.json",
+        "text_encoder/pytorch_model.bin",
+        "unet/diffusion_pytorch_model.safetensors",
+        "vae/diffusion_pytorch_model.bin",
+    )
+    return all((tdir / rel).is_file() and (tdir / rel).stat().st_size > 100 for rel in required)
 
 
 def _dir_size_gb(path: Path) -> float:
@@ -197,6 +236,7 @@ class EngineInstaller:
         hw = detect_hardware()
         p_ok = painter_ready(r)
         s_ok = sculptor_ready(r)
+        tp_ok = tex_painter_ready(r)
         bl = blender_status(r if root is not None else None)
         with self._lock:
             st = self._state.to_dict()
@@ -204,6 +244,7 @@ class EngineInstaller:
             "ready": p_ok and s_ok,
             "painter_ready": p_ok,
             "sculptor_ready": s_ok,
+            "tex_painter_ready": tp_ok,
             "blender_ready": bl["ready"],
             "blender_version": bl["version"],
             "blender_source": bl["source"],
@@ -247,12 +288,17 @@ class EngineInstaller:
     ) -> None:
         """Ensure the requested local ML component is installed, waiting seamlessly if a background download is running."""
         r = root or ml_root()
-        is_ready = (lambda: painter_ready(r)) if component == "painter" else (lambda: sculptor_ready(r))
+        if component == "painter":
+            is_ready = lambda: painter_ready(r)  # noqa: E731
+        elif component == "tex_painter":
+            is_ready = lambda: tex_painter_ready(r)  # noqa: E731
+        else:
+            is_ready = lambda: sculptor_ready(r)  # noqa: E731
         if is_ready():
             return
         if root is not None or os.environ.get("PRINT_ASSIST_DISABLE_ML_AUTO_INSTALL") == "1":
             raise RuntimeError(f"Character Mode {component} assets are not available yet.")
-        self.start_install()
+        self.start_install(("tex_painter",) if component == "tex_painter" else ("painter", "sculptor"))
         last_msg = ""
         while not is_ready():
             st = self.status(r)
@@ -407,7 +453,7 @@ class EngineInstaller:
             "huggingface-hub>=0.27,<1", "diffusers>=0.31,<0.36", "transformers>=4.46,<5", "accelerate", "einops",
             "omegaconf", "safetensors", "Pillow", "PyYAML", "tqdm", "scipy",
             "scikit-image", "opencv-python-headless", "trimesh", "pygltflib",
-            "pymeshlab", "rembg", "onnxruntime",
+            "pymeshlab", "rembg", "onnxruntime", "xatlas",
         ]
         self._run_cmd([*pip_prefix, *deps], "Installing 3D mesh packages", 77, "Installing mesh & diffusion dependencies…")
 
@@ -440,6 +486,32 @@ class EngineInstaller:
             "tier": hw.tier,
         }, indent=2), encoding="utf-8")
 
+    def _install_tex_painter(self, r: Path, hw: HardwareProfile) -> None:
+        if not sculptor_ready(r):
+            self._install_sculptor(r, hw)
+        py = sculptor_python(r)
+        uv = _find_tool("uv")
+        # Ensure `xatlas` UV unwrapper is present in existing sculptor venvs
+        chk = subprocess.run([str(py), "-c", "import xatlas"], capture_output=True)
+        if chk.returncode != 0:
+            pip_prefix = [uv, "pip", "install", "--python", str(py)] if uv else [str(py), "-m", "pip", "install"]
+            self._run_cmd([*pip_prefix, "xatlas"], "Installing UV unwrapper", 8, "Installing xatlas…")
+        tdir = tex_painter_dir(r)
+        tdir.mkdir(parents=True, exist_ok=True)
+        total_mb = sum(w for _, w in TEX_PAINTER_FILES) or 1
+        cursor = 10.0
+        span = 88.0
+        for rel, weight_mb in TEX_PAINTER_FILES:
+            p0 = cursor
+            p1 = cursor + span * (weight_mb / total_mb)
+            cursor = p1
+            target = tdir / rel
+            if target.is_file() and target.stat().st_size > 100:
+                self._update("Preparing 3D paint model", int(round(p1)), f"{rel} already downloaded")
+                continue
+            url = f"https://huggingface.co/{TEX_PAINTER_REPO}/resolve/main/{TEX_PAINTER_SUBFOLDER}/{rel}"
+            self._download_file(url, target, rel, p0, p1)
+
     def _run(self, components: tuple[str, ...]) -> None:
         r = ml_root()
         r.mkdir(parents=True, exist_ok=True)
@@ -449,6 +521,8 @@ class EngineInstaller:
                 self._install_painter(r, hw)
             if "sculptor" in components:
                 self._install_sculptor(r, hw)
+            if "tex_painter" in components:
+                self._install_tex_painter(r, hw)
             with self._lock:
                 self._state.installing = False
                 self._state.stage = "Ready"

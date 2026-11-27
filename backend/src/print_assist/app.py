@@ -14,12 +14,13 @@ import atexit
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .ai import client as ai
 from .build.ops import USER, OpError
@@ -1300,6 +1301,7 @@ class CharacterSculptIn(BaseModel):
     hollow_cavity: bool = False
     hollow_wall_mm: float = 3.0
     multicolor: bool = False
+    max_colors: int = 0  # 0 = auto (up to 5 when multicolor + 3D paint, or 2 clean sweeping belly)
     color_mode: Literal["auto", "single", "multicolor"] = "auto"
     color: str | None = "#b8c2cc"
     wait_s: float = -1.0
@@ -1352,7 +1354,7 @@ def ml_status() -> dict:
 
 
 class MlSetupIn(BaseModel):
-    components: list[Literal["painter", "sculptor"]] = ["painter", "sculptor"]
+    components: list[Literal["painter", "sculptor", "tex_painter"]] = ["painter", "sculptor"]
 
 
 @app.post("/api/ml/setup")
@@ -1554,9 +1556,13 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         hollow_cavity=body.hollow_cavity,
         hollow_wall_mm=body.hollow_wall_mm,
         max_colors=(
-            max(2, min(5, w.project.printer.slots if w.project.printer.slots > 1 else 5))
-            if (body.multicolor or body.color_mode == "multicolor")
-            else 1
+            max(1, min(8, int(body.max_colors)))
+            if int(body.max_colors) > 0
+            else (
+                max(2, min(5, w.project.printer.slots if w.project.printer.slots > 1 else 5))
+                if (body.multicolor or body.color_mode == "multicolor")
+                else 1
+            )
         ),
         color_mode="multicolor" if body.multicolor else body.color_mode,
     )
@@ -1602,6 +1608,25 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
             sculpt_name = sculpt_name or c_new.title
         assert img_path is not None
         raw_glb = sculpt_mesh_from_image(img_path, views=views)
+        # If multi-color (>=3 colors) is requested and local 3D Texture Painter (`Hunyuan3D-Paint`) is ready,
+        # bake real geometry-locked 3D UV colors directly onto the sculpt (zero 2D slide-projector misalignment!).
+        want_3d_paint = (
+            prep.color_mode != "single"
+            and (prep.max_colors >= 3 or (prep.color_mode == "auto" and w.project.printer.slots > 1 and int(body.max_colors) != 2))
+        )
+        if want_3d_paint:
+            from .ml.installer import tex_painter_ready
+            if tex_painter_ready():
+                import tempfile
+                from .ml.tex_painter import paint_mesh_from_image
+                try:
+                    ml_job_update("Painting 3D surface colors", 84, "Baking 3D UV colors onto sculpt…")
+                    with tempfile.TemporaryDirectory(prefix="pa_sculpt_paint_") as _td:
+                        tmp_mesh = Path(_td) / "raw.glb"
+                        tmp_mesh.write_bytes(raw_glb)
+                        raw_glb = paint_mesh_from_image(tmp_mesh, img_path)
+                except Exception:  # noqa: BLE001
+                    pass
         ml_job_update("Finishing for 3D printing", 92, "Repairing solid & cutting print mechanics…")
         sm = w.add_sculpt(
             actor=x_actor, name=sculpt_name or "Sculpt", raw_bytes=raw_glb, ext=".glb",
@@ -1782,6 +1807,119 @@ def get_sculpt_anatomy(sid: str) -> dict:
         raise HTTPException(404, str(exc)) from exc
     except (MeshPrepError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+class SculptPaintStrokeIn(BaseModel):
+    mode: Literal["smart_fill", "brush", "bucket"] = "smart_fill"
+    hit_point: list[float]
+    filament: int = Field(default=3, ge=1, le=8)
+    crease_deg: float = Field(default=26.0, ge=4.0, le=85.0)
+    radius_mm: float = Field(default=4.0, ge=0.5, le=40.0)
+
+
+class SculptPaletteIn(BaseModel):
+    palette: dict[str, str]
+
+
+@app.get("/api/sculpts/{sid}/paint")
+def get_sculpt_paint(sid: str) -> dict:
+    try:
+        return ws().get_sculpt_paint(sid)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.post("/api/sculpts/{sid}/paint/stroke")
+def paint_sculpt_stroke(sid: str, body: SculptPaintStrokeIn, x_actor: str = Header(default=USER)) -> dict:
+    if len(body.hit_point) != 3:
+        raise HTTPException(422, "hit_point must have 3 coordinates [x, y, z]")
+    try:
+        state = ws().apply_sculpt_paint_stroke(
+            x_actor, sid,
+            mode=body.mode,
+            hit_point=body.hit_point,
+            filament=body.filament,
+            crease_deg=body.crease_deg,
+            radius_mm=body.radius_mm,
+        )
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"paint": state, "part": ws().part()}
+
+
+@app.post("/api/sculpts/{sid}/paint/palette")
+def paint_sculpt_palette(sid: str, body: SculptPaletteIn, x_actor: str = Header(default=USER)) -> dict:
+    try:
+        state = ws().update_sculpt_palette(x_actor, sid, body.palette)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"paint": state, "part": ws().part()}
+
+
+@app.post("/api/sculpts/{sid}/paint/undo")
+def undo_sculpt_paint(sid: str, x_actor: str = Header(default=USER)) -> dict:
+    try:
+        state = ws().undo_sculpt_paint(x_actor, sid)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"paint": state, "part": ws().part()}
+
+
+@app.post("/api/sculpts/{sid}/paint/reset")
+def reset_sculpt_paint(sid: str, x_actor: str = Header(default=USER)) -> dict:
+    try:
+        state = ws().reset_sculpt_paint(x_actor, sid)
+    except ChangeRefused as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"paint": state, "part": ws().part()}
+
+
+@app.post("/api/sculpts/{sid}/paint/ai")
+def ai_paint_existing_sculpt(sid: str, wait_s: float = 0.0, x_actor: str = Header(default=USER)) -> dict:
+    """Run local 3D Texture Painter (`Hunyuan3D-Paint`) on an existing sculpt using its approved concept image."""
+    from .ml import ml_job_update, start_character_job
+    from .ml.tex_painter import TexPainterError, paint_mesh_from_image
+
+    w = ws()
+    sm = w.design.sculpt(sid)
+    if sm is None:
+        raise HTTPException(404, f"No sculpt {sid!r}")
+    raw_path = w.sculpts_dir / sm.source_file
+    c_img = w._sculpt_concept_image(sm)
+    if not raw_path.is_file():
+        raise HTTPException(404, f"Sculpt mesh missing for {sid}")
+    if c_img is None or not c_img.is_file():
+        raise HTTPException(422, f"No concept image linked to sculpt {sid} to paint from")
+
+    def _work() -> dict:
+        painted_glb = paint_mesh_from_image(raw_path, c_img)
+        ml_job_update("Finishing for 3D printing", 94, "Quantizing 3D colors for MMU3…")
+        new_prep = sm.prep.model_copy(deep=True)
+        new_prep.color_mode = "multicolor"
+        new_prep.max_colors = max(5, min(5, w.project.printer.slots if w.project.printer.slots > 1 else 5))
+        # Clear any stale manual paint override so the newly baked 3D texture takes effect immediately
+        pp = w._sculpt_paint_path(sid)
+        if pp.is_file():
+            pp.unlink()
+        sm_new = w.add_sculpt(
+            actor=x_actor, name=sm.name, raw_bytes=painted_glb, ext=".glb",
+            concept_id=sm.concept_id, prep=new_prep, color=sm.color, filament=sm.filament,
+            replace_id=sid,
+        )
+        return {"sculpt": sm_new.model_dump(), "tree": w.tree()}
+
+    if wait_s < 0:
+        try:
+            return _work()
+        except TexPainterError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    res = start_character_job("sculpting", "Painting 3D surface colors", sm.name, _work, wait_s=wait_s)
+    if res["status"] == "error":
+        raise HTTPException(422, res["error"])
+    if res["status"] == "done" and res["result"] is not None:
+        return res["result"]
+    return res
 
 
 @app.delete("/api/sculpts/{sid}")

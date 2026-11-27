@@ -329,18 +329,19 @@ def sculpt_character(
     hollow_cavity: bool = False,
     hollow_wall_mm: float = 3.0,
     multicolor: bool = False,
+    max_colors: int = 0,
     color_mode: str = "auto",
 ) -> str:
-    """PREFERRED Character Mode 3D Sculptor + Automatic Multi-Color MMU3 Inlay Projection + Flexi-Factory Engine:
+    """PREFERRED Character Mode 3D Sculptor + Real 3D Texture Painter (`Hunyuan3D-Paint`) + Flexi-Factory Engine:
     molds an authentic Pixar/organic watertight 3D mesh directly from an approved Character Design File (`concept_id`,
-    e.g. "K8" or "K9") while AUTOMATICALLY combining ALL THREE:
+    e.g. "K2" or "K8") while AUTOMATICALLY combining ALL THREE:
     1. Authentic Pixar 3D character sculpting (`Hunyuan3D-2mv`, smooth skin, zero voxels) matching the approved concept's
        real cheeks, brow, smile, eyes, teeth, and silhouette.
-    2. Automatic up-to-5-color Concept-to-3D MMU3/AMS Solid Inlay Projection (`color_mode="auto"|"multicolor"`):
-       aligns the 3D sculpt to `concept_id`'s clean image and extrudes crisp watertight inlaid solids for Body, Belly,
-       Eyes, Teeth/Highlights, and Mouth automatically in < 1 second!
+    2. Geometry-locked 3D surface painting (`Hunyuan3D-Paint`, `color_mode="auto"|"multicolor"`, `max_colors=0` auto 5-color
+       or `max_colors=2` clean sweeping Body + Belly): paints all 6 views conditioned on the mesh's exact 3D normals/positions
+       and exports crisp native PrusaSlicer/Bambu `slic3rpe:mmu_segmentation` per-triangle MMU3 painting (ZERO boolean tooth damage!).
     3. Fin-Safe Print-in-Place Flexi-Factory Articulation (`flexi_segments=5` or `6`): detects pectoral/dorsal/tail
-       fins, cuts wide ±24° swimming V-gaps with captive vertical Z-axis pins, and seats 100% of segments flat on Z=0!
+       fins, cuts wide ±24° swimming V-gaps with bed-seated captive 45° flared Z-pins, and seats 100% of segments flat on Z=0!
     Pass `replace_sculpt_id="M1"` when rebuilding an existing sculpt in place. Supports hybrid OpenCascade CAD booleans
     (`cut_bodies`, `union_bodies`), `magnet_hole`, `hollow_cavity`, `base_style`, and `keychain_loop`.
     If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
@@ -372,6 +373,7 @@ def sculpt_character(
             "hollow_cavity": hollow_cavity,
             "hollow_wall_mm": hollow_wall_mm,
             "multicolor": multicolor,
+            "max_colors": max_colors,
             "color_mode": color_mode,
             "wait_s": 40,
         },

@@ -759,6 +759,15 @@ export default function App() {
             hasDesign={concepts.length > 0}
             hasPhotos={uploadedPhotos.length > 0}
             canvasView={shownConcept ? 'design' : shownPhoto ? 'photos' : 'model'}
+            activeSculptId={tree.sculpts?.[0]?.id ?? null}
+            texPainterReady={Boolean(mlStatus?.tex_painter_ready)}
+            onPartUpdated={setPart}
+            onAiPaint={(sid) => {
+              run(() => api.sculptPaintAi(sid), 'Starting 3D AI Texture Painter…').then(() => {
+                api.aiStatus().then(setAi).catch(() => {})
+                api.mlStatus().then(setMlStatus).catch(() => {})
+              })
+            }}
             onCanvasView={(v) => {
               if (v === 'design' && concepts[0]) {
                 setPhotoOpen(null)

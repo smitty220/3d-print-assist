@@ -598,24 +598,30 @@ def test_multiview_quad_splitting_and_multicolor_mmu3_3mf_export(tmp_path: Path)
     prep = SculptPrep(target_height_mm=44.0, flexi_segments=4, flexi_angle_deg=24.0, color_mode="auto")
     res = prepare_print_mesh(raw_p, prep, name="Bruce", concept_image_path=concept_p, multi_extruder=True)
     assert res.watertight is True
-    assert len(res.parts) == 2, f"Expected 2-color Body+Belly parts, got {[p.name for p in res.parts]}"
-    assert res.parts[0].color != res.parts[1].color
+    assert len(res.parts) == 1
+    p0 = res.parts[0]
+    assert p0.face_filaments is not None and p0.palette is not None
+    assert set(p0.palette.keys()) >= {1, 2}
+    assert p0.palette[1] != p0.palette[2]
+    assert set(p0.face_filaments.tolist()) >= {1, 2}
 
-    # Verify unified physical printability across multi-color parts (0 floating segments!)
+    # Verify unified physical printability across multi-color flexi segments (0 floating segments!)
     pr = analyze_sculpt_printability(res.parts)
     assert pr["component_count"] >= 4
     assert pr["floating_count"] == 0, f"Multi-color flexi segments should be seated on Z=0: {pr}"
 
-    # Verify PrusaSlicer MMU3 extruder metadata is embedded in exported 3MF
+    # Verify native PrusaSlicer / Bambu Studio `slic3rpe:mmu_segmentation` is embedded in exported 3MF
     printer = profiles().get("prusa_mk4s_mmu3") or next(iter(profiles().values()))
     mf_out = export_prepared_meshes(res.parts, printer, "3mf", tmp_path / "bruce_mmu3.3mf", title="Flexi Bruce")
     with zipfile.ZipFile(mf_out) as zf:
         names = set(zf.namelist())
         assert "3D/3dmodel.model" in names
         assert "Metadata/Slic3r_PE_model.config" in names
+        model_xml = zf.read("3D/3dmodel.model").decode("utf-8")
+        assert 'slic3rpe:MmPaintingVersion' in model_xml
+        assert 'slic3rpe:mmu_segmentation="8"' in model_xml
         cfg_xml = zf.read("Metadata/Slic3r_PE_model.config").decode("utf-8")
         assert 'key="extruder" value="1"' in cfg_xml
-        assert 'key="extruder" value="2"' in cfg_xml
 
 
 def test_blender_engine_discovery_and_ml_status(tmp_path: Path):
@@ -812,6 +818,163 @@ def test_concept_to_3d_multicolor_inlay_projection_and_dangling_flap_heal(tmp_pa
     assert any(p["role"] == "front" for p in scmap["panels"])
     s_roles = {p["role"] for p in scmap["palette"]}
     assert {"primary", "secondary", "dark", "chromatic", "white"} <= s_roles
+
+
+def test_cross_platform_numpy_rasterizer_and_vertex_inpaint_shims():
+    """Verify pure-NumPy drop-in shims for `custom_rasterizer` and `mesh_processor` work on all platforms."""
+    import numpy as np
+    from print_assist.ml.tex_painter import mesh_vertice_inpaint_numpy, rasterize_clip_space_numpy
+
+    # Two overlapping depth-ordered triangles in clip space (front tri at z=-0.4 must occlude back tri at z=+0.4)
+    v_clip = np.array([
+        [-0.8, -0.8, 0.4, 1.0],
+        [ 0.8, -0.8, 0.4, 1.0],
+        [ 0.0,  0.8, 0.4, 1.0],
+        [-0.4, -0.4, -0.4, 1.0],
+        [ 0.4, -0.4, -0.4, 1.0],
+        [ 0.0,  0.4, -0.4, 1.0],
+    ], dtype=np.float32)
+    faces = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int32)
+    findices, bary = rasterize_clip_space_numpy(v_clip, faces, 64, 64)
+    assert findices.shape == (64, 64)
+    assert bary.shape == (64, 64, 3)
+    # Center pixel (32, 32) is covered by both -> must pick nearer face #2 (1-indexed)
+    assert int(findices[32, 32]) == 2
+    assert abs(float(bary[32, 32].sum()) - 1.0) < 1e-4
+    # Lower corner hit only by back face #1
+    assert int(findices[12, 16]) == 1
+
+    # Vertex inpaint propagates color across mesh edges from painted vertex 0 to unpainted vertices 1 & 2
+    tex = np.zeros((16, 16, 3), dtype=np.float32)
+    msk = np.zeros((16, 16), dtype=np.uint8)
+    vpos = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    vuv = np.array([[0.2, 0.8], [0.8, 0.8], [0.2, 0.2]], dtype=np.float32)
+    pidx = np.array([[0, 1, 2]], dtype=np.int32)
+    u0, v0 = int(round((1.0 - 0.8) * 15)), int(round(0.2 * 15))
+    tex[u0, v0] = [0.2, 0.6, 0.9]
+    msk[u0, v0] = 255
+    ntex, nmsk = mesh_vertice_inpaint_numpy(tex, msk, vpos, vuv, pidx, pidx)
+    u1, v1 = int(round((1.0 - 0.8) * 15)), int(round(0.8 * 15))
+    assert nmsk[u1, v1] == 255
+    assert np.allclose(ntex[u1, v1], [0.2, 0.6, 0.9], atol=1e-4)
+
+
+def test_uv_textured_mesh_mmu3_quantization_and_3mf_segmentation(tmp_path: Path):
+    """Verify baked 3D UV textures quantize to crisp per-triangle MMU3 slots and export valid
+    PrusaSlicer / Bambu Studio `slic3rpe:mmu_segmentation` attributes with zero boolean damage."""
+    import numpy as np
+    from print_assist.geometry.mesh_paint import encode_mmu_segmentation
+
+    # Verify verified bit encoding for slots 1..6
+    assert encode_mmu_segmentation(1) == ""
+    assert encode_mmu_segmentation(2) == "8"
+    assert encode_mmu_segmentation(3) == "0C"
+    assert encode_mmu_segmentation(4) == "1C"
+    assert encode_mmu_segmentation(5) == "2C"
+    assert encode_mmu_segmentation(6) == "3C"
+
+    # Build a synthetic UV-textured 4-color sphere (Blue top, Cream bottom, Red spot, Black spot)
+    sphere = trimesh.creation.icosphere(subdivisions=3, radius=25.0)
+    verts = np.asarray(sphere.vertices, dtype=np.float64)
+    # Equirectangular UVs
+    r = np.linalg.norm(verts, axis=1)
+    u = (np.arctan2(verts[:, 1], verts[:, 0]) / (2.0 * np.pi)) % 1.0
+    v = np.arccos(np.clip(verts[:, 2] / np.maximum(r, 1e-6), -1.0, 1.0)) / np.pi
+    uv = np.stack([u, 1.0 - v], axis=-1)
+
+    tex = np.zeros((128, 256, 3), dtype=np.uint8)
+    tex[:70, :] = [74, 108, 138]      # Slate Blue body
+    tex[70:, :] = [235, 228, 210]     # Cream belly
+    tex[25:55, 40:80] = [20, 22, 26]  # Black eye patch
+    tex[45:75, 110:155] = [205, 42, 46]  # Red mouth patch
+    tex_img = Image.fromarray(tex, mode="RGB")
+    mat = trimesh.visual.texture.SimpleMaterial(image=tex_img)
+    sphere.visual = trimesh.visual.TextureVisuals(uv=uv, image=tex_img, material=mat)
+    glb_p = tmp_path / "uv_painted.glb"
+    sphere.export(str(glb_p))
+
+    prep = SculptPrep(target_height_mm=50.0, flatten_bottom_mm=0.4, max_colors=4, color_mode="multicolor")
+    res = prepare_print_mesh(glb_p, prep, name="Painted Critter", multi_extruder=True, printer_slots=5)
+    assert res.watertight is True
+    assert len(res.parts) == 1
+    p0 = res.parts[0]
+    assert p0.face_filaments is not None and p0.palette is not None
+    assert len(p0.palette) >= 3, f"Expected >= 3 quantized UV slots, got {p0.palette}"
+
+    # Verify Three.js viewer mesh emits one seamless-normal FaceMesh group per slot
+    vm = to_viewer_mesh(p0, "M1")
+    assert len(vm["faces"]) == len(set(p0.face_filaments.tolist()))
+    assert all(len(f.get("normals") or []) == len(f["positions"]) for f in vm["faces"])
+
+    # Verify 3MF exports valid `slic3rpe:mmu_segmentation` attributes for slots 2, 3, ...
+    printer = profiles().get("prusa_mk4s_mmu3") or next(iter(profiles().values()))
+    out_3mf = export_prepared_meshes(res.parts, printer, "3mf", tmp_path / "painted.3mf", title="Painted")
+    with zipfile.ZipFile(out_3mf) as zf:
+        xml = zf.read("3D/3dmodel.model").decode("utf-8")
+        assert 'slic3rpe:MmPaintingVersion' in xml
+        assert 'slic3rpe:mmu_segmentation="8"' in xml
+        assert 'slic3rpe:mmu_segmentation="0C"' in xml
+
+
+def test_interactive_smart_fill_brush_palette_undo_reset_api(tmp_path: Path):
+    """Verify 1-click 3D crease-guided Smart-Fill stops cleanly at sharp 90° box edges, plus Brush, Palette, Undo & Reset."""
+    app_module.reset(tmp_path)
+    c = TestClient(app_module.app)
+    c.post("/api/projects", json={"name": "Paint Box", "creation_mode": "character"})
+
+    # Subdivided cube has 6 flat faces separated by sharp 90° creases — Smart-Fill on top face must flood ONLY the top!
+    box = trimesh.creation.box(extents=[40.0, 40.0, 40.0]).subdivide().subdivide()
+    glb = box.export(file_type="glb")
+    up = c.post("/api/sculpts/upload", files={"file": ("cube.glb", glb, "model/gltf-binary")}, params={"target_height_mm": 40.0})
+    assert up.status_code == 200, up.text
+    sid = up.json()["sculpt"]["id"]
+
+    # Read initial paint state
+    st0 = c.get(f"/api/sculpts/{sid}/paint").json()
+    assert st0["id"] == sid and st0["can_undo"] is False and st0["triangles"] > 100
+
+    # Smart-Fill on the top face (Z = 40 mm) with Slot 3 & crease_deg = 28° -> fills ONLY ~1/6 of triangles (top face)!
+    r1 = c.post(f"/api/sculpts/{sid}/paint/stroke", json={
+        "mode": "smart_fill",
+        "hit_point": [0.0, 0.0, 40.0],
+        "filament": 3,
+        "crease_deg": 28.0,
+    })
+    assert r1.status_code == 200, r1.text
+    d1 = r1.json()
+    n_top = d1["paint"]["painted_triangles"]
+    tot = d1["paint"]["triangles"]
+    assert 0.12 * tot <= n_top <= 0.22 * tot, f"Expected ~1/6 top face smart-fill, got {n_top}/{tot}"
+    assert d1["paint"]["can_undo"] is True
+    assert d1["paint"]["slot_counts"].get("3") == n_top
+
+    # Brush dab on front side (Y = -20, Z = 20) with Slot 5
+    r2 = c.post(f"/api/sculpts/{sid}/paint/stroke", json={
+        "mode": "brush",
+        "hit_point": [0.0, -20.0, 20.0],
+        "filament": 5,
+        "radius_mm": 8.0,
+    })
+    assert r2.status_code == 200
+    assert r2.json()["paint"]["slot_counts"].get("5", 0) > 0
+
+    # Customize Slot 5 hex color
+    r_pal = c.post(f"/api/sculpts/{sid}/paint/palette", json={"palette": {"5": "#ff3366"}})
+    assert r_pal.status_code == 200
+    assert r_pal.json()["paint"]["palette"]["5"] == "#ff3366"
+
+    # Undo removes Slot 5 brush stroke while keeping Slot 3 smart-fill
+    r_undo = c.post(f"/api/sculpts/{sid}/paint/undo")
+    assert r_undo.status_code == 200
+    assert r_undo.json()["paint"]["slot_counts"].get("5", 0) == 0
+    assert r_undo.json()["paint"]["slot_counts"].get("3") == n_top
+
+    # Reset clears custom paint completely
+    r_reset = c.post(f"/api/sculpts/{sid}/paint/reset")
+    assert r_reset.status_code == 200
+    assert r_reset.json()["paint"]["has_custom_paint"] is False
+    assert r_reset.json()["paint"]["slot_counts"].get("3", 0) == 0
+
 
 
 

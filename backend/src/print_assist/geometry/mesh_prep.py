@@ -34,6 +34,9 @@ class PreparedPart:
     tris: np.ndarray  # (M, 3) int32
     color: str | None = None
     filament: int | None = None
+    # Native per-triangle MMU3 / AMS face painting (preserves 1 watertight solid with zero boolean tooth damage)
+    face_filaments: np.ndarray | None = None  # (M,) int32, 1-based extruder slot
+    palette: dict[int, str] | None = None     # {slot: "#rrggbb"}
 
     @property
     def triangles(self) -> int:
@@ -596,18 +599,18 @@ def analyze_sculpt_anatomy(
             has_tail_flare = True
             tail_waist_pct = round(float(t_centers[w_idx] * 100.0), 1)
             eff_s1 = min(eff_s1, float(t_centers[w_idx]) - 0.025)
-            # Also pull back in front of any pelvic/adipose fin bump right before the tail waist
-            pelvic = np.where((t_centers >= 0.72) & (t_centers <= eff_s1 + 0.04) & ((lat_ratio > 1.25) | (top_ratio < 0.45)))[0]
+            # Also pull back in front of any genuine lateral pelvic fin right before the tail waist
+            pelvic = np.where((t_centers >= 0.72) & (t_centers <= eff_s1 + 0.04) & (lat_ratio > 1.38))[0]
             if len(pelvic):
-                eff_s1 = min(eff_s1, float(t_centers[pelvic[0]]) - 0.04)
+                eff_s1 = min(eff_s1, float(t_centers[pelvic[0]]) - 0.03)
 
-    # 2. Detect major protected fin/limb zones in [20%..72%]
-    is_lat_fin = (lat_ratio > 1.24) & (w_max > 0.48 * width_all) & (t_centers >= 0.20) & (t_centers <= 0.72)
-    is_dorsal_fin = (top_ratio < 0.46) & (h_loc > 0.74 * height_all) & (t_centers >= 0.20) & (t_centers <= 0.72)
+    # 2. Detect major protected fin/limb zones in [19%..72%] so neither pectoral fins nor dorsal fins are ever sliced!
+    is_lat_fin = (lat_ratio > 1.24) & (w_max > 0.50 * width_all) & (t_centers >= 0.19) & (t_centers <= 0.72)
+    is_dorsal_fin = (top_ratio < 0.46) & (h_loc > 0.74 * height_all) & (t_centers >= 0.22) & (t_centers <= 0.72)
     is_protected = is_lat_fin | is_dorsal_fin
-    # Bridge tiny <= 2-bin (5%) gaps between overlapping pectoral and dorsal fins so they stay one unified chest segment
-    for i in range(1, n_bins - 2):
-        if not is_protected[i] and is_protected[i - 1] and (is_protected[i + 1] or is_protected[min(n_bins - 1, i + 2)]):
+    # Bridge 1-bin gaps between overlapping pectoral and dorsal fins so they stay one unified chest segment
+    for i in range(1, n_bins - 1):
+        if not is_protected[i] and is_protected[i - 1] and is_protected[i + 1]:
             is_protected[i] = True
 
     dt = 1.0 / n_bins
@@ -643,11 +646,11 @@ def analyze_sculpt_anatomy(
         chosen_t = [(s0 + (s1 - s0) * ((i + 0.5) / target_n), False) for i in range(target_n)]
         safe_intervals = [(s0, s1)]
     else:
-        # Allow a front neck/gill cut interval [0.24 .. first_fin - 0.015] ahead of chest fins/limbs when s0_pct <= 38%
+        # Allow a front neck/gill cut interval [0.22 .. first_fin - 0.015] ahead of chest fins/limbs when s0_pct <= 40%
         first_prot_idx = int(np.nonzero(is_protected)[0][0]) if np.any(is_protected) else -1
         first_prot_t = float(t_centers[first_prot_idx] - 0.5 * dt) if first_prot_idx >= 0 else 1.0
-        if first_prot_t >= 0.275 and s0_pct <= 38.0:
-            min_t = 0.235
+        if first_prot_t >= 0.25 and s0_pct <= 40.0:
+            min_t = 0.215
         else:
             min_t = min(0.31, _clamp(s0_pct / 100.0, 0.14, 0.72))
         min_safe_w = min(7.5, 0.11 * width_all) if length >= 20.0 else 0.11 * width_all
@@ -665,7 +668,7 @@ def analyze_sculpt_anatomy(
         if in_run:
             safe_intervals.append((run_start, min(eff_s1, float(t_centers[np.where(safe_mask)[0][-1]] + 0.2 * dt))))
 
-        min_pitch = (8.0 / length) if length >= 20.0 else 0.052
+        min_pitch = (8.8 / length) if length >= 20.0 else 0.056
         iv_caps = []
         for iv_a, iv_b in safe_intervals:
             span_t = max(0.0, iv_b - iv_a)
@@ -848,12 +851,18 @@ def _streamline_flexi_proportions(
     x0 = float(verts[:, 0].min())
     yc = 0.5 * float(verts[:, 1].min() + verts[:, 1].max())
 
+    # Allocate more stretch behind mid-body (`t >= 0.42`) than across the dorsal/chest fin zone so rear tail
+    # gets ample room for 3-4 flexi joints while the head & fins keep authentic Pixar proportions!
     n_grid = 256
     ts = np.linspace(0.0, 1.0, n_grid)
-    r_up = np.clip((ts - 0.23) / 0.15, 0.0, 1.0)
-    r_up = r_up * r_up * (3.0 - 2.0 * r_up)
-    r_tail = 1.0 - 0.30 * (np.clip((ts - 0.87) / 0.12, 0.0, 1.0) ** 2)
-    stretch_t = 1.0 + (s_rear - 1.0) * r_up * r_tail
+    r_chest = np.clip((ts - 0.26) / 0.14, 0.0, 1.0)
+    r_chest = r_chest * r_chest * (3.0 - 2.0 * r_chest)
+    r_rear = np.clip((ts - 0.48) / 0.16, 0.0, 1.0)
+    r_rear = r_rear * r_rear * (3.0 - 2.0 * r_rear)
+    r_tail = 1.0 - 0.35 * (np.clip((ts - 0.87) / 0.12, 0.0, 1.0) ** 2)
+    profile_w = (0.35 * r_chest + 0.95 * r_rear) * r_tail
+    mean_w = max(0.25, float(np.mean(profile_w)))
+    stretch_t = 1.0 + (needed_gain / mean_w) * profile_w
     dt = 1.0 / (n_grid - 1)
     mapped_t = np.concatenate(([0.0], np.cumsum(0.5 * (stretch_t[:-1] + stretch_t[1:]) * dt)))
 
@@ -934,7 +943,12 @@ def _streamline_flexi_proportions(
     return (placed, note, _warp_points) if return_warp else (placed, note)
 
 
-def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+def _seat_flexi_on_bed(
+    mf: m3d.Manifold,
+    prep: SculptPrep,
+    *,
+    return_warp: bool = False,
+):
     """Gently un-arch an upward-swept rear belly (`45%..79%`) via pure 1D rigid cross-section translation
     `z' = z - drop_rear(x)`.
 
@@ -947,7 +961,7 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
     sy = float(bb[4] - bb[1])
     sz = float(bb[5] - bb[2])
     if max(sx, sy) < 20.0 or sz < 6.0:
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
     rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
     work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
     work = _place_on_bed(work)
@@ -979,14 +993,14 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
 
     valid = ~np.isnan(z_min_central)
     if valid.sum() < 8:
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
     idx_1d = np.arange(nx)
     z_min_central = np.interp(idx_1d, idx_1d[valid], z_min_central[valid])
 
     t_norm = (x_centers - x0) / length
     rear_zone = (t_norm >= 0.48) & (t_norm <= 0.77)
     if float(z_min_central[rear_zone].max()) < 1.8:
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
 
     # Protect tail fin past its lowest point
     tail_region = np.where((t_norm >= 0.74) & (t_norm <= 0.96))[0]
@@ -1010,18 +1024,44 @@ def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold
     drop_safe = np.minimum(drop_smooth, z_for_drop) * (t_norm >= 0.40) * (t_norm <= 0.91)
     drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.25, 0.5, 0.25]), mode="valid")
     if float(drop_safe.max()) < 1.0:
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
 
     verts[:, 2] -= np.interp(verts[:, 0], x_centers, drop_safe)
     verts[:, 2] -= float(verts[:, 2].min())
     seated = _trimesh_to_manifold(trimesh.Trimesh(vertices=verts, faces=tm.faces, process=False))
     if seated is None or seated.is_empty():
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
     if flip_180:
         seated = seated.rotate((0.0, 0.0, 180.0))
     if rotated_for_y:
         seated = seated.rotate((0.0, 0.0, 90.0))
-    return _place_on_bed(seated), ["gently un-arched rear torso onto Z=0 bed (head, fins, and tail preserved)"]
+    placed = _place_on_bed(seated)
+    pbb = placed.bounding_box()
+
+    def _seat_warp(pts_in: np.ndarray) -> np.ndarray:
+        p = np.asarray(pts_in, dtype=np.float64).copy()
+        if rotated_for_y:
+            p = np.stack([p[:, 1], -p[:, 0], p[:, 2]], axis=-1)
+        if flip_180:
+            p[:, 0] = -p[:, 0]
+            p[:, 1] = -p[:, 1]
+        p[:, 0] -= 0.5 * (float(p[:, 0].min()) + float(p[:, 0].max()))
+        p[:, 1] -= 0.5 * (float(p[:, 1].min()) + float(p[:, 1].max()))
+        p[:, 2] -= float(p[:, 2].min())
+        p[:, 2] -= np.interp(p[:, 0], x_centers, drop_safe)
+        p[:, 2] -= float(p[:, 2].min())
+        if flip_180:
+            p[:, 0] = -p[:, 0]
+            p[:, 1] = -p[:, 1]
+        if rotated_for_y:
+            p = np.stack([-p[:, 1], p[:, 0], p[:, 2]], axis=-1)
+        p[:, 0] += 0.5 * (float(pbb[0] + pbb[3]) - float(p[:, 0].min() + p[:, 0].max()))
+        p[:, 1] += 0.5 * (float(pbb[1] + pbb[4]) - float(p[:, 1].min() + p[:, 1].max()))
+        p[:, 2] += float(pbb[2]) - float(p[:, 2].min())
+        return p
+
+    note = ["gently un-arched rear torso onto Z=0 bed (head, fins, and tail preserved)"]
+    return (placed, note, _seat_warp) if return_warp else (placed, note)
 
 
 def _extract_concept_palette(concept_png: Path) -> dict | None:
@@ -1402,7 +1442,7 @@ def _apply_flexi_articulation(
 
         u_pin = u - (gap / 2.0 + pin_r_base + 0.20)
         cavity_front_x = u_pin - (r_loop_xy + c)
-        min_front = (active_cuts[-1] + gap / 2.0 + 1.0) if active_cuts else (x0 + 1.2)
+        min_front = (active_cuts[-1] + gap / 2.0 + 0.65) if active_cuts else (x0 + 1.2)
         if cavity_front_x <= min_front:
             # Compact the pin/wall gently to fit tighter tail pitches before skipping
             max_span = u - (gap / 2.0) - min_front - 0.15
@@ -1951,8 +1991,17 @@ def prepare_print_mesh(
     concept_image_path: Path | None = None,
     multi_extruder: bool = False,
     printer_slots: int = 1,
+    paint_override: dict | None = None,
 ) -> PreparedSculpt:
     """Load, repair, orient, scale, flatten bottom, apply hybrid CAD booleans, and cut flexi/hardware finishing."""
+    from .mesh_paint import (
+        compute_clean_sweeping_belly_paint,
+        normalize_hex,
+        quantize_face_colors_to_filaments,
+        sample_mesh_face_rgb,
+        transfer_face_rgb_to_target,
+    )
+
     raw_parts, meta = load_raw_parts(raw_path)
     distinct_colors = {rp.color.lower() for rp in raw_parts if rp.color}
     if len(raw_parts) >= 2 and (len(distinct_colors) >= 2 or meta.get("flexi_baked")):
@@ -1964,20 +2013,37 @@ def prepare_print_mesh(
     raw = raw_parts[0].mesh if len(raw_parts) == 1 else load_raw_mesh(raw_path)
     if len(raw_parts) == 1 and raw_parts[0].color and (not color or color.lower() == "#b8c2cc"):
         color = raw_parts[0].color
+
+    # Sample baked 3D UV texture or vertex/face colors BEFORE manifold repair strips UVs!
+    raw_face_rgb = sample_mesh_face_rgb(raw)
+    tex_pts = np.asarray(raw.vertices, dtype=np.float64).copy() if raw_face_rgb is not None else None
+    tex_tris = np.asarray(raw.faces, dtype=np.int32) if raw_face_rgb is not None else None
+
     mf, notes = repair_to_manifold(raw)
 
     if prep.rotate_x or prep.rotate_y or prep.rotate_z:
-        mf = mf.rotate((float(prep.rotate_x), float(prep.rotate_y), float(prep.rotate_z)))
+        rx, ry, rz = float(prep.rotate_x), float(prep.rotate_y), float(prep.rotate_z)
+        mf = mf.rotate((rx, ry, rz))
+        if tex_pts is not None:
+            # Match manifold3d's extrinsic XYZ Euler rotation order
+            R = trimesh.transformations.euler_matrix(math.radians(rx), math.radians(ry), math.radians(rz), "sxyz")[:3, :3]
+            tex_pts = tex_pts @ R.T
 
     bb = mf.bounding_box()
     cur_h = float(bb[5] - bb[2])
     if prep.target_height_mm > 0 and cur_h > 1e-6:
         s = float(prep.target_height_mm) / cur_h
         mf = mf.scale((s, s, s))
+        if tex_pts is not None:
+            tex_pts *= s
 
     mf = _place_on_bed(mf)
-    mf_unmodified_for_color = mf
-    streamline_warp_fn = None
+    if tex_pts is not None:
+        mbb = mf.bounding_box()
+        tex_pts[:, 0] += 0.5 * (float(mbb[0] + mbb[3]) - float(tex_pts[:, 0].min() + tex_pts[:, 0].max()))
+        tex_pts[:, 1] += 0.5 * (float(mbb[1] + mbb[4]) - float(tex_pts[:, 1].min() + tex_pts[:, 1].max()))
+        tex_pts[:, 2] += float(mbb[2]) - float(tex_pts[:, 2].min())
+
     flexi_baked = bool(meta.get("flexi_baked"))
     has_flexi = (int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)) and not flexi_baked
 
@@ -1986,8 +2052,12 @@ def prepare_print_mesh(
     if has_flexi:
         mf, stream_notes, streamline_warp_fn = _streamline_flexi_proportions(mf, prep, return_warp=True)
         notes.extend(stream_notes)
-        mf, seat_notes = _seat_flexi_on_bed(mf, prep)
+        if tex_pts is not None and streamline_warp_fn is not None:
+            tex_pts = streamline_warp_fn(tex_pts)
+        mf, seat_notes, seat_warp_fn = _seat_flexi_on_bed(mf, prep, return_warp=True)
         notes.extend(seat_notes)
+        if tex_pts is not None and seat_warp_fn is not None:
+            tex_pts = seat_warp_fn(tex_pts)
 
     # Flatten bottom by trimming off Z=0 so bed adhesion is rock-solid.
     # For print-in-place flexi models, shave only a subtle ~1.8% ventral ribbon (capped at 1.05 mm) so the shark
@@ -2068,90 +2138,98 @@ def prepare_print_mesh(
 
     bb = mf.bounding_box()
     vol = abs(float(mf.volume()))
+    final_tm = _manifold_to_trimesh(mf)
+    final_pts = np.asarray(final_tm.vertices, dtype=np.float64)
+    final_tris = np.asarray(final_tm.faces, dtype=np.int32)
     is_organic_sculpt = len(raw.faces) >= 4000
-    want_multicolor = (
-        prep.color_mode != "single"
-        and (
-            prep.color_mode == "multicolor"
-            or int(prep.max_colors) > 1
-            or (prep.color_mode == "auto" and multi_extruder and is_organic_sculpt and concept_image_path is not None)
-        )
-    )
-    parts: list[PreparedPart] = []
-    if want_multicolor:
-        # 1. Primary path: Silhouette-aligned up-to-5-color Concept-to-3D MMU3/AMS inlay projection
-        #    (paints Body, Belly, Eyes, Teeth, Mouth directly from the approved Pixar concept onto the 3D sculpt!)
-        if concept_image_path is not None and concept_image_path.is_file() and is_organic_sculpt:
-            from .color_project import project_concept_colors_to_manifolds
 
-            eff_slots = max(2, min(5, int(printer_slots) if int(printer_slots) > 1 else 5))
-            req_colors = max(int(prep.max_colors), eff_slots) if prep.color_mode in ("auto", "multicolor") else int(prep.max_colors)
-            align_mf = mf_unmodified_for_color
-            warp_fn = streamline_warp_fn
-            if applied_bottom_cut > 0:
-                cut_dz = float(applied_bottom_cut)
-                if warp_fn is not None:
-                    base_warp = warp_fn
-                    def _warp_with_cut(pts_in, _bw=base_warp, _dz=cut_dz):
-                        p = _bw(pts_in)
-                        p[:, 2] -= _dz
-                        return p
-                    warp_fn = _warp_with_cut
-                else:
-                    align_mf = mf_unmodified_for_color.translate((0.0, 0.0, -cut_dz))
-            try:
-                proj = project_concept_colors_to_manifolds(
-                    align_mf,
-                    concept_image_path,
-                    final_mf=mf,
-                    hinge_keepout=hinge_keepout,
-                    warp_points_fn=warp_fn,
-                    max_colors=max(2, min(5, req_colors)),
-                    inlay_depth_mm=1.6,
-                )
-            except Exception:  # noqa: BLE001
-                proj = None
-            if proj is not None:
-                p_metas, p_dbg = proj
-                for pm in p_metas:
-                    ptm = _manifold_to_trimesh(pm["manifold"])
-                    parts.append(PreparedPart(
-                        name=f"{name} · {pm['name']}",
-                        points=np.asarray(ptm.vertices, dtype=np.float64),
-                        tris=np.asarray(ptm.faces, dtype=np.int32),
-                        color=pm["hex"],
-                        filament=pm["filament"],
-                    ))
-                notes.append(
-                    f"projected {len(parts)}-color MMU3/AMS inlays from concept (IoU={p_dbg['iou']:.2f}: "
-                    + ", ".join(f"{n} {hx}" for n, hx in p_dbg["colors"]) + ")"
-                )
+    # Align `tex_pts` final frame (accounts for bottom cut & bed recentering)
+    if tex_pts is not None:
+        if applied_bottom_cut > 0:
+            tex_pts[:, 2] -= float(applied_bottom_cut)
+        tex_pts[:, 0] += 0.5 * (float(bb[0] + bb[3]) - float(tex_pts[:, 0].min() + tex_pts[:, 0].max()))
+        tex_pts[:, 1] += 0.5 * (float(bb[1] + bb[4]) - float(tex_pts[:, 1].min() + tex_pts[:, 1].max()))
 
-        # 2. Fallback: 2-color ventral countershading split when no concept projection matched
-        if not parts:
-            mc_parts, mc_notes = _split_multicolor_parts(
-                mf, prep, concept_image_path, base_name=name, fallback_color=color, fallback_filament=filament,
+    # Build fast per-triangle hinge-keepout mask so internal flexi pins, tongues & cut caps stay pure Slot 1 Body!
+    hinge_mask = np.zeros(len(final_tris), dtype=bool)
+    if hinge_keepout is not None and not hinge_keepout.is_empty() and len(final_tris) > 0:
+        tri_c = final_pts[final_tris].mean(axis=1)
+        for hcomp in hinge_keepout.decompose():
+            hbb = hcomp.bounding_box()
+            hinge_mask |= (
+                (tri_c[:, 0] >= hbb[0] - 0.15) & (tri_c[:, 0] <= hbb[3] + 0.15)
+                & (tri_c[:, 1] >= hbb[1] - 0.15) & (tri_c[:, 1] <= hbb[4] + 0.15)
+                & (tri_c[:, 2] >= hbb[2] - 0.15) & (tri_c[:, 2] <= hbb[5] + 0.15)
             )
-            if mc_parts:
-                parts = mc_parts
-                notes.extend(mc_notes)
 
-    if not parts:
-        final_tm = _manifold_to_trimesh(mf)
-        parts = [
-            PreparedPart(
-                name=name,
-                points=np.asarray(final_tm.vertices, dtype=np.float64),
-                tris=np.asarray(final_tm.faces, dtype=np.int32),
-                color=color,
-                filament=filament,
-            )
-        ]
-        wt = bool(mf.status() == m3d.Error.NoError and final_tm.is_watertight)
+    # Strictly honor explicit `prep.max_colors` (never override explicit max_colors=2 back to 5!)
+    eff_slots = max(2, min(5, int(printer_slots) if int(printer_slots) > 1 else 5))
+    if prep.color_mode == "single":
+        eff_max_colors = 1
+    elif int(prep.max_colors) >= 2:
+        eff_max_colors = min(8, int(prep.max_colors))
+    elif prep.color_mode == "multicolor" or (prep.color_mode == "auto" and multi_extruder and (raw_face_rgb is not None or (is_organic_sculpt and concept_image_path is not None))):
+        eff_max_colors = eff_slots if raw_face_rgb is not None else 2
     else:
-        wt = bool(mf.status() == m3d.Error.NoError) and all(
-            trimesh.Trimesh(vertices=p.points, faces=p.tris, process=False).is_watertight for p in parts
+        eff_max_colors = 1
+
+    face_filaments: np.ndarray | None = None
+    palette: dict[int, str] | None = None
+
+    # 1. Interactive User Paint Override (Smart-Fill / Brush edits persisted in `{sid}_paint.json`)
+    if paint_override and isinstance(paint_override, dict) and len(final_tris) > 0:
+        ov_fils = paint_override.get("face_filaments")
+        ov_pal_raw = paint_override.get("palette") or {}
+        ov_pal = {int(k): normalize_hex(v) for k, v in ov_pal_raw.items() if str(k).isdigit()}
+        if ov_fils is not None and len(ov_fils) == len(final_tris) and ov_pal:
+            face_filaments = np.asarray(ov_fils, dtype=np.int32)
+            palette = ov_pal
+            notes.append(f"applied custom {len(set(face_filaments.tolist()))}-color MMU3 paint")
+
+    # 2. Real 3D Baked UV Texture -> Crisp Per-Triangle MMU3 Painting (ZERO boolean tooth damage!)
+    if face_filaments is None and eff_max_colors >= 2 and raw_face_rgb is not None and tex_pts is not None and tex_tris is not None:
+        dst_rgb, dist_mm = transfer_face_rgb_to_target(tex_pts, tex_tris, raw_face_rgb, final_pts, final_tris)
+        # Protect internal flexi cut walls (far from original skin) & hinge mechanisms on Slot 1 Body
+        prot_mask = hinge_mask | (dist_mm > 0.90)
+        face_filaments, palette, q_notes = quantize_face_colors_to_filaments(
+            final_pts,
+            final_tris,
+            dst_rgb,
+            max_colors=eff_max_colors,
+            protected_mask=prot_mask,
+            crease_deg=24.0,
         )
+        notes.append(f"quantized 3D baked texture into {len(palette)}-color MMU3 paint ({', '.join(q_notes)})")
+
+    # 3. Clean 2-Color Smooth Sweeping Belly (for untextured monochrome sculpts or explicit max_colors=2 —
+    #    ZERO blind 2D facial splattering, ZERO vertical rear cliff, hinges pure Slot 1!)
+    if face_filaments is None and eff_max_colors >= 2 and is_organic_sculpt:
+        pal_c = _extract_concept_palette(concept_image_path) if (concept_image_path is not None and concept_image_path.is_file()) else None
+        body_hx = (pal_c["body_hex"] if pal_c else None) or color or "#527292"
+        belly_hx = (pal_c["belly_hex"] if pal_c else None) or "#ece6d6"
+        face_filaments, palette = compute_clean_sweeping_belly_paint(
+            final_pts,
+            final_tris,
+            body_hex=body_hx,
+            belly_hex=belly_hx,
+            flexi_axis=prep.flexi_axis,
+            protected_mask=hinge_mask,
+        )
+        notes.append(f"painted clean 2-color sweeping belly ({palette[1]} body + {palette[2]} belly)")
+
+    primary_color = (palette.get(1) if palette else None) or color or "#b8c2cc"
+    parts = [
+        PreparedPart(
+            name=name,
+            points=final_pts,
+            tris=final_tris,
+            color=primary_color,
+            filament=filament or 1,
+            face_filaments=face_filaments,
+            palette=palette,
+        )
+    ]
+    wt = bool(mf.status() == m3d.Error.NoError and final_tm.is_watertight)
 
     return PreparedSculpt(
         parts=parts,
@@ -2287,11 +2365,64 @@ def _split_sharp_edges(points: np.ndarray, tris: np.ndarray, angle_deg: float = 
 
 
 def to_viewer_mesh(part: PreparedPart, bid: str) -> dict:
-    """Convert a `PreparedPart` into the `ShapeMesh`-compatible dict that `ViewportPane` renders in Three.js."""
+    """Convert a `PreparedPart` into the `ShapeMesh`-compatible dict that `ViewportPane` renders in Three.js.
+
+    When `part.face_filaments` and `part.palette` are present, computes seamless unified smooth normals
+    across the full crease-split mesh ONCE and emits one colored `FaceMesh` group per filament slot so
+    color boundaries have zero shading seams!
+    """
     bmin, bmax = part.bounds()
-    centroid = ((bmin + bmax) / 2.0).tolist()
+    centroid = [round(float(v), 4) for v in ((bmin + bmax) / 2.0)]
     pts, tris = _split_sharp_edges(part.points, part.tris, angle_deg=40.0)
+
+    # Precompute silky area-weighted smooth vertex normals on the unified crease-split mesh
+    tv0, tv1, tv2 = pts[tris[:, 0]], pts[tris[:, 1]], pts[tris[:, 2]]
+    fn_raw = np.cross(tv1 - tv0, tv2 - tv0)
+    vn = np.zeros_like(pts, dtype=np.float64)
+    np.add.at(vn, tris[:, 0], fn_raw)
+    np.add.at(vn, tris[:, 1], fn_raw)
+    np.add.at(vn, tris[:, 2], fn_raw)
+    vn_len = np.linalg.norm(vn, axis=1, keepdims=True)
+    vn = np.divide(vn, np.maximum(vn_len, 1e-12))
+
+    if part.face_filaments is not None and part.palette and len(part.face_filaments) == len(tris):
+        fils = np.asarray(part.face_filaments, dtype=np.int32)
+        used = sorted(set(fils.tolist()))
+        faces_out = []
+        face_names = []
+        for slot in used:
+            sub_t = tris[fils == slot]
+            if len(sub_t) == 0:
+                continue
+            uniq_v, inv = np.unique(sub_t.reshape(-1), return_inverse=True)
+            sub_pts = np.round(pts[uniq_v].astype(np.float64), 4).reshape(-1).tolist()
+            sub_nrm = np.round(vn[uniq_v].astype(np.float64), 4).reshape(-1).tolist()
+            sub_idx = inv.astype(np.int64).tolist()
+            hx = part.palette.get(int(slot)) or part.color or "#b8c2cc"
+            faces_out.append({
+                "id": int(slot),
+                "type": "mesh",
+                "area": 0.0,
+                "centroid": centroid,
+                "positions": sub_pts,
+                "normals": sub_nrm,
+                "indices": sub_idx,
+                "color": hx,
+            })
+            face_names.append(f"sculpt.slot_{slot}")
+        if faces_out:
+            return {
+                "name": bid,
+                "units": "mm",
+                "bbox_min": [round(float(v), 4) for v in bmin],
+                "bbox_max": [round(float(v), 4) for v in bmax],
+                "faces": faces_out,
+                "edges": [],
+                "face_names": face_names,
+            }
+
     pos = np.round(pts.astype(np.float64), 4).reshape(-1).tolist()
+    nrm = np.round(vn.astype(np.float64), 4).reshape(-1).tolist()
     idx = tris.astype(np.int64).reshape(-1).tolist()
     return {
         "name": bid,
@@ -2302,8 +2433,9 @@ def to_viewer_mesh(part: PreparedPart, bid: str) -> dict:
             "id": 0,
             "type": "mesh",
             "area": 0.0,
-            "centroid": [round(float(v), 4) for v in centroid],
+            "centroid": centroid,
             "positions": pos,
+            "normals": nrm,
             "indices": idx,
         }],
         "edges": [],
@@ -2313,7 +2445,13 @@ def to_viewer_mesh(part: PreparedPart, bid: str) -> dict:
 
 def export_prepared_meshes(parts: list[PreparedPart], printer: PrinterProfile, fmt: str, path: Path,
                            title: str = "", design: Design | None = None) -> Path:
-    """Export prepared organic meshes to STL or 3MF centred on the printer's bed."""
+    """Export prepared organic meshes to STL or 3MF centred on the printer's bed.
+
+    For face-painted MMU3/AMS organic sculpts (`PreparedPart.face_filaments`), exports ONE 100% watertight
+    solid with native PrusaSlicer / OrcaSlicer / Bambu Studio `slic3rpe:mmu_segmentation` triangle attributes!
+    """
+    from .mesh_paint import encode_mmu_segmentation
+
     if fmt == "step":
         raise MeshPrepError("Character Mode sculpted meshes export to 3MF or STL (STEP is for Engineer CAD solids)")
     if fmt not in ("stl", "3mf"):
@@ -2335,24 +2473,48 @@ def export_prepared_meshes(parts: list[PreparedPart], printer: PrinterProfile, f
         combined.export(str(path), file_type="stl")
         return path
 
-    # 3MF export: write clean multi-component 3MF with units=millimeter and optional color/filament info
+    # 3MF export: write clean multi-component or per-triangle MMU3-painted 3MF (units=millimeter)
     import xml.etree.ElementTree as ET
     import zipfile
 
     ns = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
     mat_ns = "http://schemas.microsoft.com/3dmanufacturing/material/2015/02"
+    slic3r_ns = "http://schemas.slic3r.org/3mf/2017/06"
+    has_mmu_paint = any(
+        p.face_filaments is not None and len(p.face_filaments) == len(p.tris) and int(np.max(p.face_filaments, initial=1)) > 1
+        for p in parts
+    )
     ET.register_namespace("", ns)
     ET.register_namespace("m", mat_ns)
+    if has_mmu_paint:
+        ET.register_namespace("slic3rpe", slic3r_ns)
+
     model = ET.Element(f"{{{ns}}}model", {"unit": "millimeter", "xml:lang": "en-US"})
     meta = ET.SubElement(model, f"{{{ns}}}metadata", {"name": "Title"})
     meta.text = title or "3D Print Assist Character"
+    if has_mmu_paint:
+        mm_meta = ET.SubElement(model, f"{{{ns}}}metadata", {"name": "slic3rpe:MmPaintingVersion"})
+        mm_meta.text = "1"
     res = ET.SubElement(model, f"{{{ns}}}resources")
     basemats = ET.SubElement(res, f"{{{mat_ns}}}basematerials", {"id": "1"})
+
+    # Collect palette entries (if painted) or per-part material colors
+    slot_colors: dict[int, str] = {}
     for i, p in enumerate(parts):
+        if p.palette:
+            for sl, hx in p.palette.items():
+                slot_colors[int(sl)] = hx
         col = (p.color or "#b8c2cc").upper()
         if len(col) == 7:
             col = col + "FF"
         ET.SubElement(basemats, f"{{{mat_ns}}}base", {"name": p.name or f"Part {i + 1}", "displaycolor": col})
+    if has_mmu_paint:
+        for sl in sorted(slot_colors):
+            if sl > len(parts):
+                col = slot_colors[sl].upper()
+                if len(col) == 7:
+                    col = col + "FF"
+                ET.SubElement(basemats, f"{{{mat_ns}}}base", {"name": f"Extruder {sl}", "displaycolor": col})
 
     part_ids: list[int] = []
     for i, p in enumerate(parts):
@@ -2370,12 +2532,17 @@ def export_prepared_meshes(parts: list[PreparedPart], printer: PrinterProfile, f
                 "x": f"{v[0]:.5f}", "y": f"{v[1]:.5f}", "z": f"{v[2]:.5f}",
             })
         tris_el = ET.SubElement(mesh_el, f"{{{ns}}}triangles")
-        for t in p.tris:
-            ET.SubElement(tris_el, f"{{{ns}}}triangle", {
-                "v1": str(int(t[0])), "v2": str(int(t[1])), "v3": str(int(t[2])),
-            })
+        fils = p.face_filaments if (p.face_filaments is not None and len(p.face_filaments) == len(p.tris)) else None
+        for ti, t in enumerate(p.tris):
+            attrs = {"v1": str(int(t[0])), "v2": str(int(t[1])), "v3": str(int(t[2]))}
+            if fils is not None:
+                seg_code = encode_mmu_segmentation(int(fils[ti]))
+                if seg_code:
+                    attrs[f"{{{slic3r_ns}}}mmu_segmentation"] = seg_code
+            ET.SubElement(tris_el, f"{{{ns}}}triangle", attrs)
 
     build = ET.SubElement(model, f"{{{ns}}}build")
+    asm_id = part_ids[0]
     if len(part_ids) > 1:
         asm_id = max(part_ids) + 1
         asm = ET.SubElement(res, f"{{{ns}}}object", {"id": str(asm_id), "type": "model", "name": title or "Character"})
@@ -2405,16 +2572,25 @@ def export_prepared_meshes(parts: list[PreparedPart], printer: PrinterProfile, f
         zf.writestr("[Content_Types].xml", content_types)
         zf.writestr("_rels/.rels", rels)
         zf.writestr("3D/3dmodel.model", xml_bytes)
-        # Write PrusaSlicer MMU3 / OrcaSlicer extruder metadata so multi-color bodies map to Extruder 1, 2, ... on open!
-        if len(part_ids) > 1:
+        # Write PrusaSlicer MMU3 / OrcaSlicer extruder metadata for multi-part or face-painted models
+        if len(part_ids) > 1 or has_mmu_paint:
             cfg = ET.Element("config")
-            asm_obj = ET.SubElement(cfg, "object", {"id": str(asm_id), "instances_count": "1"})
-            ET.SubElement(asm_obj, "metadata", {"type": "object", "key": "name", "value": title or "Character"})
-            for i, (pid, p) in enumerate(zip(part_ids, parts)):
-                ext_slot = str(p.filament if (p.filament and p.filament >= 1) else (i + 1))
-                p_obj = ET.SubElement(cfg, "object", {"id": str(pid), "instances_count": "1"})
-                ET.SubElement(p_obj, "metadata", {"type": "object", "key": "name", "value": p.name or f"Part {i + 1}"})
-                ET.SubElement(p_obj, "metadata", {"type": "object", "key": "extruder", "value": ext_slot})
+            if len(part_ids) > 1:
+                asm_obj = ET.SubElement(cfg, "object", {"id": str(asm_id), "instances_count": "1"})
+                ET.SubElement(asm_obj, "metadata", {"type": "object", "key": "name", "value": title or "Character"})
+                for i, (pid, p) in enumerate(zip(part_ids, parts)):
+                    ext_slot = str(p.filament if (p.filament and p.filament >= 1) else (i + 1))
+                    p_obj = ET.SubElement(cfg, "object", {"id": str(pid), "instances_count": "1"})
+                    ET.SubElement(p_obj, "metadata", {"type": "object", "key": "name", "value": p.name or f"Part {i + 1}"})
+                    ET.SubElement(p_obj, "metadata", {"type": "object", "key": "extruder", "value": ext_slot})
+            else:
+                p = parts[0]
+                p_obj = ET.SubElement(cfg, "object", {"id": str(part_ids[0]), "instances_count": "1"})
+                ET.SubElement(p_obj, "metadata", {"type": "object", "key": "name", "value": p.name or title or "Character"})
+                ET.SubElement(p_obj, "metadata", {"type": "object", "key": "extruder", "value": str(p.filament or 1)})
+                vol = ET.SubElement(p_obj, "volume", {"firstid": "0", "lastid": str(max(0, len(p.tris) - 1))})
+                ET.SubElement(vol, "metadata", {"type": "volume", "key": "name", "value": p.name or "Sculpt"})
+                ET.SubElement(vol, "metadata", {"type": "volume", "key": "extruder", "value": str(p.filament or 1)})
             zf.writestr("Metadata/Slic3r_PE_model.config", ET.tostring(cfg, encoding="utf-8", xml_declaration=True))
     return path
 
@@ -2638,6 +2814,13 @@ def _render_single_mesh_panel(
         spec = (np.power(kd, 22.0) * 0.12).astype(np.float32)
 
         tri_cols = np.tile(base_c, (len(f_keep), 1))
+        if p.face_filaments is not None and p.palette and len(p.face_filaments) == len(s_tris):
+            keep_fils = np.asarray(p.face_filaments, dtype=np.int32)[keep]
+            for sl, hx in p.palette.items():
+                hxs = (hx or "").lstrip("#")
+                if len(hxs) == 6:
+                    c_sl = np.array([int(hxs[j:j + 2], 16) for j in (0, 2, 4)], dtype=np.float32) / 255.0
+                    tri_cols[keep_fils == int(sl)] = c_sl
         if highlight_bed:
             z_max_t = T[..., 2].max(axis=1) - global_z0
             on_bed = (z_max_t <= 0.30) & (fn_keep[:, 2] < -0.65)

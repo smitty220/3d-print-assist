@@ -296,6 +296,114 @@ select, input, textarea { background: var(--bg); border: 1px solid var(--line); 
 .vtools button { border: 0; background: transparent; padding: 5px 9px; cursor: pointer; font-size: 12px; color: var(--fg-2); }
 .vtools button + button { border-left: 1px solid var(--line); }
 .vtools button[aria-pressed='true'] { background: var(--sel); color: var(--fg); }
+
+/* Character Mode 3D Smart-Fill & Brush Paint toolbar */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.paint-bar {
+  position: absolute;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  max-width: calc(100% - 24px);
+  background: #1b1f26f0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  z-index: 4;
+  backdrop-filter: blur(8px);
+}
+.paint-grp { display: flex; align-items: center; gap: 4px; }
+.paint-bar button {
+  min-inline-size: 28px;
+  min-block-size: 28px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.paint-bar button:focus-visible,
+.paint-slider:focus-visible,
+.color-pick input:focus-visible {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+}
+.paint-bar button[aria-pressed='true'] {
+  background: var(--sel);
+  color: var(--fg);
+  border-color: var(--accent, #58a6ff);
+}
+.paint-bar button[aria-disabled='true'] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+@media (hover: hover) {
+  .paint-bar button:not([aria-disabled='true']):hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--fg);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .paint-bar button { transition: background 0.14s ease, border-color 0.14s ease, transform 0.12s ease; }
+}
+.paint-sep {
+  inline-size: 1px;
+  block-size: 20px;
+  border-inline-start: 1px solid var(--line);
+}
+.paint-bar .swatch {
+  min-inline-size: 26px;
+  min-block-size: 26px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--sw, #527292);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  font-weight: 700;
+  font-size: 11px;
+  border: 2px solid rgba(255, 255, 255, 0.22);
+}
+.paint-bar .swatch[aria-pressed='true'] {
+  background: var(--sw, #527292);
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px var(--accent, #58a6ff);
+}
+.color-pick {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.color-pick input[type='color'] {
+  inline-size: 26px;
+  block-size: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.paint-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.paint-slider {
+  inline-size: 84px;
+  accent-color: var(--accent, #58a6ff);
+  cursor: pointer;
+}
+@media (forced-colors: active) {
+  .paint-bar button[aria-pressed='true'] { outline: 2px solid Highlight; }
+}
 .banner { position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 8px; background: #1e2126f2; border: 1px solid var(--stale); color: var(--stale); white-space: nowrap; z-index: 3; max-width: calc(100% - 40px); }
 .banner span { color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 .banner.bad { border-color: var(--bad); color: var(--bad); }

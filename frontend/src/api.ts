@@ -11,7 +11,9 @@ export interface FaceMesh {
   area: number
   centroid: Vec3
   positions: number[]
+  normals?: number[]
   indices: number[]
+  color?: string | null
   normal: Vec3 | null
   axis_origin?: Vec3 | null
   axis_dir?: Vec3 | null
@@ -147,6 +149,17 @@ export interface SculptPrep {
   max_colors: number
 }
 
+export interface SculptPaintState {
+  id: string
+  name: string
+  triangles: number
+  palette: Record<string, string>
+  slot_counts: Record<string, number>
+  can_undo: boolean
+  has_custom_paint: boolean
+  painted_triangles?: number
+}
+
 export interface SculptMesh {
   id: string
   name: string
@@ -173,6 +186,8 @@ export interface MlStatus {
   ready: boolean
   painter_ready: boolean
   sculptor_ready: boolean
+  tex_painter_ready?: boolean
+  blender_ready?: boolean
   engine_dir: string
   disk_gb: number
   installing: boolean
@@ -522,6 +537,19 @@ export const api = {
   updateSculptPrep: (id: string, patch: Partial<SculptPrep> & { name?: string; color?: string | null; filament?: number | null }) =>
     send<{ sculpt: SculptMesh; tree: Tree }>('POST', `/sculpts/${encodeURIComponent(id)}/prep`, patch),
   deleteSculpt: (id: string) => send<{ deleted: string; tree: Tree }>('DELETE', `/sculpts/${encodeURIComponent(id)}`),
+  sculptPaint: (id: string) => get<SculptPaintState>(`/sculpts/${encodeURIComponent(id)}/paint`),
+  sculptPaintStroke: (
+    id: string,
+    body: { mode: 'smart_fill' | 'brush' | 'bucket'; hit_point: Vec3; filament: number; crease_deg?: number; radius_mm?: number },
+  ) => send<{ paint: SculptPaintState; part: PartState }>('POST', `/sculpts/${encodeURIComponent(id)}/paint/stroke`, body),
+  sculptPaintPalette: (id: string, palette: Record<string, string>) =>
+    send<{ paint: SculptPaintState; part: PartState }>('POST', `/sculpts/${encodeURIComponent(id)}/paint/palette`, { palette }),
+  sculptPaintUndo: (id: string) =>
+    send<{ paint: SculptPaintState; part: PartState }>('POST', `/sculpts/${encodeURIComponent(id)}/paint/undo`),
+  sculptPaintReset: (id: string) =>
+    send<{ paint: SculptPaintState; part: PartState }>('POST', `/sculpts/${encodeURIComponent(id)}/paint/reset`),
+  sculptPaintAi: (id: string) =>
+    send<{ status?: string; sculpt?: SculptMesh; tree?: Tree; error?: string }>('POST', `/sculpts/${encodeURIComponent(id)}/paint/ai?wait_s=0`),
   images: () => get<ImageInfo[]>('/images'),
   imageUrl: (id: string) => `/api/images/${encodeURIComponent(id)}`,
   uploadImage: (file: File, note = '') => {
