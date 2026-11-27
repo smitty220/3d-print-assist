@@ -1274,6 +1274,7 @@ class CharacterDesignIn(BaseModel):
 
 class CharacterSculptIn(BaseModel):
     concept_id: str = ""
+    replace_sculpt_id: str = ""
     name: str = ""
     prompt: str = ""
     reference_photos: list[str] = []
@@ -1601,6 +1602,7 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         sm = w.add_sculpt(
             actor=x_actor, name=sculpt_name or "Sculpt", raw_bytes=raw_glb, ext=".glb",
             concept_id=cid, prep=prep, color=body.color,
+            replace_id=body.replace_sculpt_id.strip(),
         )
         return {"sculpt": sm.model_dump(), "tree": w.tree()}
 

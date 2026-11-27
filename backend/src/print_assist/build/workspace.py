@@ -389,6 +389,7 @@ class Workspace:
                         p, sm.prep, name=sm.name, color=color, filament=sm.filament,
                         cad_cuts=cuts, cad_unions=unions,
                         concept_image_path=c_img, multi_extruder=multi_ex,
+                        printer_slots=self.project.printer.slots,
                     )
                 except MeshPrepError:
                     continue
@@ -439,6 +440,7 @@ class Workspace:
                 raw_path, use_prep, name=name or sid, color=color, filament=filament,
                 cad_cuts=cuts, cad_unions=unions,
                 concept_image_path=c_img, multi_extruder=multi_ex,
+                printer_slots=self.project.printer.slots,
             )
             sm = SculptMesh(
                 id=sid,
@@ -499,6 +501,7 @@ class Workspace:
                 raw_path, new_prep, name=sm.name, color=color, filament=sm.filament,
                 cad_cuts=cuts, cad_unions=unions,
                 concept_image_path=c_img, multi_extruder=multi_ex,
+                printer_slots=self.project.printer.slots,
             )
             sm.prep = new_prep
             sm.watertight = prepared.watertight

@@ -214,13 +214,19 @@ def _ensure_outward_winding(bm: bmesh.types.BMesh) -> None:
 
 
 def pa_repair_mesh(obj: bpy.types.Object, merge_dist: float = 0.0) -> bpy.types.Object:
-    """Triangulate cleanly and enforce strictly positive outward winding per shell without flipping concave pockets."""
+    """Triangulate cleanly, prune microscopic dangling boolean flaps, and enforce outward winding per shell."""
     pa_apply_all_modifiers(obj)
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     if merge_dist > 0.0:
         bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=merge_dist)
     bmesh.ops.triangulate(bm, faces=bm.faces)
+    # Prune ONLY dangling flap triangles (>= 2 boundary edges); never delete valid 2-manifold colinear bridge faces!
+    for _ in range(4):
+        flaps = [f for f in bm.faces if sum(1 for e in f.edges if len(e.link_faces) == 1) >= 2]
+        if not flaps:
+            break
+        bmesh.ops.delete(bm, geom=flaps, context="FACES")
     _ensure_outward_winding(bm)
     bm.to_mesh(obj.data)
     bm.free()
@@ -327,6 +333,7 @@ def pa_loft_profile(
                     bm.faces.new((mid_r[k], tip, mid_r[kn]))
 
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
@@ -398,6 +405,7 @@ def pa_sculpt_fin_strip(
         bm.faces.new((rings[-1][k], v_tip, rings[-1][kn]))
 
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
@@ -484,6 +492,7 @@ def pa_cone(
     mat = Matrix.Translation(p0) @ rot @ Matrix.Translation((0.0, 0.0, length * 0.5))
     bmesh.ops.transform(bm, matrix=mat, verts=bm.verts)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
@@ -540,6 +549,7 @@ def pa_cylinder(
     )
     bmesh.ops.transform(bm, matrix=Matrix.Translation(Vector(center)), verts=bm.verts)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()
@@ -563,6 +573,7 @@ def pa_extrude_polygon_z(
         j = (i + 1) % n
         bm.faces.new((bot[i], bot[j], top[j], top[i]))
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
     mesh = bpy.data.meshes.new(name)
     bm.to_mesh(mesh)
     bm.free()

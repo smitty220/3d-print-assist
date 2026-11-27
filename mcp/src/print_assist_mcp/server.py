@@ -306,6 +306,7 @@ def propose_character_design(
 @mcp.tool()
 def sculpt_character(
     concept_id: str = "",
+    replace_sculpt_id: str = "",
     name: str = "",
     prompt: str = "",
     reference_photos: list[str] | None = None,
@@ -330,24 +331,25 @@ def sculpt_character(
     multicolor: bool = False,
     color_mode: str = "auto",
 ) -> str:
-    """Character Mode 3D Sculptor + Hybrid Print Engineering: mold a watertight, 3D-printable mesh from an approved
-    Character Design File (`concept_id`, e.g. "K1"), or directly from `prompt`/`reference_photos` in Direct Build mode.
-    Automatically repairs to a closed manifold solid, scales to `target_height_mm`, flattens the bottom, and applies
-    exact-mm CAD mechanics on top:
-    - Fin-Safe Print-in-Place Flexi Articulation: set `flexi_segments` (e.g. 5). The 3D Anatomy-Aware Solver
-      automatically detects pectoral fins, dorsal fins, limbs, and tail waists so cuts are placed strictly in fin-free
-      intervals (never slicing fins/limbs in half, and seating the belly/tail flat on Z=0 with zero tail-fin knobs).
-      Optionally pass `flexi_cuts_pct` (e.g. `[35.5, 60.1, 74.9]`) to specify exact cut percentages along the spine.
-    - Hybrid CAD + Clay Booleans: pass `cut_bodies` (e.g. `["B1"]`) or `union_bodies` (e.g. `["B2"]`) to boolean-subtract
-      or boolean-union exact OpenCascade parametric CAD bodies built with `apply_changes` directly into the sculpt!
-    - Functional hardware: `magnet_hole` ('none'|'bottom'|'back'), `hollow_cavity` (planter/cup), `base_style`
-      ('none'|'round'|'oval'|'square'), `keychain_loop`.
+    """PREFERRED Character Mode 3D Sculptor + Automatic Multi-Color MMU3 Inlay Projection + Flexi-Factory Engine:
+    molds an authentic Pixar/organic watertight 3D mesh directly from an approved Character Design File (`concept_id`,
+    e.g. "K8" or "K9") while AUTOMATICALLY combining ALL THREE:
+    1. Authentic Pixar 3D character sculpting (`Hunyuan3D-2mv`, smooth skin, zero voxels) matching the approved concept's
+       real cheeks, brow, smile, eyes, teeth, and silhouette.
+    2. Automatic up-to-5-color Concept-to-3D MMU3/AMS Solid Inlay Projection (`color_mode="auto"|"multicolor"`):
+       aligns the 3D sculpt to `concept_id`'s clean image and extrudes crisp watertight inlaid solids for Body, Belly,
+       Eyes, Teeth/Highlights, and Mouth automatically in < 1 second!
+    3. Fin-Safe Print-in-Place Flexi-Factory Articulation (`flexi_segments=5` or `6`): detects pectoral/dorsal/tail
+       fins, cuts wide ±24° swimming V-gaps with captive vertical Z-axis pins, and seats 100% of segments flat on Z=0!
+    Pass `replace_sculpt_id="M1"` when rebuilding an existing sculpt in place. Supports hybrid OpenCascade CAD booleans
+    (`cut_bodies`, `union_bodies`), `magnet_hole`, `hollow_cavity`, `base_style`, and `keychain_loop`.
     If this returns `status: "running"`, call `wait_for_character_job(wait_s=40)` until `status == "done"`."""
     out = _call(
         "POST",
         "/api/character/sculpt",
         json={
             "concept_id": concept_id,
+            "replace_sculpt_id": replace_sculpt_id,
             "name": name,
             "prompt": prompt,
             "reference_photos": reference_photos or [],

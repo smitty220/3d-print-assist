@@ -189,7 +189,7 @@ def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict
 def sculpt_mesh_from_image(
     image_path: Path,
     views: list[str] | None = None,
-    steps: int = 25,
+    steps: int = 20,
     on_progress: Callable[[str], None] | None = None,
     root: Path | None = None,
 ) -> bytes:
@@ -222,12 +222,16 @@ def sculpt_mesh_from_image(
                 "views": view_files,
                 "out_path": str(out_glb),
                 "steps": max(10, min(int(steps), 50)),
-                "octree_resolution": 288 if hw.tier == "high" else (224 if hw.tier == "balanced" else 160),
-                "max_faces": 65000 if hw.tier == "high" else 45000,
+                "octree_resolution": 224 if hw.tier == "high" else (192 if hw.tier == "balanced" else 160),
+                "max_faces": 52000 if hw.tier == "high" else 40000,
             }
             env = os.environ.copy()
             env["HY3DGEN_MODELS"] = str(r / "models" / "sculptor")
             env.setdefault("U2NET_HOME", str(r / "models" / "rembg"))
+            cached_w = r / "models" / "sculptor" / hw.sculptor_repo / hw.sculptor_subfolder / "model.fp16.safetensors"
+            if cached_w.is_file():
+                # Avoid stalling on Hugging Face hub TLS/version checks when weights are already local!
+                env.setdefault("HF_HUB_OFFLINE", "1")
             popen_kw: dict = {
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,

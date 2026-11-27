@@ -729,4 +729,64 @@ pa_export_glb(OUT_GLB, baked_flexi=True)
     assert len(d2["parts"]) == 1
 
 
+def test_concept_to_3d_multicolor_inlay_projection_and_dangling_flap_heal(tmp_path: Path):
+    """Verify Concept-to-3D palette extraction + camera alignment + watertight multi-color solid inlay projection,
+    AND verify surgical dangling-flap healing repairs micro-flaps without triggering Minecraft voxel remeshing."""
+    import numpy as np
+    from PIL import ImageDraw
+    from print_assist.geometry.color_project import extract_concept_color_map, project_concept_colors_to_manifolds
+    from print_assist.geometry.mesh_prep import repair_to_manifold
+
+    # 1. Synthetic 5-color studio concept (Slate Blue body, Cream belly, Black eye, Pink mouth, White tooth/highlight)
+    im = Image.new("RGB", (512, 320), (254, 254, 253))
+    dr = ImageDraw.Draw(im)
+    dr.ellipse([60, 70, 450, 240], fill=(88, 114, 136))          # Slate Blue body
+    dr.chord([65, 110, 445, 242], start=5, end=175, fill=(228, 223, 206))  # Warm Cream belly
+    dr.ellipse([130, 120, 175, 165], fill=(20, 18, 18))          # Glossy Black eye
+    dr.ellipse([142, 130, 156, 144], fill=(248, 248, 250))       # Bright White eye catch-light
+    dr.chord([85, 162, 175, 208], start=10, end=170, fill=(195, 58, 88))   # Coral Pink smiling mouth
+    dr.polygon([(112, 174), (124, 174), (118, 190)], fill=(248, 248, 250)) # Crisp White tooth
+    concept_p = tmp_path / "pixar_concept.png"
+    im.save(concept_p)
+
+    cmap = extract_concept_color_map(concept_p, max_colors=5)
+    assert cmap is not None
+    roles = {p["role"] for p in cmap["palette"]}
+    assert {"primary", "secondary", "dark", "chromatic", "white"} <= roles, f"Expected all 5 roles, got {cmap['palette']}"
+
+    # 2. Project those 5 colors onto a matching elongated smooth ellipsoid solid!
+    ell = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
+    ell.apply_scale([65.0, 22.0, 24.0])
+    ell.apply_translation([0.0, 0.0, 24.0])
+    mf, notes = repair_to_manifold(ell)
+    assert not notes
+    proj = project_concept_colors_to_manifolds(mf, concept_p, max_colors=5, inlay_depth_mm=1.6)
+    assert proj is not None
+    p_metas, dbg = proj
+    assert dbg["iou"] >= 0.70
+    assert len(p_metas) >= 4, f"Expected >= 4 projected solid MMU3 parts, got {dbg}"
+    assert all(not pm["manifold"].is_empty() for pm in p_metas)
+
+    # 3. Verify surgical dangling-flap healing repairs a mesh with stray 2-open-edge flaps WITHOUT voxelizing!
+    v_ok = np.asarray(ell.vertices, dtype=np.float64)
+    f_ok = np.asarray(ell.faces, dtype=np.int64)
+    # Attach 2 microscopic hanging flap triangles onto valid edge (f_ok[0, 0], f_ok[0, 1])
+    extra_v = np.array([
+        v_ok[f_ok[0, 0]] + np.array([0.01, 0.02, 0.01]),
+        v_ok[f_ok[1, 0]] + np.array([0.01, -0.02, 0.01]),
+    ])
+    v_bad = np.vstack([v_ok, extra_v])
+    f_bad = np.vstack([
+        f_ok,
+        [[f_ok[0, 0], f_ok[0, 1], len(v_ok)]],
+        [[f_ok[1, 0], f_ok[1, 1], len(v_ok) + 1]],
+    ])
+    bad_tm = trimesh.Trimesh(vertices=v_bad, faces=f_bad, process=False)
+    mf_healed, heal_notes = repair_to_manifold(bad_tm)
+    assert not mf_healed.is_empty()
+    assert not any("voxel remesh" in n for n in heal_notes), f"Should heal without voxel remesh, got {heal_notes}"
+    assert mf_healed.num_tri() == len(f_ok)
+
+
+
 

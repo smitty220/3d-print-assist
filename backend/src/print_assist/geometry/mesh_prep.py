@@ -241,6 +241,94 @@ def _drop_tiny_debris(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     return trimesh.util.concatenate(kept) if len(kept) > 1 else kept[0]
 
 
+def _heal_tiny_defects(mesh: trimesh.Trimesh) -> m3d.Manifold | None:
+    """Surgically repair a high-res mesh that has only a tiny handful of stray non-manifold edges or micro-holes
+    (e.g. 3-30 edges from a boolean/glTF rounding drop) WITHOUT destroying smooth surfaces via voxel remesh."""
+    import networkx as nx
+
+    v = np.asarray(mesh.vertices, dtype=np.float64)
+    f = np.asarray(mesh.faces, dtype=np.int64)
+    if len(f) < 20:
+        return None
+    # 1. Iteratively prune dangling flap triangles (>= 2 open edges), zero-area slivers, and non-manifold (>2-face) flaps
+    for _ in range(8):
+        if len(f) < 12:
+            return None
+        v0, v1, v2 = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+        area2 = np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+        e0 = np.sort(f[:, [0, 1]], axis=1)
+        e1 = np.sort(f[:, [1, 2]], axis=1)
+        e2 = np.sort(f[:, [2, 0]], axis=1)
+        all_e = np.vstack((e0, e1, e2))
+        n_f = len(f)
+        keys = all_e[:, 0] * len(v) + all_e[:, 1]
+        u, cnt = np.unique(keys, return_counts=True)
+        bad_f: set[int] = set()
+        # Prune dangling ear/flap triangles (any triangle with >= 2 boundary edges is a loose hanging fin!)
+        open_set = set(u[cnt == 1].tolist())
+        if open_set:
+            is_open = np.isin(keys, list(open_set)).reshape(3, n_f)
+            flap_idx = np.nonzero(is_open.sum(axis=0) >= 2)[0]
+            bad_f.update(flap_idx.tolist())
+        # Prune smallest-area sliver on any non-manifold (> 2 faces) edge (never delete valid count==2 triangles!)
+        nm_keys = u[cnt > 2]
+        for k_nm in nm_keys.tolist():
+            hits = np.nonzero(keys == k_nm)[0] % n_f
+            if len(hits) > 2:
+                order = hits[np.argsort(area2[hits])]
+                for h in order[:-2]:
+                    bad_f.add(int(h))
+        if not bad_f:
+            break
+        mask = np.ones(n_f, dtype=bool)
+        mask[list(bad_f)] = False
+        f = f[mask]
+
+    # 2. Find remaining open boundary edges (count == 1) and fan-cap small closed loops (< 48 edges)
+    e0 = f[:, [0, 1]]
+    e1 = f[:, [1, 2]]
+    e2 = f[:, [2, 0]]
+    directed = np.vstack((e0, e1, e2))
+    undir = np.sort(directed, axis=1)
+    keys = undir[:, 0] * len(v) + undir[:, 1]
+    u, cnt = np.unique(keys, return_counts=True)
+    open_keys = set(u[cnt == 1].tolist())
+    if len(open_keys) > max(120, int(len(f) * 0.015)):
+        return None  # genuinely open mesh, let fallback handle it
+
+    new_v = list(v)
+    new_f = list(f)
+    if open_keys:
+        # Build directed boundary graph reversed (so cap faces match outward winding!)
+        g = nx.DiGraph()
+        for a, b in directed:
+            k = min(int(a), int(b)) * len(v) + max(int(a), int(b))
+            if k in open_keys:
+                g.add_edge(int(b), int(a))
+        for cycle in list(nx.simple_cycles(g)):
+            if len(cycle) < 3 or len(cycle) > 48:
+                continue
+            if len(cycle) == 3:
+                new_f.append(np.array([cycle[0], cycle[1], cycle[2]], dtype=np.int64))
+            else:
+                # Fan-cap around loop centroid
+                c_idx = len(new_v)
+                c_pt = np.mean(v[cycle], axis=0)
+                new_v.append(c_pt)
+                for i in range(len(cycle)):
+                    new_f.append(np.array([cycle[i], cycle[(i + 1) % len(cycle)], c_idx], dtype=np.int64))
+
+    cand_tm = trimesh.Trimesh(vertices=np.asarray(new_v, dtype=np.float64), faces=np.asarray(new_f, dtype=np.int64), process=False)
+    cand_tm.remove_unreferenced_vertices()
+    mf = _trimesh_to_manifold(cand_tm)
+    if mf is not None:
+        if float(mf.volume()) < 0:
+            cand_tm.invert()
+            mf = _trimesh_to_manifold(cand_tm)
+        return mf
+    return None
+
+
 def repair_to_manifold(mesh: trimesh.Trimesh, max_voxel_res: int = 128) -> tuple[m3d.Manifold, list[str]]:
     """Repair an arbitrary triangle mesh into a guaranteed watertight `manifold3d.Manifold`."""
     notes: list[str] = []
@@ -257,6 +345,11 @@ def repair_to_manifold(mesh: trimesh.Trimesh, max_voxel_res: int = 128) -> tuple
                 return direct_inv, notes
         else:
             return direct, notes
+
+    # Surgical micro-defect repair: heals 1..120 open/non-manifold edges WITHOUT voxelizing smooth SubSurf skin!
+    healed = _heal_tiny_defects(mesh)
+    if healed is not None:
+        return healed, notes
 
     work = mesh.copy()
     work.merge_vertices()
@@ -279,6 +372,10 @@ def repair_to_manifold(mesh: trimesh.Trimesh, max_voxel_res: int = 128) -> tuple
     mf = _trimesh_to_manifold(work)
     if mf is not None:
         return mf, notes
+
+    healed2 = _heal_tiny_defects(work)
+    if healed2 is not None:
+        return healed2, notes
 
     # Fallback: voxel solid remesh guarantees a closed manifold solid even for open/self-intersecting AI meshes.
     extents = np.asarray(work.extents, dtype=np.float64)
@@ -1059,12 +1156,12 @@ def _seat_single_segment_organic(seg: m3d.Manifold, ceiling_z: float) -> m3d.Man
     nz = np.divide(cross[:, 2], np.maximum(dbl_a, 1e-12))
     tz_max = np.maximum(np.maximum(tv0[:, 2], tv1[:, 2]), tv2[:, 2])
     cur_bed_area = float((0.5 * dbl_a[(tz_max <= 0.28) & (nz < -0.65)]).sum())
-    if z_min <= 0.14 and cur_bed_area >= 6.5:
+    if z_min <= 0.14 and cur_bed_area >= 12.5:
         return seg
 
-    eff_ceil = max(ceiling_z, z_min + 4.0)
-    span = max(2.0, eff_ceil - z_min)
-    extra_pad = 1.45 if cur_bed_area < 4.5 else (0.75 if cur_bed_area < 6.5 else 0.35)
+    eff_ceil = max(ceiling_z, z_min + 4.2)
+    span = max(2.2, eff_ceil - z_min)
+    extra_pad = 1.60 if cur_bed_area < 5.0 else (0.95 if cur_bed_area < 12.5 else 0.35)
     u = np.clip((v[:, 2] - z_min) / span, 0.0, 1.0)
     below = v[:, 2] < eff_ceil
     v[:, 2] = np.where(below, v[:, 2] - ((1.0 - u) ** 2) * (max(0.0, z_min) + extra_pad), v[:, 2])
@@ -1658,6 +1755,7 @@ def prepare_print_mesh(
     cad_unions: list[tuple[np.ndarray, np.ndarray]] | None = None,
     concept_image_path: Path | None = None,
     multi_extruder: bool = False,
+    printer_slots: int = 1,
 ) -> PreparedSculpt:
     """Load, repair, orient, scale, flatten bottom, apply hybrid CAD booleans, and cut flexi/hardware finishing."""
     raw_parts, meta = load_raw_parts(raw_path)
@@ -1683,6 +1781,7 @@ def prepare_print_mesh(
         mf = mf.scale((s, s, s))
 
     mf = _place_on_bed(mf)
+    mf_unmodified_for_color = mf
     flexi_baked = bool(meta.get("flexi_baked"))
     has_flexi = (int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)) and not flexi_baked
 
@@ -1691,6 +1790,8 @@ def prepare_print_mesh(
     if has_flexi:
         mf, stream_notes = _streamline_flexi_proportions(mf, prep)
         notes.extend(stream_notes)
+        if stream_notes:
+            mf_unmodified_for_color = mf
         mf, seat_notes = _seat_flexi_on_bed(mf, prep)
         notes.extend(seat_notes)
 
@@ -1702,6 +1803,7 @@ def prepare_print_mesh(
         bb_cur = mf.bounding_box()
         h_cur = float(bb_cur[5] - bb_cur[2])
         eff_flat = max(eff_flat, min(1.05, h_cur * 0.018))
+    applied_bottom_cut = 0.0
     if eff_flat > 0:
         bb = mf.bounding_box()
         cut = min(eff_flat, max(0.0, (bb[5] - bb[2]) * 0.15))
@@ -1715,6 +1817,7 @@ def prepare_print_mesh(
             trimmed = mf ^ keep_box
             if not trimmed.is_empty() and trimmed.status() == m3d.Error.NoError:
                 mf = _place_on_bed(trimmed)
+                applied_bottom_cut = cut
                 notes.append(f"flattened bottom by {cut:.2f} mm")
 
     # Optional display base / plinth (skip if flexi articulation is enabled so joints remain free on bed)
@@ -1781,12 +1884,48 @@ def prepare_print_mesh(
     )
     parts: list[PreparedPart] = []
     if want_multicolor:
-        mc_parts, mc_notes = _split_multicolor_parts(
-            mf, prep, concept_image_path, base_name=name, fallback_color=color, fallback_filament=filament,
-        )
-        if mc_parts:
-            parts = mc_parts
-            notes.extend(mc_notes)
+        # 1. Primary path: Silhouette-aligned up-to-5-color Concept-to-3D MMU3/AMS inlay projection
+        #    (paints Body, Belly, Eyes, Teeth, Mouth directly from the approved Pixar concept onto the 3D sculpt!)
+        if concept_image_path is not None and concept_image_path.is_file() and is_organic_sculpt:
+            from .color_project import project_concept_colors_to_manifolds
+
+            eff_slots = max(2, min(5, int(printer_slots) if int(printer_slots) > 1 else 5))
+            req_colors = max(int(prep.max_colors), eff_slots) if prep.color_mode in ("auto", "multicolor") else int(prep.max_colors)
+            align_mf = mf_unmodified_for_color.translate((0.0, 0.0, -applied_bottom_cut)) if applied_bottom_cut > 0 else mf_unmodified_for_color
+            try:
+                proj = project_concept_colors_to_manifolds(
+                    align_mf,
+                    concept_image_path,
+                    final_mf=mf,
+                    max_colors=max(2, min(5, req_colors)),
+                    inlay_depth_mm=1.6,
+                )
+            except Exception:  # noqa: BLE001
+                proj = None
+            if proj is not None:
+                p_metas, p_dbg = proj
+                for pm in p_metas:
+                    ptm = _manifold_to_trimesh(pm["manifold"])
+                    parts.append(PreparedPart(
+                        name=f"{name} · {pm['name']}",
+                        points=np.asarray(ptm.vertices, dtype=np.float64),
+                        tris=np.asarray(ptm.faces, dtype=np.int32),
+                        color=pm["hex"],
+                        filament=pm["filament"],
+                    ))
+                notes.append(
+                    f"projected {len(parts)}-color MMU3/AMS inlays from concept (IoU={p_dbg['iou']:.2f}: "
+                    + ", ".join(f"{n} {hx}" for n, hx in p_dbg["colors"]) + ")"
+                )
+
+        # 2. Fallback: 2-color ventral countershading split when no concept projection matched
+        if not parts:
+            mc_parts, mc_notes = _split_multicolor_parts(
+                mf, prep, concept_image_path, base_name=name, fallback_color=color, fallback_filament=filament,
+            )
+            if mc_parts:
+                parts = mc_parts
+                notes.extend(mc_notes)
 
     if not parts:
         final_tm = _manifold_to_trimesh(mf)
