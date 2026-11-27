@@ -53,11 +53,23 @@ from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
 rembg = BackgroundRemover()
 views_in = cfg["views"]
+# On Apple Silicon MPS, multi-view DiT cross-attention scales quadratically (23+ GB wired memory stall!).
+# Pick the single richest 3/4 hero panel on MPS so sculpting stays fast (~1-2 min) and sharp, while
+# `color_project.py` still uses ALL panels of the turnaround sheet for 5-color MMU3 inlay projection!
+if device == "mps" and len(views_in) > 1:
+    best_k = "left" if "left" in views_in else ("front" if "front" in views_in else next(iter(views_in)))
+    views_in = {"front": views_in[best_k]}
+
 prepared = {}
 for k, vpath in views_in.items():
     im = Image.open(vpath).convert("RGBA")
     im = rembg(im)
     prepared[k] = im
+del rembg
+import gc
+gc.collect()
+if device == "mps" and hasattr(torch, "mps"):
+    torch.mps.empty_cache()
 
 emit("Sculpting 3D model", 45, "Building 3D geometry…")
 dtype = torch.float32 if device == "cpu" else torch.float16
@@ -72,14 +84,15 @@ pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
 
 is_mv = "mv" in cfg["subfolder"]
 inp = prepared if is_mv else (prepared.get("front") or next(iter(prepared.values())))
-steps = int(cfg.get("steps", 30))
-mesh = pipe(
-    image=inp,
-    num_inference_steps=steps,
-    octree_resolution=int(cfg.get("octree_resolution", 256)),
-    num_chunks=20000,
-    output_type="trimesh",
-)[0]
+steps = int(cfg.get("steps", 18))
+with torch.inference_mode():
+    mesh = pipe(
+        image=inp,
+        num_inference_steps=steps,
+        octree_resolution=int(cfg.get("octree_resolution", 200)),
+        num_chunks=int(cfg.get("num_chunks", 12000)),
+        output_type="trimesh",
+    )[0]
 
 out_path = Path(cfg["out_path"])
 out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,7 +202,7 @@ def _split_turnaround(image_path: Path, out_dir: Path, views: list[str]) -> dict
 def sculpt_mesh_from_image(
     image_path: Path,
     views: list[str] | None = None,
-    steps: int = 20,
+    steps: int = 16,
     on_progress: Callable[[str], None] | None = None,
     root: Path | None = None,
 ) -> bytes:
@@ -222,8 +235,12 @@ def sculpt_mesh_from_image(
                 "views": view_files,
                 "out_path": str(out_glb),
                 "steps": max(10, min(int(steps), 50)),
-                "octree_resolution": 224 if hw.tier == "high" else (192 if hw.tier == "balanced" else 160),
-                "max_faces": 52000 if hw.tier == "high" else 40000,
+                "octree_resolution": (
+                    192 if hw.accelerator == "mps"
+                    else (224 if hw.tier == "high" else (192 if hw.tier == "balanced" else 160))
+                ),
+                "num_chunks": 10000 if hw.accelerator == "mps" else 20000,
+                "max_faces": 50000 if hw.tier == "high" else 40000,
             }
             env = os.environ.copy()
             env["HY3DGEN_MODELS"] = str(r / "models" / "sculptor")

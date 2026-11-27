@@ -787,6 +787,33 @@ def test_concept_to_3d_multicolor_inlay_projection_and_dangling_flap_heal(tmp_pa
     assert not any("voxel remesh" in n for n in heal_notes), f"Should heal without voxel remesh, got {heal_notes}"
     assert mf_healed.num_tri() == len(f_ok)
 
+    # 4. Verify 3-panel horizontal turnaround sheet (`[Front | 3/4 Side | Back]`) splits cleanly for multi-view color projection
+    strip = Image.new("RGB", (960, 320), (254, 254, 253))
+    sdr = ImageDraw.Draw(strip)
+    # Panel 0 (Front): blue head + black eyes + red mouth + white tooth
+    sdr.ellipse([60, 60, 260, 260], fill=(82, 108, 128))
+    sdr.chord([70, 150, 250, 262], start=0, end=180, fill=(230, 224, 206))
+    sdr.ellipse([100, 120, 134, 154], fill=(18, 18, 20))
+    sdr.ellipse([186, 120, 220, 154], fill=(18, 18, 20))
+    sdr.chord([110, 175, 210, 225], start=0, end=180, fill=(188, 38, 42))
+    sdr.polygon([(152, 185), (168, 185), (160, 205)], fill=(248, 248, 250))
+    # Panel 1 (3/4 Side Hero)
+    sdr.ellipse([360, 80, 610, 240], fill=(82, 108, 128))
+    sdr.chord([370, 140, 600, 244], start=5, end=175, fill=(230, 224, 206))
+    sdr.ellipse([410, 125, 444, 159], fill=(18, 18, 20))
+    # Panel 2 (Back)
+    sdr.ellipse([700, 70, 900, 250], fill=(82, 108, 128))
+    strip_p = tmp_path / "three_view_strip.png"
+    strip.save(strip_p)
+    scmap = extract_concept_color_map(strip_p, max_colors=5)
+    assert scmap is not None
+    assert len(scmap["panels"]) == 3
+    assert scmap["panels"][0]["role"] == "hero"
+    assert any(p["role"] == "front" for p in scmap["panels"])
+    s_roles = {p["role"] for p in scmap["palette"]}
+    assert {"primary", "secondary", "dark", "chromatic", "white"} <= s_roles
+
+
 
 
 

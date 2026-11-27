@@ -63,22 +63,8 @@ def _color_label_name(rgb: np.ndarray, role: str) -> str:
     return "Accent"
 
 
-def extract_concept_color_map(
-    concept_png: Path,
-    max_colors: int = 5,
-) -> dict[str, Any] | None:
-    """Extract clean foreground mask, up to `max_colors` PLA filament colors, and quantized pixel label map."""
-    if not concept_png.is_file():
-        return None
-    with Image.open(concept_png) as im:
-        rgba = np.asarray(im.convert("RGBA"), dtype=np.float32)
-    rgb = rgba[..., :3]
-    alpha = rgba[..., 3]
-    H, W, _ = rgb.shape
-    if H < 32 or W < 32:
-        return None
-
-    # 1. Foreground extraction: respect alpha if transparent, else flood-fill studio backdrop + floor drop shadow
+def _extract_fg_mask(rgb: np.ndarray, alpha: np.ndarray, *, single_component: bool = True) -> np.ndarray:
+    """Extract clean foreground mask (transparent alpha or studio backdrop + floor shadow flood-fill)."""
     if float((alpha < 200).mean()) > 0.08:
         fg = alpha >= 180
     else:
@@ -89,32 +75,182 @@ def extract_concept_color_map(
         mn = rgb.min(axis=-1)
         sat = (mx - mn) / np.maximum(mx, 1.0)
         luma = rgb.mean(axis=-1)
-        # Studio backdrop + neutral soft gray drop-shadow touching the border
         bg_cand = (dist_bg < 22.0) | ((luma > 210.0) & (sat < 0.055) & (dist_bg < 52.0))
         lbl, _ = ndimage.label(bg_cand)
         border_lbls = set(np.unique(np.concatenate([lbl[0, :], lbl[-1, :], lbl[:, 0], lbl[:, -1]])).tolist()) - {0}
         bg_mask = np.isin(lbl, list(border_lbls))
         fg = ~bg_mask
 
-    # Keep only the main connected foreground subject (drop tiny stray background marks)
-    fg_lbl, n_fg = ndimage.label(fg)
-    if n_fg == 0:
+    if single_component:
+        fg_lbl, n_fg = ndimage.label(fg)
+        if n_fg > 1:
+            sizes = ndimage.sum(fg, fg_lbl, range(1, n_fg + 1))
+            main_id = int(np.argmax(sizes)) + 1
+            fg = fg_lbl == main_id
+    return fg
+
+
+def _split_multiview_panels(rgb: np.ndarray, alpha: np.ndarray) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """Detect horizontal 3-view turnaround strips (e.g. `[Front | 3/4 Side | Back]` with `W/H >= 1.75`)
+    and return ordered `[(role, rgb_crop, alpha_crop), ...]`; returns a single `[("hero", rgb, alpha)]` otherwise."""
+    H, W, _ = rgb.shape
+    if W >= int(H * 1.75) and W >= 540:
+        fg_full = _extract_fg_mask(rgb, alpha, single_component=False)
+        col_density = fg_full.mean(axis=0)
+        # Find the cleanest vertical whitespace gaps around 1/3 and 2/3 width
+        c1_lo, c1_hi = int(W * 0.25), int(W * 0.42)
+        c2_lo, c2_hi = int(W * 0.58), int(W * 0.75)
+        cut1 = c1_lo + int(np.argmin(col_density[c1_lo:c1_hi]))
+        cut2 = c2_lo + int(np.argmin(col_density[c2_lo:c2_hi]))
+        if float(col_density[cut1]) < 0.04 and float(col_density[cut2]) < 0.04 and (cut2 - cut1) >= int(W * 0.22):
+            crops = [
+                ("front", rgb[:, 0:cut1], alpha[:, 0:cut1]),
+                ("hero", rgb[:, cut1:cut2], alpha[:, cut1:cut2]),
+                ("back", rgb[:, cut2:W], alpha[:, cut2:W]),
+            ]
+            valid = []
+            for role, cr, ca in crops:
+                mfg = _extract_fg_mask(cr, ca, single_component=True)
+                if float(mfg.mean()) >= 0.06:
+                    valid.append((role, cr, ca))
+            if len(valid) >= 2:
+                # Put middle 3/4 hero panel FIRST (primary pose + body/belly), then front panel (facial detail!)
+                order = {"hero": 0, "front": 1, "back": 2}
+                valid.sort(key=lambda item: order.get(item[0], 9))
+                return valid
+    return [("hero", rgb, alpha)]
+
+
+def _quantize_panel_with_palette(
+    rgb: np.ndarray,
+    fg: np.ndarray,
+    pal_arr: np.ndarray,
+    palette_roles: list[str],
+) -> np.ndarray:
+    """Quantize foreground pixels of a panel cleanly onto a shared filament palette with anti-specular guards."""
+    H, W, _ = rgb.shape
+    label_img = np.full((H, W), -1, dtype=np.int16)
+    all_fg_rgb = rgb[fg]
+    if len(all_fg_rgb) == 0:
+        return label_img
+    dists = np.stack([_redmean_dist2(all_fg_rgb, pal_arr[k][None, :]) for k in range(len(pal_arr))], axis=-1)
+
+    all_fg_luma = all_fg_rgb.mean(axis=-1)
+    all_fg_chroma = all_fg_rgb.max(axis=-1) - all_fg_rgb.min(axis=-1)
+    all_fg_sat = all_fg_chroma / np.maximum(all_fg_rgb.max(axis=-1), 1.0)
+    all_fg_warmth = all_fg_rgb[:, 0] - all_fg_rgb[:, 2]
+    fg_deep = ndimage.binary_erosion(fg, iterations=4)
+    in_deep = fg_deep[fg]
+
+    prim_warmth = float(pal_arr[0, 0] - pal_arr[0, 2])
+    sec_warmth = float(pal_arr[1, 0] - pal_arr[1, 2]) if len(pal_arr) > 1 else prim_warmth
+    is_cool_body_warm_belly = (prim_warmth < -6.0) and (sec_warmth > 4.0)
+
+    for k, role in enumerate(palette_roles):
+        if role == "secondary" and is_cool_body_warm_belly:
+            cool_highlight = all_fg_warmth < 2.0
+            dists[cool_highlight, k] = 1e12
+        elif role == "dark":
+            # Guard via absolute chroma (> 28) so deep crimson mouths stay chromatic while glossy black eyes (low mx) stay dark!
+            dists[(all_fg_luma > 58.0) | (all_fg_chroma > 28.0) | (~in_deep), k] = 1e12
+        elif role == "white":
+            not_pure_white = (all_fg_luma < 216.0) | (all_fg_sat > 0.12) | (all_fg_warmth > 15.0) | (~in_deep)
+            dists[not_pure_white, k] = 1e12
+        elif role == "chromatic":
+            fn = all_fg_rgb / np.maximum(1e-4, np.linalg.norm(all_fg_rgb, axis=-1, keepdims=True))
+            min_hd = np.ones(len(all_fg_rgb), dtype=np.float32)
+            for bk, brole in enumerate(palette_roles):
+                if brole in ("primary", "secondary"):
+                    bn = pal_arr[bk] / max(1e-4, float(np.linalg.norm(pal_arr[bk])))
+                    min_hd = np.minimum(min_hd, 1.0 - (fn @ bn))
+            not_chrom = ((all_fg_rgb.max(axis=-1) - all_fg_rgb.min(axis=-1)) < 24.0) | (min_hd < 0.035)
+            dists[not_chrom, k] = 1e12
+
+    pix_labels = np.argmin(dists, axis=-1).astype(np.int16)
+    label_img[fg] = pix_labels
+
+    cleaned = label_img.copy()
+    dark_idx = next((i for i, r in enumerate(palette_roles) if r == "dark"), None)
+    chrom_idx = next((i for i, r in enumerate(palette_roles) if r == "chromatic"), None)
+    for k, role in enumerate(palette_roles):
+        if role == "dark":
+            m_k = label_img == k
+            m_k = ndimage.binary_opening(m_k, structure=np.ones((3, 3)))
+            m_k = ndimage.binary_closing(m_k, structure=np.ones((3, 3)))
+            lbl_k, nk = ndimage.label(m_k)
+            keep_k = np.zeros_like(m_k)
+            for cid in range(1, nk + 1):
+                cm = lbl_k == cid
+                area_c = int(cm.sum())
+                if area_c < 36:
+                    continue
+                cy, cx = np.nonzero(cm)
+                ch_c = max(1, int(cy.max() - cy.min() + 1))
+                cw_c = max(1, int(cx.max() - cx.min() + 1))
+                aspect = max(ch_c, cw_c) / float(min(ch_c, cw_c))
+                fill = area_c / float(ch_c * cw_c)
+                if aspect <= 2.9 and fill >= 0.38:
+                    keep_k |= cm
+            cleaned[(label_img == k) & (~keep_k)] = 0
+            cleaned[keep_k & fg] = k
+        elif role == "chromatic":
+            m_k = label_img == k
+            m_k = ndimage.binary_opening(m_k, structure=np.ones((3, 3)))
+            m_k = ndimage.binary_closing(m_k, structure=np.ones((3, 3)))
+            cleaned[(label_img == k) & (~m_k)] = 0
+            cleaned[m_k & fg] = k
+        elif role == "white" and (dark_idx is not None or chrom_idx is not None):
+            m_w = label_img == k
+            anchor = np.zeros_like(m_w)
+            if dark_idx is not None:
+                anchor |= (cleaned == dark_idx)
+            if chrom_idx is not None:
+                anchor |= (cleaned == chrom_idx)
+            if np.any(anchor):
+                near_anchor = ndimage.binary_dilation(anchor, iterations=22)
+                keep_w = m_w & near_anchor
+                cleaned[m_w & (~keep_w)] = 0
+                cleaned[keep_w & fg] = k
+    return cleaned
+
+
+def extract_concept_color_map(
+    concept_png: Path,
+    max_colors: int = 5,
+) -> dict[str, Any] | None:
+    """Extract clean foreground mask(s), up to `max_colors` PLA filament colors, and quantized pixel label map(s).
+    Automatically handles both single-hero concept paintings AND 3-view horizontal turnaround sheets!"""
+    if not concept_png.is_file():
         return None
-    if n_fg > 1:
-        sizes = ndimage.sum(fg, fg_lbl, range(1, n_fg + 1))
-        main_id = int(np.argmax(sizes)) + 1
-        fg = fg_lbl == main_id
-
-    n_px = int(fg.sum())
-    if n_px < 400:
+    with Image.open(concept_png) as im:
+        rgba = np.asarray(im.convert("RGBA"), dtype=np.float32)
+    rgb_full = rgba[..., :3]
+    alpha_full = rgba[..., 3]
+    H_full, W_full, _ = rgb_full.shape
+    if H_full < 32 or W_full < 32:
         return None
 
-    # Interior mask eroded by 2 px so dark/white anti-aliased edge fringes don't trigger fake accent colors
-    fg_inner = ndimage.binary_erosion(fg, iterations=2)
-    if int(fg_inner.sum()) < 200:
-        fg_inner = fg
+    panels_raw = _split_multiview_panels(rgb_full, alpha_full)
+    # Collect eroded interior foreground RGB pixels across hero + front panels so shared 5-color palette
+    # captures BOTH full body/belly colors AND rich front-facing teeth/mouth/eye colors!
+    panel_fgs: list[tuple[str, np.ndarray, np.ndarray]] = []
+    fg_inner_pools: list[np.ndarray] = []
+    for role, prgb, palpha in panels_raw:
+        pfg = _extract_fg_mask(prgb, palpha, single_component=True)
+        if int(pfg.sum()) < 400:
+            continue
+        panel_fgs.append((role, prgb, pfg))
+        if role in ("hero", "front"):
+            pin = ndimage.binary_erosion(pfg, iterations=2)
+            if int(pin.sum()) < 200:
+                pin = pfg
+            fg_inner_pools.append(prgb[pin])
+    if not panel_fgs:
+        return None
 
-    fg_rgb = rgb[fg_inner]
+    hero_role, rgb, fg = panel_fgs[0]
+    H, W, _ = rgb.shape
+    fg_rgb = np.concatenate(fg_inner_pools, axis=0) if fg_inner_pools else rgb[fg]
     fg_mx = fg_rgb.max(axis=-1)
     fg_mn = fg_rgb.min(axis=-1)
     fg_chroma = fg_mx - fg_mn
@@ -130,7 +266,6 @@ def extract_concept_color_map(
         body_pool = fg_rgb
     sample = body_pool[:: max(1, len(body_pool) // 4000)]
 
-    # Deterministic 2-cluster K-means++ on body_pool
     mean_c = sample.mean(axis=0)
     c1 = sample[int(np.argmax(np.sum((sample - mean_c) ** 2, axis=-1)))].copy()
     c0 = sample[int(np.argmax(np.sum((sample - c1) ** 2, axis=-1)))].copy()
@@ -144,7 +279,6 @@ def extract_concept_color_map(
         if np.any(labels == 1):
             c1 = np.median(sample[labels == 1], axis=0)
     counts = np.bincount(labels, minlength=2)
-    # Order primary = largest cluster, secondary = second cluster
     if counts[1] > counts[0]:
         c0, c1 = c1, c0
         counts = counts[::-1]
@@ -169,30 +303,27 @@ def extract_concept_color_map(
             d_min = np.minimum(d_min, np.linalg.norm(pts - pc[None, :], axis=-1))
         return d_min
 
-    # 3. High-contrast DARK accent (glossy black eyes, pupils, nose)
+    # 3. High-contrast neutral DARK accent (glossy black eyes/pupils — guard absolute chroma so crimson mouths stay chromatic!)
     if len(palette_rgb) < max_colors:
-        dark_mask = (fg_luma < 52.0) & (_min_dist_to_palette(fg_rgb) >= 58.0)
-        if int(dark_mask.sum()) >= max(50, int(len(fg_rgb) * 0.0018)):
+        dark_mask = (fg_luma < 52.0) & (fg_chroma <= 28.0) & (_min_dist_to_palette(fg_rgb) >= 58.0)
+        if int(dark_mask.sum()) >= max(50, int(len(fg_rgb) * 0.0015)):
             dark_c = np.median(fg_rgb[dark_mask], axis=0)
-            # Clean crisp print black (#16181e)
             dark_c = np.clip(dark_c, 16.0, 34.0)
             palette_rgb.append(dark_c.astype(np.float32))
             palette_roles.append("dark")
 
-    # 4. Saturated CHROMATIC accent (coral pink mouth/tongue, red hat, yellow beak, green leaves)
+    # 4. Saturated CHROMATIC accent (deep red/coral pink mouth/tongue, hat, beak, leaves)
     if len(palette_rgb) < max_colors:
         d_pal = _min_dist_to_palette(fg_rgb)
         chrom_mask = (fg_chroma >= 36.0) & (fg_sat >= 0.28) & (d_pal >= 62.0)
-        # Filter out darker/lighter shades of ANY existing palette color (e.g. shadowed cream or shadowed blue!)
         fg_n = fg_rgb / np.maximum(1e-4, np.linalg.norm(fg_rgb, axis=-1, keepdims=True))
         min_hue_diff = np.ones(len(fg_rgb), dtype=np.float32)
         for pc in palette_rgb:
             pc_n = pc / max(1e-4, float(np.linalg.norm(pc)))
             min_hue_diff = np.minimum(min_hue_diff, 1.0 - (fg_n @ pc_n))
         chrom_mask = chrom_mask & (min_hue_diff >= 0.045)
-        if int(chrom_mask.sum()) >= max(50, int(len(fg_rgb) * 0.0012)):
+        if int(chrom_mask.sum()) >= max(45, int(len(fg_rgb) * 0.0010)):
             c_pts = fg_rgb[chrom_mask]
-            # Pick brighter, higher-saturation quartile so coral pink isn't darkened by mouth-cavity shadow
             c_luma = c_pts.mean(axis=-1)
             hi_c = c_pts[c_luma >= np.percentile(c_luma, 55)]
             acc_c = np.median(hi_c if len(hi_c) >= 15 else c_pts, axis=0)
@@ -201,12 +332,11 @@ def extract_concept_color_map(
             palette_rgb.append(acc_c.astype(np.float32))
             palette_roles.append("chromatic")
 
-    # 5. Crisp BRIGHT WHITE accent (teeth, eye highlights, sclera — distinct from warm cream belly!)
+    # 5. Crisp BRIGHT WHITE accent (teeth, eye sclera & catch-lights — distinct from warm cream belly!)
     if len(palette_rgb) < max_colors:
         d_pal = _min_dist_to_palette(fg_rgb)
-        # Pure white has high brightness AND neutral cool/balanced chroma (unlike warm cream where R-B > 14)
         warmth = fg_rgb[:, 0] - fg_rgb[:, 2]
-        white_mask = (fg_luma >= 224.0) & (fg_sat <= 0.09) & (warmth <= 12.0) & (d_pal >= 24.0)
+        white_mask = (fg_luma >= 218.0) & (fg_sat <= 0.11) & (warmth <= 14.0) & (d_pal >= 22.0)
         if int(white_mask.sum()) >= max(24, int(len(fg_rgb) * 0.0005)):
             palette_rgb.append(np.array([248.0, 248.0, 250.0], dtype=np.float32))
             palette_roles.append("white")
@@ -214,96 +344,14 @@ def extract_concept_color_map(
     if len(palette_rgb) < 2:
         return None
 
-    # 6. Quantize EVERY foreground pixel to nearest filament color
-    pal_arr = np.stack(palette_rgb, axis=0)  # (K, 3)
-    label_img = np.full((H, W), -1, dtype=np.int16)
-    all_fg_rgb = rgb[fg]  # (N, 3)
-    dists = np.stack([_redmean_dist2(all_fg_rgb, pal_arr[k][None, :]) for k in range(len(pal_arr))], axis=-1)
+    pal_arr = np.stack(palette_rgb, axis=0)
+    quant_panels: list[dict[str, Any]] = []
+    for prole, prgb, pfg in panel_fgs:
+        pH, pW, _ = prgb.shape
+        q_lbl = _quantize_panel_with_palette(prgb, pfg, pal_arr, palette_roles)
+        quant_panels.append({"role": prole, "fg": pfg, "label_img": q_lbl, "size": (pW, pH)})
 
-    # Guard: prevent soft shadows & cool blue specular highlights from leaking into wrong filament slots!
-    all_fg_luma = all_fg_rgb.mean(axis=-1)
-    all_fg_sat = (all_fg_rgb.max(axis=-1) - all_fg_rgb.min(axis=-1)) / np.maximum(all_fg_rgb.max(axis=-1), 1.0)
-    all_fg_warmth = all_fg_rgb[:, 0] - all_fg_rgb[:, 2]
-    # Eroded interior mask (4 px inside silhouette) so bright outer-rim specular highlights don't become white teeth!
-    fg_deep = ndimage.binary_erosion(fg, iterations=4)
-    in_deep = fg_deep[fg]
-
-    # Check if secondary color is warm-ivory/cream while primary is cool-blue (classic countershading)
-    prim_warmth = float(pal_arr[0, 0] - pal_arr[0, 2])
-    sec_warmth = float(pal_arr[1, 0] - pal_arr[1, 2]) if len(pal_arr) > 1 else prim_warmth
-    is_cool_body_warm_belly = (prim_warmth < -6.0) and (sec_warmth > 4.0)
-
-    for k, role in enumerate(palette_roles):
-        if role == "secondary" and is_cool_body_warm_belly:
-            # Never let cool blue-gray specular highlights on the dorsal fin / back (R - B < 0) steal warm Cream Belly!
-            cool_highlight = all_fg_warmth < 2.0
-            dists[cool_highlight, k] = 1e12
-        elif role == "dark":
-            dists[(all_fg_luma > 58.0) | (~in_deep), k] = 1e12
-        elif role == "white":
-            # Only interior crisp neutral bright white pixels (teeth & eye catch-lights), never rim shine on fins!
-            not_pure_white = (all_fg_luma < 222.0) | (all_fg_sat > 0.10) | (all_fg_warmth > 13.0) | (~in_deep)
-            dists[not_pure_white, k] = 1e12
-        elif role == "chromatic":
-            fn = all_fg_rgb / np.maximum(1e-4, np.linalg.norm(all_fg_rgb, axis=-1, keepdims=True))
-            min_hd = np.ones(len(all_fg_rgb), dtype=np.float32)
-            for bk, brole in enumerate(palette_roles):
-                if brole in ("primary", "secondary"):
-                    bn = pal_arr[bk] / max(1e-4, float(np.linalg.norm(pal_arr[bk])))
-                    min_hd = np.minimum(min_hd, 1.0 - (fn @ bn))
-            not_chrom = ((all_fg_rgb.max(axis=-1) - all_fg_rgb.min(axis=-1)) < 24.0) | (min_hd < 0.035)
-            dists[not_chrom, k] = 1e12
-
-    pix_labels = np.argmin(dists, axis=-1).astype(np.int16)
-    label_img[fg] = pix_labels
-
-    # Clean noise & stray rim reflections cleanly on accent masks:
-    # - Keep only compact dark blobs (e.g. eyes/nose) and drop narrow linear armpit/fin-crease shadow slits
-    # - Keep white features (teeth/eye catch-lights) only when near a dark/chromatic facial anchor (within 18 px)
-    cleaned = label_img.copy()
-    dark_idx = next((i for i, r in enumerate(palette_roles) if r == "dark"), None)
-    chrom_idx = next((i for i, r in enumerate(palette_roles) if r == "chromatic"), None)
-    for k, role in enumerate(palette_roles):
-        if role == "dark":
-            m_k = label_img == k
-            m_k = ndimage.binary_opening(m_k, structure=np.ones((3, 3)))
-            m_k = ndimage.binary_closing(m_k, structure=np.ones((3, 3)))
-            # Filter out long thin dark shadow crevices (aspect ratio > 3.2 and thin) while preserving round eyes!
-            lbl_k, nk = ndimage.label(m_k)
-            keep_k = np.zeros_like(m_k)
-            for cid in range(1, nk + 1):
-                cm = lbl_k == cid
-                area_c = int(cm.sum())
-                if area_c < 45:
-                    continue
-                cy, cx = np.nonzero(cm)
-                ch_c = max(1, int(cy.max() - cy.min() + 1))
-                cw_c = max(1, int(cx.max() - cx.min() + 1))
-                aspect = max(ch_c, cw_c) / float(min(ch_c, cw_c))
-                fill = area_c / float(ch_c * cw_c)
-                if aspect <= 2.8 and fill >= 0.42:
-                    keep_k |= cm
-            cleaned[(label_img == k) & (~keep_k)] = 0
-            cleaned[keep_k & fg] = k
-        elif role == "chromatic":
-            m_k = label_img == k
-            m_k = ndimage.binary_opening(m_k, structure=np.ones((3, 3)))
-            m_k = ndimage.binary_closing(m_k, structure=np.ones((3, 3)))
-            cleaned[(label_img == k) & (~m_k)] = 0
-            cleaned[m_k & fg] = k
-        elif role == "white" and (dark_idx is not None or chrom_idx is not None):
-            m_w = label_img == k
-            anchor = np.zeros_like(m_w)
-            if dark_idx is not None:
-                anchor |= (cleaned == dark_idx)
-            if chrom_idx is not None:
-                anchor |= (cleaned == chrom_idx)
-            if np.any(anchor):
-                near_anchor = ndimage.binary_dilation(anchor, iterations=18)
-                keep_w = m_w & near_anchor
-                cleaned[m_w & (~keep_w)] = 0
-                cleaned[keep_w & fg] = k
-
+    cleaned = quant_panels[0]["label_img"]
     palette = [
         {
             "index": i,
@@ -312,13 +360,14 @@ def extract_concept_color_map(
             "hex": _rgb_to_hex(pal_arr[i]),
             "rgb": pal_arr[i].tolist(),
             "filament": i + 1,
-            "pixels": int((cleaned == i).sum()),
+            "pixels": int(sum((qp["label_img"] == i).sum() for qp in quant_panels)),
         }
         for i in range(len(pal_arr))
     ]
     return {
         "fg": fg,
         "label_img": cleaned,
+        "panels": quant_panels,
         "palette": palette,
         "size": (W, H),
     }
@@ -372,17 +421,28 @@ def align_mesh_to_concept(
     fg_area = float(fg_pad.sum())
     fg_aspect = cw / max(1.0, float(ch))
 
-    # Uniformly sample ~5500 surface points across the 3D mesh for fast silhouette splatting
-    pts, _ = trimesh.sample.sample_surface(mesh, min(5500, max(2000, len(mesh.faces) // 3)))
-    pts = np.asarray(pts, dtype=np.float64)
+    # Deterministic dense surface sampling (face centroids + vertices) so pose alignment is 100% reproducible!
+    v_all = np.asarray(mesh.vertices, dtype=np.float64)
+    f_all = np.asarray(mesh.faces, dtype=np.int64)
+    fc_all = v_all[f_all].mean(axis=1)
+    comb = np.vstack((v_all, fc_all))
+    step_s = max(1, len(comb) // 6500)
+    pts = comb[::step_s]
     center = 0.5 * (pts.min(axis=0) + pts.max(axis=0))
     q = pts - center
+    # Mild studio camera perspective distance (matches real FLUX/Pixar 3D render foreshortening!)
+    cam_dist = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) * 2.4
     struct3 = np.ones((3, 3), dtype=bool)
 
+    def _project_uv(q_pts: np.ndarray, right: np.ndarray, up: np.ndarray, fwd: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        z_cam = q_pts @ fwd
+        denom = np.maximum(cam_dist * 0.25, cam_dist + z_cam)
+        persp = cam_dist / denom
+        return (q_pts @ right) * persp, (q_pts @ up) * persp, z_cam
+
     def _score(az: float, el: float, roll: float = 0.0) -> tuple[float, float, float, float, float]:
-        right, up, _ = _camera_basis(az, el, roll)
-        u = q @ right
-        v = q @ up
+        right, up, fwd = _camera_basis(az, el, roll)
+        u, v, _ = _project_uv(q, right, up, fwd)
         u0, u1 = float(u.min()), float(u.max())
         v0, v1 = float(v.min()), float(v.max())
         du = max(1e-6, u1 - u0)
@@ -434,8 +494,7 @@ def align_mesh_to_concept(
     right, up, fwd = _camera_basis(az, el, roll)
     # Compute exact mapping from 3D (u, v) to concept image pixel coordinates (px, py)
     verts = np.asarray(mesh.vertices, dtype=np.float64) - center
-    vu = verts @ right
-    vv = verts @ up
+    vu, vv, _ = _project_uv(verts, right, up, fwd)
     u0, u1 = float(vu.min()), float(vu.max())
     v0, v1 = float(vv.min()), float(vv.max())
     return {
@@ -444,6 +503,7 @@ def align_mesh_to_concept(
         "el_deg": float(el),
         "roll_deg": float(roll),
         "center": center,
+        "cam_dist": float(cam_dist),
         "right": right,
         "up": up,
         "fwd": fwd,
@@ -581,7 +641,7 @@ def _smooth_patch_prism(
     comp_f: np.ndarray,
     extrude_ax: np.ndarray,
     depth_mm: float = 1.6,
-    overshoot_mm: float = 1.6,
+    overshoot_mm: float = 0.45,
 ) -> m3d.Manifold | None:
     """Build a blazing-fast, laser-smooth 3D cutter prism for a painted feature patch (eye, tooth, mouth, highlight)
     by extracting its smooth 2D silhouette contour perpendicular to `extrude_ax` and extruding via `manifold3d`."""
@@ -696,19 +756,17 @@ def _build_belly_zone_prism(
     if s1 - s0 < 6.0:
         return None
 
-    # Measure core torso width (ahead of protruding lateral fins, around 15..26% from front/head) so
-    # pectoral/lateral fins stay 100% pure primary body color!
+    # Measure core torso width (ahead of/between protruding lateral fins) so pectoral fins stay 100% pure primary body color!
     all_s0, all_s1 = float(all_min[spine_ax]), float(all_max[spine_ax])
     all_len = max(1e-6, all_s1 - all_s0)
-    # Detect which end is the wider head
     f_pts = all_verts[all_verts[:, spine_ax] <= all_s0 + 0.35 * all_len]
     r_pts = all_verts[all_verts[:, spine_ax] >= all_s1 - 0.35 * all_len]
     head_at_min = (float(np.ptp(f_pts[:, lat_ax])) >= float(np.ptp(r_pts[:, lat_ax])) * 0.85) if (len(f_pts) and len(r_pts)) else True
     if head_at_min:
-        hc = all_verts[(all_verts[:, spine_ax] >= all_s0 + 0.14 * all_len) & (all_verts[:, spine_ax] <= all_s0 + 0.28 * all_len)]
+        hc = all_verts[(all_verts[:, spine_ax] >= all_s0 + 0.10 * all_len) & (all_verts[:, spine_ax] <= all_s0 + 0.24 * all_len)]
     else:
-        hc = all_verts[(all_verts[:, spine_ax] >= all_s1 - 0.28 * all_len) & (all_verts[:, spine_ax] <= all_s1 - 0.14 * all_len)]
-    torso_half_w = float(np.percentile(np.abs(hc[:, lat_ax] - lat_center), 94)) if len(hc) > 20 else float(all_span[lat_ax] * 0.28)
+        hc = all_verts[(all_verts[:, spine_ax] >= all_s1 - 0.24 * all_len) & (all_verts[:, spine_ax] <= all_s1 - 0.10 * all_len)]
+    torso_half_w = float(np.percentile(np.abs(hc[:, lat_ax] - lat_center), 85)) if len(hc) > 20 else float(all_span[lat_ax] * 0.24)
     # Clamp lateral sampling strictly inside torso_half_w so pectoral fins never pollute Z_top or W_lat!
     in_torso = np.abs(l_vals - lat_center) <= torso_half_w * 1.05
     if int(in_torso.sum()) >= 20:
@@ -747,7 +805,7 @@ def _build_belly_zone_prism(
         return None
     z_interp = np.interp(s_mid, s_mid[valid], z_top[valid])
     z_smooth = np.minimum(ndimage.gaussian_filter1d(z_interp, sigma=1.8, mode="nearest"), z_loc_cap)
-    eff_w = torso_half_w * 1.94
+    eff_w = torso_half_w * 1.64
     z_floor = float(all_min[2]) - 4.0
 
     pts_sz = [(float(s_mid[0] - 3.0), z_floor), (float(s_mid[-1] + 1.0), z_floor)] + [
@@ -863,18 +921,77 @@ def _build_color_cutter_prism(
     return union_prism
 
 
+def _project_panel_labels(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    fc: np.ndarray,
+    fn: np.ndarray,
+    panel: dict[str, Any],
+    pose: dict[str, Any],
+    *,
+    facing_thresh: float = 0.25,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Z-buffer project a single aligned concept panel onto mesh faces; returns `(sampled_labels, visible_mask)`."""
+    W, H = panel["size"]
+    x0, y0, x1, y1 = pose["fg_bbox"]
+    u0, u1 = pose["u_bounds"]
+    v0, v1 = pose["v_bounds"]
+    center = pose["center"]
+    right, up, fwd = pose["right"], pose["up"], pose["fwd"]
+
+    q = fc - center[None, :]
+    fz = q @ fwd
+    cam_dist = float(pose.get("cam_dist") or 0.0)
+    if cam_dist > 1e-3:
+        persp = cam_dist / np.maximum(cam_dist * 0.25, cam_dist + fz)
+        fu = (q @ right) * persp
+        fv = (q @ up) * persp
+    else:
+        fu = q @ right
+        fv = q @ up
+    px = np.round(x0 + (fu - u0) / max(1e-6, u1 - u0) * (x1 - x0)).astype(np.int32)
+    py = np.round(y1 - (fv - v0) / max(1e-6, v1 - v0) * (y1 - y0)).astype(np.int32)
+
+    bw, bh = max(64, W // 2), max(64, H // 2)
+    bx = np.clip(px // 2, 0, bw - 1)
+    by = np.clip(py // 2, 0, bh - 1)
+    zbuf = np.full((bh, bw), np.inf, dtype=np.float64)
+    front_facing = (fn @ fwd) < facing_thresh
+    ff_idx = np.nonzero(front_facing)[0]
+    np.minimum.at(zbuf, (by[ff_idx], bx[ff_idx]), fz[ff_idx])
+    zbuf_min = ndimage.minimum_filter(zbuf, size=3)
+
+    depth_span = max(1.0, float(fz.max() - fz.min()))
+    vis_tol = depth_span * 0.08
+    in_bounds = (px >= 0) & (px < W) & (py >= 0) & (py < H)
+    visible = front_facing & in_bounds & (fz <= zbuf_min[by, bx] + vis_tol)
+
+    out = np.full(len(faces), -1, dtype=np.int16)
+    vis_idx = np.nonzero(visible)[0]
+    if len(vis_idx):
+        sampled = panel["label_img"][py[vis_idx], px[vis_idx]]
+        valid_s = sampled >= 0
+        out[vis_idx[valid_s]] = sampled[valid_s]
+    return out, visible
+
+
 def project_concept_colors_to_manifolds(
     pre_flexi_mf: m3d.Manifold,
     concept_png: Path,
     *,
     final_mf: m3d.Manifold | None = None,
     hinge_keepout: m3d.Manifold | None = None,
+    warp_points_fn: Any = None,
     max_colors: int = 5,
     inlay_depth_mm: float = 1.6,
     min_iou: float = 0.60,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
     """Project up to `max_colors` filament colors from `concept_png` onto `pre_flexi_mf` and build disjoint
     watertight `manifold3d.Manifold` bodies clipped cleanly to `final_mf` (or `pre_flexi_mf` if None).
+
+    Supports BOTH single-hero concept paintings AND multi-view 3-panel turnaround sheets (e.g. Front + 3/4 Side
+    + Back), plus optional `warp_points_fn(verts)` so a pre-streamlined 1:1 mesh aligns cleanly against the
+    original concept silhouette and then maps exact color cutters onto the elongated flexi mesh!
 
     Returns `(parts_meta, debug_info)` where each entry in `parts_meta` is:
       `{"name": str, "hex": str, "role": str, "filament": int, "manifold": m3d.Manifold}`
@@ -889,56 +1006,23 @@ def project_concept_colors_to_manifolds(
     faces = np.asarray(m.tri_verts, dtype=np.int64)
     tm = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
 
-    pose = align_mesh_to_concept(tm, cmap["fg"])
+    panels = cmap.get("panels") or [{"role": "hero", "fg": cmap["fg"], "label_img": cmap["label_img"], "size": cmap["size"]}]
+    hero_panel = panels[0]
+    pose = align_mesh_to_concept(tm, hero_panel["fg"])
     if pose["iou"] < min_iou:
         return None
 
-    W, H = cmap["size"]
-    x0, y0, x1, y1 = pose["fg_bbox"]
-    u0, u1 = pose["u_bounds"]
-    v0, v1 = pose["v_bounds"]
-    center = pose["center"]
-    right, up, fwd = pose["right"], pose["up"], pose["fwd"]
-
-    # Face centroids and unit outward normals
+    # Face centroids and unit outward normals on the alignment mesh
     tv0, tv1, tv2 = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
     fc = (tv0 + tv1 + tv2) / 3.0
     fn = np.cross(tv1 - tv0, tv2 - tv0)
     flen = np.linalg.norm(fn, axis=1, keepdims=True)
     fn = np.divide(fn, np.maximum(flen, 1e-12))
 
-    # Project face centroids to exact concept pixel coordinates (px, py) and depth (z_cam)
-    q = fc - center[None, :]
-    fu = q @ right
-    fv = q @ up
-    fz = q @ fwd
-    px = np.round(x0 + (fu - u0) / max(1e-6, u1 - u0) * (x1 - x0)).astype(np.int32)
-    py = np.round(y1 - (fv - v0) / max(1e-6, v1 - v0) * (y1 - y0)).astype(np.int32)
+    # 1. Project primary Hero / 3/4-Side panel onto visible faces
+    face_labels, _ = _project_panel_labels(verts, faces, fc, fn, hero_panel, pose, facing_thresh=0.25)
 
-    # Build crisp per-pixel depth buffer at half-res (fast & closes tiny inter-centroid pixel gaps!)
-    bw, bh = max(64, W // 2), max(64, H // 2)
-    bx = np.clip(px // 2, 0, bw - 1)
-    by = np.clip(py // 2, 0, bh - 1)
-    zbuf = np.full((bh, bw), np.inf, dtype=np.float64)
-    front_facing = (fn @ fwd) < 0.25  # faces turned toward camera (small tolerance for mouth recesses)
-    ff_idx = np.nonzero(front_facing)[0]
-    np.minimum.at(zbuf, (by[ff_idx], bx[ff_idx]), fz[ff_idx])
-    # Slightly dilate minimum depth by 1 cell so no background triangle peeks through gaps
-    zbuf_min = ndimage.minimum_filter(zbuf, size=3)
-
-    depth_span = max(1.0, float(fz.max() - fz.min()))
-    vis_tol = depth_span * 0.08
-    in_bounds = (px >= 0) & (px < W) & (py >= 0) & (py < H)
-    visible = front_facing & in_bounds & (fz <= zbuf_min[by, bx] + vis_tol)
-
-    label_img = cmap["label_img"]
-    face_labels = np.full(len(faces), -1, dtype=np.int16)
-    vis_idx = np.nonzero(visible)[0]
-    sampled = label_img[py[vis_idx], px[vis_idx]]
-    valid_s = sampled >= 0
-    face_labels[vis_idx[valid_s]] = sampled[valid_s]
-
-    # Bilateral symmetry mirroring: copy front-side painted features (eyes, teeth, mouth, belly) onto opposite flank!
+    # 2. Bilateral symmetry mirroring: copy front-side painted features (eyes, teeth, mouth, belly) onto opposite flank!
     sym_ax = _detect_symmetry_axis(tm)
     if sym_ax is not None:
         labeled_idx = np.nonzero(face_labels >= 0)[0]
@@ -952,6 +1036,29 @@ def project_concept_colors_to_manifolds(
             diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
             good = dists <= diag * 0.06
             face_labels[unlabeled_idx[good]] = face_labels[labeled_idx[nn[good]]]
+
+    # 3. Multi-view Front panel overlay (on 3-view turnaround sheets!): project crisp frontal eyes, teeth & mouth!
+    #    Verify the front camera actually faces the SAME head end as the hero panel's facial features (never the tail!).
+    front_iou = None
+    front_panel = next((p for p in panels[1:] if p["role"] == "front"), None)
+    if front_panel is not None:
+        f_pose = align_mesh_to_concept(tm, front_panel["fg"])
+        front_iou = f_pose["iou"]
+        accent_ids = {p["index"] for p in cmap["palette"] if p["role"] in ("dark", "chromatic", "white")}
+        hero_face_idx = np.nonzero(np.isin(face_labels, list(accent_ids)))[0]
+        faces_head = True
+        if len(hero_face_idx) >= 5:
+            head_center = fc[hero_face_idx].mean(axis=0)
+            # In camera coordinates (`fwd` points from eye into scene), the near side facing the camera has `(pt - center) @ fwd < 0`!
+            faces_head = float((head_center - f_pose["center"]) @ f_pose["fwd"]) < 0.0
+        if faces_head and f_pose["iou"] >= max(0.66, min_iou):
+            f_labels, _ = _project_panel_labels(verts, faces, fc, fn, front_panel, f_pose, facing_thresh=-0.10)
+            # Restrict front overlay strictly to the camera-facing front half of the mesh so back/tail stay untouched!
+            near_front = ((fc - f_pose["center"][None, :]) @ f_pose["fwd"]) < 0.0
+            front_accent = near_front & np.isin(f_labels, list(accent_ids))
+            face_labels[front_accent] = f_labels[front_accent]
+            fill_front = near_front & (face_labels < 0) & (f_labels >= 0)
+            face_labels[fill_front] = f_labels[fill_front]
 
     # Propagate labels smoothly onto remaining occluded undersides/crevices (e.g. flat Z=0 belly pad!)
     if np.any(face_labels < 0):
@@ -984,6 +1091,17 @@ def project_concept_colors_to_manifolds(
             keep_small = np.isin(face_labels, list(preserve_roles))
             face_labels = np.where(keep_small, face_labels, nxt)
 
+    # If the final mesh underwent smooth torso elongation / bed seating (`warp_points_fn`), map our aligned
+    # vertices into the final mesh's exact coordinate frame BEFORE building color cutter prisms!
+    if warp_points_fn is not None:
+        verts_c = np.asarray(warp_points_fn(verts), dtype=np.float64)
+        cv0, cv1, cv2 = verts_c[faces[:, 0]], verts_c[faces[:, 1]], verts_c[faces[:, 2]]
+        fn_c = np.cross(cv1 - cv0, cv2 - cv0)
+        fn_c = np.divide(fn_c, np.maximum(np.linalg.norm(fn_c, axis=1, keepdims=True), 1e-12))
+    else:
+        verts_c = verts
+        fn_c = fn
+
     # Build lightweight non-coplanar cutter prisms for each accent color, make cutters disjoint FIRST (0.01 s!),
     # then clip each disjoint cutter against `target_mf` ONCE and compute `body = target_mf - all_cutters` (0.1 s!)
     target_mf = final_mf if final_mf is not None else pre_flexi_mf
@@ -996,10 +1114,10 @@ def project_concept_colors_to_manifolds(
         f_mask = face_labels == p["index"]
         if not np.any(f_mask):
             continue
-        depth = 2.2 if p["role"] == "secondary" else (1.8 if p["role"] in ("dark", "chromatic") else 1.4)
+        depth = 2.2 if p["role"] == "secondary" else (1.5 if p["role"] == "dark" else (1.15 if p["role"] == "chromatic" else 1.25))
         min_a = 0.5 if p["role"] == "white" else 1.8
         cutter = _build_color_cutter_prism(
-            verts, faces, fn, f_mask, role=p["role"], depth_mm=depth, min_area_mm2=min_a,
+            verts_c, faces, fn_c, f_mask, role=p["role"], depth_mm=depth, min_area_mm2=min_a,
         )
         if cutter is None or cutter.is_empty():
             continue
@@ -1070,6 +1188,7 @@ def project_concept_colors_to_manifolds(
 
     debug = {
         "iou": pose["iou"],
+        "front_iou": front_iou,
         "az_deg": pose["az_deg"],
         "el_deg": pose["el_deg"],
         "roll_deg": pose["roll_deg"],

@@ -580,6 +580,94 @@ def pa_extrude_polygon_z(
     return _link_object(name, mesh)
 
 
+def _pa_flared_z_pin(
+    name: str,
+    x_center: float,
+    y_center: float,
+    r_base: float,
+    r_neck: float,
+    z_bot: float,
+    z_foot: float,
+    flare_h: float,
+    z_top: float,
+    segs: int = 28,
+) -> bpy.types.Object:
+    """Create a watertight 45° flared captive vertical Z-pin (or matching stepped bore) cleanly via bmesh."""
+    bm = bmesh.new()
+    z0 = float(z_bot)
+    z1 = z0 + max(0.2, float(z_foot))
+    z2 = z1 + max(0.2, float(flare_h))
+    z3 = max(z2 + 0.3, float(z_top))
+    levels = [(z0, float(r_base)), (z1, float(r_base)), (z2, float(r_neck)), (z3, float(r_neck))]
+    rings: list[list[bmesh.types.BMVert]] = []
+    for zv, rad in levels:
+        ring = []
+        for k in range(segs):
+            ang = 2.0 * math.pi * k / segs
+            ring.append(bm.verts.new((x_center + rad * math.cos(ang), y_center + rad * math.sin(ang), zv)))
+        rings.append(ring)
+    bm.faces.new(list(reversed(rings[0])))
+    bm.faces.new(rings[-1])
+    for i in range(len(rings) - 1):
+        r0, r1 = rings[i], rings[i + 1]
+        for k in range(segs):
+            kn = (k + 1) % segs
+            bm.faces.new((r0[k], r0[kn], r1[kn], r1[k]))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
+    mesh = bpy.data.meshes.new(name)
+    bm.to_mesh(mesh)
+    bm.free()
+    return _link_object(name, mesh)
+
+
+def _pa_vaulted_stadium_xy(
+    name: str,
+    x_center: float,
+    y_center: float,
+    radius: float,
+    x_back: float,
+    z0: float,
+    z1: float,
+    vault_h: float = 0.0,
+    top_radius: float = 1.0,
+    segs: int = 24,
+) -> bpy.types.Object:
+    """Open-bottom stadium cavity with an optional 45° vaulted self-supporting ceiling above `z1`."""
+    def _ring_xy(rad: float) -> list[tuple[float, float]]:
+        pts: list[tuple[float, float]] = [(x_back, y_center + rad), (x_center, y_center + rad)]
+        for k in range(1, segs):
+            ang = math.pi * 0.5 + math.pi * (k / segs)
+            pts.append((x_center + rad * math.cos(ang), y_center + rad * math.sin(ang)))
+        pts.append((x_center, y_center - rad))
+        pts.append((x_back, y_center - rad))
+        return pts
+
+    bm = bmesh.new()
+    xy_b = _ring_xy(radius)
+    r_bot = [bm.verts.new((x, y, z0)) for x, y in xy_b]
+    r_mid = [bm.verts.new((x, y, z1)) for x, y in xy_b]
+    rings = [r_bot, r_mid]
+    if vault_h > 0.25 and top_radius < radius - 0.18:
+        xy_t = _ring_xy(max(0.5, top_radius))
+        r_top = [bm.verts.new((x, y, z1 + vault_h)) for x, y in xy_t]
+        rings.append(r_top)
+    bm.faces.new(list(reversed(rings[0])))
+    bm.faces.new(rings[-1])
+    n = len(rings[0])
+    for i in range(len(rings) - 1):
+        ra, rb = rings[i], rings[i + 1]
+        for k in range(n):
+            kn = (k + 1) % n
+            bm.faces.new((ra[k], ra[kn], rb[kn], rb[k]))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    _ensure_outward_winding(bm)
+    mesh = bpy.data.meshes.new(name)
+    bm.to_mesh(mesh)
+    bm.free()
+    return _link_object(name, mesh)
+
+
 def pa_stadium_xy(
     name: str,
     x_center: float,
@@ -931,44 +1019,54 @@ def pa_flexi_articulate(
         yc = 0.5 * (pmin.y + pmax.y)
         prev_cut = active_cuts[-1] if active_cuts else bounds_x[i]
         seg_pitch = min(u - prev_cut, bounds_x[i + 2] - u)
-        if z_bot > 4.5 or w_loc < 7.5 or h_loc < 7.0 or seg_pitch < (gap + 4.0 * c + 2.8):
+        if z_bot > 4.5 or w_loc < 8.6 or h_loc < 7.0 or seg_pitch < (gap + 4.0 * c + 2.6):
             continue
 
-        floor_t = max(1.45, min(2.2, h_loc * 0.14))
-        roof_t = max(1.50, min(2.4, h_loc * 0.15))
-        avail_h = h_loc - floor_t - roof_t - 2.0 * c
-        if avail_h < 2.2:
-            continue
-        loop_h = max(2.2, min(6.0, avail_h))
-        cav_z0 = z_bot + floor_t
-        cav_z1 = cav_z0 + loop_h + 2.0 * c
-
-        pin_r = max(1.05, min(1.75, min(w_loc * 0.088, (seg_pitch - gap) * 0.155)))
-        wall_xy = max(1.15, min(1.65, pin_r * 0.92))
-        r_loop_xy = pin_r + c + wall_xy
-        slot_w = 2.0 * (r_loop_xy + c + 0.25)
-        if slot_w > w_loc - 3.0:
-            max_r = (w_loc - 3.0) * 0.5 - c - 0.25
-            if max_r < 1.95 + c:
+        roof_t = max(1.65, min(3.20, h_loc * 0.18))
+        z_foot = 0.45
+        flare = max(0.85, min(1.05, c + 0.48))
+        avail_h = h_loc - roof_t - c
+        if avail_h < z_foot + c + flare + 1.00:
+            z_foot = 0.35
+            flare = max(0.80, c + 0.40)
+            if avail_h < z_foot + c + flare + 0.85:
                 continue
-            pin_r = max(0.95, (max_r - c) * 0.48)
-            wall_xy = max(1.00, (max_r - c) * 0.52)
-            r_loop_xy = pin_r + c + wall_xy
-            slot_w = 2.0 * (r_loop_xy + c + 0.25)
+        loop_h = max(z_foot + c + flare + 0.85, min(5.60, avail_h))
+        cav_z1 = loop_h + c
 
-        u_pin = u - (gap * 0.5 + c + pin_r + 0.45)
+        pin_r_neck = max(0.95, min(1.38, min(w_loc * 0.058, (seg_pitch - gap) * 0.105)))
+        pin_r_base = pin_r_neck + flare
+        wall_xy = max(1.05, min(1.35, pin_r_neck * 0.88))
+        r_loop_xy = pin_r_base + c + wall_xy
+        slot_w = 2.0 * (r_loop_xy + c + 0.20)
+        if slot_w > w_loc - 2.6:
+            max_r = (w_loc - 2.6) * 0.5 - c - 0.20
+            flare_min = max(0.80, c + 0.40)
+            if max_r < 0.85 + flare_min + c + 0.95:
+                continue
+            flare = min(flare, max(flare_min, (max_r - c) * 0.27))
+            rem = max_r - flare - c
+            pin_r_neck = max(0.85, rem * 0.47)
+            wall_xy = max(0.95, rem - pin_r_neck)
+            pin_r_base = pin_r_neck + flare
+            r_loop_xy = pin_r_base + c + wall_xy
+            slot_w = 2.0 * (r_loop_xy + c + 0.20)
+
+        u_pin = u - (gap * 0.5 + pin_r_base + 0.20)
         cav_front = u_pin - (r_loop_xy + c)
-        min_front = (active_cuts[-1] + gap * 0.5 + 1.2) if active_cuts else (x0 + 1.5)
+        min_front = (active_cuts[-1] + gap * 0.5 + 1.0) if active_cuts else (x0 + 1.2)
         if cav_front <= min_front:
             continue
 
+        vault_h = max(0.0, min(3.6, min((r_loop_xy + c) - (pin_r_neck + 0.35), h_loc - cav_z1 - roof_t)))
         local_curve = min(float(curve_mm), w_loc * 0.10, seg_pitch * 0.16)
         max_half_gap = min(2.4, max(gap * 0.5 + 0.65, seg_pitch * 0.20))
         active_cuts.append(u)
         joint_specs.append({
             "u": u, "yc": yc, "w_loc": w_loc, "z_bot": z_bot, "z_top": z_top, "h_loc": h_loc,
-            "pin_r": pin_r, "r_loop_xy": r_loop_xy, "slot_w": slot_w,
-            "cav_z0": cav_z0, "cav_z1": cav_z1, "u_pin": u_pin, "cav_front": cav_front,
+            "pin_r_neck": pin_r_neck, "pin_r_base": pin_r_base, "flare": flare, "z_foot": z_foot,
+            "r_loop_xy": r_loop_xy, "slot_w": slot_w, "loop_h": loop_h,
+            "cav_z1": cav_z1, "vault_h": vault_h, "roof_t": roof_t, "u_pin": u_pin, "cav_front": cav_front,
             "curve": local_curve, "max_half_gap": max_half_gap,
         })
 
@@ -1005,43 +1103,52 @@ def pa_flexi_articulate(
         _bevel_cut_rim_edges(seg, bevel_mm=eff_bevel, segments=bevel_segments)
         seg_objs.append(seg)
 
-    # Install captive vertical Z-axis pins (Segment i) & horizontal chain-link tongues (Segment i+1)
+    # Install open-bottom bed-seated captive 45° flared Z-pins (Segment i) & 360° chain-link tongues (Segment i+1)
     hinge_keepouts: list[bpy.types.Object] = []
     for j_idx, sp in enumerate(joint_specs):
         u = sp["u"]
         yc = sp["yc"]
-        pin_r = sp["pin_r"]
+        pin_r_neck = sp["pin_r_neck"]
+        pin_r_base = sp["pin_r_base"]
+        flare = sp["flare"]
+        z_foot = sp["z_foot"]
         r_loop = sp["r_loop_xy"]
-        cav_z0 = sp["cav_z0"]
+        loop_h = sp["loop_h"]
         cav_z1 = sp["cav_z1"]
+        vault_h = sp["vault_h"]
+        roof_t = sp["roof_t"]
         u_pin = sp["u_pin"]
         cav_back_x = u + gap * 0.5 + 2.4
 
-        # 1. Carve enclosed horizontal pocket in Segment j_idx & add vertical Z-pin
-        cavity = pa_stadium_xy(f"_cav_{j_idx}", u_pin, yc, r_loop + c, cav_back_x, cav_z0, cav_z1)
+        # 1. Carve open-bottom 45°-vaulted pocket in Segment j_idx & add bed-seated captive 45° flared Z-pin
+        top_rad = max(pin_r_neck + 0.40, (r_loop + c) - vault_h)
+        cavity = _pa_vaulted_stadium_xy(
+            f"_cav_{j_idx}", u_pin, yc, r_loop + c, cav_back_x, -1.0, cav_z1, vault_h=vault_h, top_radius=top_rad,
+        )
         pa_bool(seg_objs[j_idx], cavity, "DIFFERENCE", delete_tool=True)
 
-        pin = pa_cylinder(f"_pin_{j_idx}", (u_pin, yc, 0.5 * (cav_z0 + cav_z1)), pin_r, (cav_z1 - cav_z0) + 1.8)
-        pa_bool(pin, pa_duplicate(master, f"_pin_clip_m_{j_idx}"), "INTERSECT", delete_tool=True)
+        pin_z_top = min(sp["z_top"] - 0.6, cav_z1 + vault_h + max(1.6, min(2.6, roof_t * 0.78)))
+        pin = _pa_flared_z_pin(
+            f"_pin_{j_idx}", u_pin, yc, pin_r_base, pin_r_neck, 0.0, z_foot, flare, pin_z_top,
+        )
         pa_bool(pin, pa_duplicate(slab_prisms[j_idx], f"_pin_clip_s_{j_idx}"), "INTERSECT", delete_tool=True)
         pa_bool(seg_objs[j_idx], pin, "UNION", delete_tool=True)
 
-        # 2. Horizontal chain-link tongue wrapping 360° around pin, fused into Segment j_idx + 1
+        # 2. Bed-seated 360° chain-link tongue resting flat on Z=0 with matching 45° conical bore!
         next_lim = joint_specs[j_idx + 1]["cav_front"] - 0.6 if (j_idx + 1) < len(joint_specs) else x1 - 1.2
-        anchor_x = min(u + gap * 0.5 + 3.2, next_lim)
+        anchor_x = min(u + gap * 0.5 + 3.4, next_lim)
         if anchor_x <= u + gap * 0.5 + 0.8:
             anchor_x = u + gap * 0.5 + 1.0
-        z_l0 = cav_z0 + c
-        z_l1 = cav_z1 - c
-        tongue = pa_stadium_xy(f"_tongue_{j_idx}", u_pin, yc, r_loop, anchor_x, z_l0, z_l1)
-        pin_hole = pa_cylinder(f"_pinhole_{j_idx}", (u_pin, yc, 0.5 * (z_l0 + z_l1)), pin_r + c, (z_l1 - z_l0) + 4.0)
-        pa_bool(tongue, pin_hole, "DIFFERENCE", delete_tool=True)
-        pa_bool(tongue, pa_duplicate(master, f"_t_clip_{j_idx}"), "INTERSECT", delete_tool=True)
+        tongue = pa_stadium_xy(f"_tongue_{j_idx}", u_pin, yc, r_loop, anchor_x, 0.0, loop_h)
+        pin_bore = _pa_flared_z_pin(
+            f"_pinhole_{j_idx}", u_pin, yc, pin_r_base + c, pin_r_neck + c, -0.6, z_foot + c + 0.6, flare, loop_h + 2.5,
+        )
+        pa_bool(tongue, pin_bore, "DIFFERENCE", delete_tool=True)
         pa_bool(seg_objs[j_idx + 1], tongue, "UNION", delete_tool=True)
 
         # Keepout volume around hinge so secondary colors (e.g. Belly) never split across internal pin/tongue
         keepout = pa_stadium_xy(
-            f"_hkeep_{j_idx}", u_pin, yc, r_loop + c + 0.4, anchor_x + 0.4, cav_z0 - 0.3, cav_z1 + 0.3
+            f"_hkeep_{j_idx}", u_pin, yc, r_loop + c + 0.4, anchor_x + 0.4, -1.0, cav_z1 + vault_h + 0.5
         )
         hinge_keepouts.append(keepout)
 

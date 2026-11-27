@@ -601,9 +601,9 @@ def analyze_sculpt_anatomy(
             if len(pelvic):
                 eff_s1 = min(eff_s1, float(t_centers[pelvic[0]]) - 0.04)
 
-    # 2. Detect major protected fin/limb zones in [20%..70%]
-    is_lat_fin = (lat_ratio > 1.24) & (w_max > 0.50 * width_all) & (t_centers >= 0.20) & (t_centers <= 0.70)
-    is_dorsal_fin = (top_ratio < 0.45) & (h_loc > 0.78 * height_all) & (t_centers >= 0.20) & (t_centers <= 0.70)
+    # 2. Detect major protected fin/limb zones in [20%..72%]
+    is_lat_fin = (lat_ratio > 1.24) & (w_max > 0.48 * width_all) & (t_centers >= 0.20) & (t_centers <= 0.72)
+    is_dorsal_fin = (top_ratio < 0.46) & (h_loc > 0.74 * height_all) & (t_centers >= 0.20) & (t_centers <= 0.72)
     is_protected = is_lat_fin | is_dorsal_fin
     # Bridge tiny <= 2-bin (5%) gaps between overlapping pectoral and dorsal fins so they stay one unified chest segment
     for i in range(1, n_bins - 2):
@@ -755,7 +755,63 @@ def _rounded_xy_prism(
     return m3d.Manifold.extrude(m3d.CrossSection([pts]), h).translate((0.0, 0.0, z0))
 
 
-def _streamline_flexi_proportions(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+def _vaulted_xy_prism(
+    x_center: float,
+    y_center: float,
+    radius: float,
+    x_back: float,
+    z0: float,
+    z1: float,
+    vault_h: float = 0.0,
+    top_radius: float = 1.0,
+    segs: int = 28,
+) -> m3d.Manifold:
+    """Open-bottom stadium cavity with an optional 45° self-supporting vaulted gable roof above `z1`."""
+    base = _rounded_xy_prism(x_center, y_center, radius, x_back, z0, z1, segs=segs)
+    if vault_h <= 0.25 or top_radius >= radius - 0.18:
+        return base
+    s_bot = _rounded_xy_prism(x_center, y_center, radius, x_back, z1 - 0.08, z1 + 0.04, segs=segs)
+    s_top = _rounded_xy_prism(
+        x_center, y_center, max(0.5, top_radius), x_back, z1 + vault_h - 0.04, z1 + vault_h, segs=segs
+    )
+    vault = m3d.Manifold.hull(s_bot + s_top)
+    return base + vault
+
+
+def _flared_z_pin(
+    x_center: float,
+    y_center: float,
+    r_base: float,
+    r_neck: float,
+    z_bot: float,
+    z_foot: float,
+    flare_h: float,
+    z_top: float,
+    segs: int = 32,
+) -> m3d.Manifold:
+    """Build a 100% print-in-place captive 45° flared vertical Z-pin (wide base foot at `z_bot`, 45° conical
+    shoulder locking the mating chain-link ring against dropping off -Z, and thick neck anchoring into the roof)."""
+    z1 = z_bot + max(0.2, z_foot)
+    z2 = z1 + max(0.2, flare_h)
+    foot = m3d.Manifold.cylinder(max(0.2, (z1 - z_bot) + 0.06), r_base, r_base, circular_segments=segs).translate(
+        (x_center, y_center, z_bot)
+    )
+    cone = m3d.Manifold.cylinder(max(0.2, flare_h + 0.08), r_base, r_neck, circular_segments=segs).translate(
+        (x_center, y_center, z1 - 0.04)
+    )
+    shaft_h = max(0.4, (z_top - z2) + 0.06)
+    shaft = m3d.Manifold.cylinder(shaft_h, r_neck, r_neck, circular_segments=segs).translate(
+        (x_center, y_center, z2 - 0.04)
+    )
+    return foot + cone + shaft
+
+
+def _streamline_flexi_proportions(
+    mf: m3d.Manifold,
+    prep: SculptPrep,
+    *,
+    return_warp: bool = False,
+):
     """Transform overly spherical/chubby figurine sculpts (`L/H < 2.05`) into sleek, athletic flexi proportions
     (`L/H ~ 2.25`) while keeping the front head/eyes/grin (`0..26%`) at 1.0x undistorted aspect ratio.
     """
@@ -764,7 +820,7 @@ def _streamline_flexi_proportions(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m
     sy = float(bb[4] - bb[1])
     sz = float(bb[5] - bb[2])
     if max(sx, sy) < 20.0 or sz < 8.0:
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
     rotated_for_y = (prep.flexi_axis == "y") or (prep.flexi_axis == "auto" and sy > sx)
     work = mf.rotate((0.0, 0.0, -90.0)) if rotated_for_y else mf
     work = _place_on_bed(work)
@@ -780,7 +836,7 @@ def _streamline_flexi_proportions(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m
     # Only streamline chubby character sculpts (skip synthetic spheres with L/H <= 1.05 used in generic mesh unit tests,
     # or streamline when L/H is in the chubby-character range 1.12 .. 2.05!)
     if lh < 1.12 or lh >= 2.08:
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
 
     target_lh = min(2.36, max(lh * 1.62, 2.24))
     needed_gain = (target_lh / lh) - 1.0  # total fractional length increase needed
@@ -801,18 +857,19 @@ def _streamline_flexi_proportions(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m
     dt = 1.0 / (n_grid - 1)
     mapped_t = np.concatenate(([0.0], np.cumsum(0.5 * (stretch_t[:-1] + stretch_t[1:]) * dt)))
 
+    do_slim = bool(width / max(1e-6, height) > 0.80 and lh < 1.80)
     v_t = np.clip((verts[:, 0] - x0) / max(1e-6, length), 0.0, 1.0)
     verts[:, 0] = x0 + np.interp(v_t, ts, mapped_t) * length
 
     # Gently slim excessive spherical belly/flank bloat behind the head so it reads like a sleek shark, not a balloon
-    if width / max(1e-6, height) > 0.80 and lh < 1.80:
+    if do_slim:
         slim_r = np.clip((v_t - 0.22) / 0.20, 0.0, 1.0)
         slim_r = slim_r * slim_r * (3.0 - 2.0 * slim_r)
         verts[:, 1] = yc + (verts[:, 1] - yc) * (1.0 - 0.22 * slim_r)
 
     streamlined = repair_to_manifold(trimesh.Trimesh(vertices=verts, faces=tm.faces, process=False))[0]
     if streamlined.is_empty():
-        return mf, []
+        return (mf, [], None) if return_warp else (mf, [])
     if flip_180:
         streamlined = streamlined.rotate((0.0, 0.0, 180.0))
     if rotated_for_y:
@@ -820,10 +877,61 @@ def _streamline_flexi_proportions(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m
     new_bb = streamlined.bounding_box()
     new_len = max(float(new_bb[3] - new_bb[0]), float(new_bb[4] - new_bb[1]))
     # Keep comfortably within standard 180-250 mm print beds
-    if new_len > 176.0:
-        sc = 176.0 / new_len
-        streamlined = streamlined.scale((sc, sc, sc))
-    return _place_on_bed(streamlined), [f"streamlined torso/tail to sleek {target_lh:.2f}:1 flexi profile (head undistorted)"]
+    bed_sc = (176.0 / new_len) if new_len > 176.0 else 1.0
+    if bed_sc < 1.0:
+        streamlined = streamlined.scale((bed_sc, bed_sc, bed_sc))
+    placed = _place_on_bed(streamlined)
+    pbb = placed.bounding_box()
+    sbb_pre = streamlined.bounding_box()
+    post_shift = np.array([
+        -(sbb_pre[0] + sbb_pre[3]) * 0.5,
+        -(sbb_pre[1] + sbb_pre[4]) * 0.5,
+        -sbb_pre[2],
+    ], dtype=np.float64)
+    # Record exact center shift of input `mf` into `work` so `warp_points_fn` maps any original vertex 1:1!
+    in_bb = mf.bounding_box()
+    in_rot_pts_shift = np.array([
+        -(in_bb[0] + in_bb[3]) * 0.5,
+        -(in_bb[1] + in_bb[4]) * 0.5,
+        -in_bb[2],
+    ], dtype=np.float64)
+
+    def _warp_points(pts_in: np.ndarray) -> np.ndarray:
+        p = np.asarray(pts_in, dtype=np.float64).copy()
+        p += in_rot_pts_shift[None, :]
+        if rotated_for_y:
+            # rotate -90 deg about Z: (x, y) -> (y, -x)
+            p = np.stack([p[:, 1], -p[:, 0], p[:, 2]], axis=-1)
+        if flip_180:
+            p[:, 0] = -p[:, 0]
+            p[:, 1] = -p[:, 1]
+        # Match `_place_on_bed` centering on `work`
+        p[:, 0] -= 0.5 * (float(p[:, 0].min()) + float(p[:, 0].max()))
+        p[:, 1] -= 0.5 * (float(p[:, 1].min()) + float(p[:, 1].max()))
+        p[:, 2] -= float(p[:, 2].min())
+        pt = np.clip((p[:, 0] - x0) / max(1e-6, length), 0.0, 1.0)
+        p[:, 0] = x0 + np.interp(pt, ts, mapped_t) * length
+        if do_slim:
+            sr = np.clip((pt - 0.22) / 0.20, 0.0, 1.0)
+            sr = sr * sr * (3.0 - 2.0 * sr)
+            p[:, 1] = yc + (p[:, 1] - yc) * (1.0 - 0.22 * sr)
+        if flip_180:
+            p[:, 0] = -p[:, 0]
+            p[:, 1] = -p[:, 1]
+        if rotated_for_y:
+            # rotate +90 deg about Z: (x, y) -> (-y, x)
+            p = np.stack([-p[:, 1], p[:, 0], p[:, 2]], axis=-1)
+        if bed_sc < 1.0:
+            p *= bed_sc
+        p += post_shift[None, :]
+        # Exact final bbox alignment with `placed`
+        p[:, 0] += 0.5 * (float(pbb[0] + pbb[3]) - float(p[:, 0].min() + p[:, 0].max()))
+        p[:, 1] += 0.5 * (float(pbb[1] + pbb[4]) - float(p[:, 1].min() + p[:, 1].max()))
+        p[:, 2] += float(pbb[2]) - float(p[:, 2].min())
+        return p
+
+    note = [f"streamlined torso/tail to sleek {target_lh:.2f}:1 flexi profile (head undistorted)"]
+    return (placed, note, _warp_points) if return_warp else (placed, note)
 
 
 def _seat_flexi_on_bed(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
@@ -1183,17 +1291,23 @@ def _seat_single_segment_organic(seg: m3d.Manifold, ceiling_z: float) -> m3d.Man
     return repaired
 
 
-def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.Manifold, list[str]]:
+def _apply_flexi_articulation(
+    mf: m3d.Manifold,
+    prep: SculptPrep,
+    *,
+    return_keepout: bool = False,
+):
     """Slice a sculpted character into N+1 fin-safe, side-to-side S-swimming flexi segments.
 
-    - Uses captive vertical Z-axis posts anchored into Segment i's Z=0 floor & upper roof, mated with
-      rounded horizontal chain-link tongues from Segment i+1 (true side-to-side swimming S-wiggle + support-free 0° pin!)
-    - Keeps a snug ~0.85 mm gill-curved exterior seam with a 360° sculpted outer rim bevel (no wide bread-loaf canyons!)
+    - Uses **open-bottom, bed-seated captive 45° flared Z-axis pins + 360° chain-link tongues** resting
+      directly on `Z = 0` inside a 45° vaulted pocket (ZERO mid-air tongue overhangs, 100% locked against
+      pulling apart in X/Y/±Z, extra first-layer bed adhesion, and visibly interlocked from the bottom!).
+    - Keeps a crisp gill-curved ±24° swimming V-clearance gap with subtle outer rim bevels (zero voxelization!).
     """
     n_cuts = int(prep.flexi_segments)
     explicit_pcts = [float(p) for p in (prep.flexi_cuts_pct or []) if 10.0 <= float(p) <= 92.0]
     if n_cuts <= 0 and not explicit_pcts:
-        return mf, []
+        return (mf, [], None) if return_keepout else (mf, [])
     notes: list[str] = []
     bb = mf.bounding_box()
     sx = float(bb[3] - bb[0])
@@ -1213,9 +1327,9 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
     height_all = z1 - z0
     if length < 20.0 or width_all < 8.0 or height_all < 6.0:
         notes.append("model is too small for print-in-place flexi joints (skipped)")
-        return mf, notes
+        return (mf, notes, None) if return_keepout else (mf, notes)
 
-    c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.80)
+    c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.75)
     gap = max(1.05, 2.3 * c)
     if explicit_pcts:
         sorted_pcts = sorted(explicit_pcts)
@@ -1251,51 +1365,79 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         prev_cut = active_cuts[-1] if active_cuts else bounds[i]
         seg_pitch = min(u - prev_cut, bounds[i + 2] - u)
         # Skip elevated thin tail stems so tail waist + crescent tail fin remain one graceful solid tail piece!
-        if z_bot > 5.5 or w_loc < 7.2 or h_loc < 7.0 or seg_pitch < (gap + 4.0 * c + 2.8):
+        if z_bot > 5.5 or w_loc < 8.6 or h_loc < 7.0 or seg_pitch < (gap + 4.0 * c + 2.6):
             continue
 
-        floor_t = _clamp(h_loc * 0.14, 1.40, 2.2)
-        roof_t = _clamp(h_loc * 0.15, 1.50, 2.5)
-        avail_h = h_loc - floor_t - roof_t - 2.0 * c
-        if avail_h < 2.1:
-            continue
-        loop_h = _clamp(avail_h, 2.1, 6.2)
-        cav_z0 = z_bot + floor_t
-        cav_z1 = cav_z0 + loop_h + 2.0 * c
-
-        pin_r = _clamp(min(w_loc * 0.085, (seg_pitch - gap) * 0.15), 1.05, 1.75)
-        wall_xy = _clamp(pin_r * 0.92, 1.15, 1.65)
-        r_loop_xy = pin_r + c + wall_xy
-        slot_w = 2.0 * (r_loop_xy + c + 0.25)
-        if slot_w > w_loc - 3.0:
-            # Scale down pin_r & wall_xy proportionally on narrower rear tail joints
-            max_r_loop = (w_loc - 3.0) / 2.0 - c - 0.25
-            if max_r_loop < 1.95 + c:
+        # Open-bottom captive 45° flared Z-pin + bed-seated 360° chain-link tongue:
+        # Both pin base and mating chain-link ring print FLAT on Z=0 (zero mid-air overhangs!).
+        roof_t = _clamp(h_loc * 0.18, 1.65, 3.20)
+        z_foot = 0.45
+        flare = _clamp(c + 0.48, 0.85, 1.05)
+        avail_h = h_loc - roof_t - c
+        if avail_h < z_foot + c + flare + 1.00:
+            z_foot = 0.35
+            flare = max(c + 0.40, 0.80)
+            if avail_h < z_foot + c + flare + 0.85:
                 continue
-            pin_r = max(0.95, (max_r_loop - c) * 0.48)
-            wall_xy = max(1.00, (max_r_loop - c) * 0.52)
-            r_loop_xy = pin_r + c + wall_xy
-            slot_w = 2.0 * (r_loop_xy + c + 0.25)
+        loop_h = _clamp(avail_h, z_foot + c + flare + 0.85, 5.60)
+        cav_z1 = loop_h + c
 
-        u_pin = u - (gap / 2.0 + c + pin_r + 0.40)
+        pin_r_neck = _clamp(min(w_loc * 0.058, (seg_pitch - gap) * 0.105), 0.95, 1.38)
+        pin_r_base = pin_r_neck + flare
+        wall_xy = _clamp(pin_r_neck * 0.88, 1.05, 1.35)
+        r_loop_xy = pin_r_base + c + wall_xy
+        slot_w = 2.0 * (r_loop_xy + c + 0.20)
+        if slot_w > w_loc - 2.6:
+            max_r_loop = (w_loc - 2.6) / 2.0 - c - 0.20
+            flare_min = max(c + 0.40, 0.80)
+            if max_r_loop < 0.85 + flare_min + c + 0.95:
+                continue
+            flare = min(flare, max(flare_min, (max_r_loop - c) * 0.27))
+            rem = max_r_loop - flare - c
+            pin_r_neck = max(0.85, rem * 0.47)
+            wall_xy = max(0.95, rem - pin_r_neck)
+            pin_r_base = pin_r_neck + flare
+            r_loop_xy = pin_r_base + c + wall_xy
+            slot_w = 2.0 * (r_loop_xy + c + 0.20)
+
+        u_pin = u - (gap / 2.0 + pin_r_base + 0.20)
         cavity_front_x = u_pin - (r_loop_xy + c)
-        min_front = (active_cuts[-1] + gap / 2.0 + 1.2) if active_cuts else (x0 + 1.5)
+        min_front = (active_cuts[-1] + gap / 2.0 + 1.0) if active_cuts else (x0 + 1.2)
         if cavity_front_x <= min_front:
-            continue
+            # Compact the pin/wall gently to fit tighter tail pitches before skipping
+            max_span = u - (gap / 2.0) - min_front - 0.15
+            flare_min = max(c + 0.40, 0.80)
+            min_needed = 0.20 + 2.0 * (0.85 + flare_min) + 2.0 * c + 0.95
+            if max_span >= min_needed:
+                cur_span = 0.20 + pin_r_base + r_loop_xy + c
+                sf = max_span / max(1e-6, cur_span)
+                pin_r_neck = max(0.85, pin_r_neck * sf)
+                flare = max(flare_min, flare * sf)
+                wall_xy = max(0.95, wall_xy * sf)
+                pin_r_base = pin_r_neck + flare
+                r_loop_xy = pin_r_base + c + wall_xy
+                slot_w = 2.0 * (r_loop_xy + c + 0.20)
+                u_pin = u - (gap / 2.0 + pin_r_base + 0.20)
+                cavity_front_x = u_pin - (r_loop_xy + c)
+            if cavity_front_x <= min_front:
+                continue
 
+        vault_h = _clamp(min((r_loop_xy + c) - (pin_r_neck + 0.35), h_loc - cav_z1 - roof_t), 0.0, 3.6)
         curve = 0.0 if force_flat[i] else min(w_loc * 0.12, seg_pitch * 0.20, 3.6)
         max_half_gap = min(2.25, max(gap / 2.0 + 0.50, seg_pitch * 0.19))
         active_cuts.append(u)
         joint_specs.append({
             "u": u, "yc": yc, "w_loc": w_loc, "z_bot": z_bot, "z_top": z_top, "h_loc": h_loc,
-            "pin_r": pin_r, "r_loop_xy": r_loop_xy, "slot_w": slot_w,
-            "cav_z0": cav_z0, "cav_z1": cav_z1, "u_pin": u_pin, "cavity_front_x": cavity_front_x,
+            "pin_r_neck": pin_r_neck, "pin_r_base": pin_r_base, "flare": flare, "z_foot": z_foot,
+            "r_loop_xy": r_loop_xy, "slot_w": slot_w, "loop_h": loop_h,
+            "cav_z1": cav_z1, "vault_h": vault_h, "roof_t": roof_t,
+            "u_pin": u_pin, "cavity_front_x": cavity_front_x,
             "curve": curve, "max_half_gap": max_half_gap,
         })
 
     if not active_cuts:
         notes.append("no cross-sections were wide enough for flexi joints")
-        return mf, notes
+        return (mf, notes, None) if return_keepout else (mf, notes)
 
     # Partition into N+1 sleek gill-curved segments + subtle 360° outer skin bevels
     n_samples = 29
@@ -1329,67 +1471,120 @@ def _apply_flexi_articulation(mf: m3d.Manifold, prep: SculptPrep) -> tuple[m3d.M
         seg_raw = _clean_segment_slivers(work ^ slab_prism)
         seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=0.55)
 
-        # Ensure middle segments touch Z=0 organically BEFORE hinge pockets are cut
-        ceil_z = joint_specs[min(seg_i, len(joint_specs) - 1)]["cav_z0"] - 0.2
+        # Ensure every segment rests flush on Z=0 organically BEFORE open-bottom hinge pockets are cut
+        ceil_z = joint_specs[min(seg_i, len(joint_specs) - 1)]["cav_z1"] + 0.5
         seg_raw = _seat_single_segment_organic(seg_raw, ceiling_z=ceil_z)
         segments.append(seg_raw)
 
-    # Carve captive horizontal pockets + vertical Z-pins in Segment i, and union horizontal chain-link tongues on Segment i+1
+    # Carve open-bottom vaulted pockets + bed-seated 45° flared Z-pins in Segment i,
+    # and union bed-seated 360° chain-link tongues on Segment i+1 (ZERO mid-air overhangs!).
+    hinge_keepouts: list[m3d.Manifold] = []
     for j_idx, sp in enumerate(joint_specs):
         u = sp["u"]
         yc = sp["yc"]
-        pin_r = sp["pin_r"]
+        pin_r_neck = sp["pin_r_neck"]
+        pin_r_base = sp["pin_r_base"]
+        flare = sp["flare"]
+        z_foot = sp["z_foot"]
         r_loop_xy = sp["r_loop_xy"]
-        cav_z0 = sp["cav_z0"]
+        loop_h = sp["loop_h"]
         cav_z1 = sp["cav_z1"]
+        vault_h = sp["vault_h"]
+        roof_t = sp["roof_t"]
         u_pin = sp["u_pin"]
         cavity_back_x = u + gap / 2.0 + 1.8
 
-        # 1. Segment i (upstream): subtract enclosed horizontal pocket (preserving Z=0 floor & top roof!), add vertical Z-post
-        cavity = _rounded_xy_prism(
-            x_center=u_pin, y_center=yc, radius=r_loop_xy + c,
-            x_back=cavity_back_x, z0=cav_z0, z1=cav_z1,
-        )
-        pin_h = (cav_z1 - cav_z0) + 1.8
-        pin = m3d.Manifold.cylinder(pin_h, pin_r, pin_r, circular_segments=32).translate((u_pin, yc, cav_z0 - 0.9))
-        pin = pin ^ work ^ slab_prisms[j_idx]
-        segments[j_idx] = (segments[j_idx] - cavity) + pin
+        seg_i_pre = segments[j_idx]
+        seg_i_bb = seg_i_pre.bounding_box()
+        seg_top_z = float(seg_i_bb[5])
 
-        # 2. Segment i+1 (downstream): horizontal rounded chain-link tongue wrapping 360° around vertical Z-post
+        # 1. Segment i (upstream): open-bottom 45°-vaulted pocket + captive 45° flared Z-pin seated flat on Z=0
+        top_rad = max(pin_r_neck + 0.40, (r_loop_xy + c) - vault_h)
+        cavity = _vaulted_xy_prism(
+            x_center=u_pin, y_center=yc, radius=r_loop_xy + c,
+            x_back=cavity_back_x, z0=-1.0, z1=cav_z1,
+            vault_h=vault_h, top_radius=top_rad,
+        )
+        pin_z_top = min(seg_top_z - 0.6, cav_z1 + vault_h + max(1.6, min(2.6, roof_t * 0.78)))
+        pin_raw = _flared_z_pin(
+            x_center=u_pin, y_center=yc,
+            r_base=pin_r_base, r_neck=pin_r_neck,
+            z_bot=0.0, z_foot=z_foot, flare_h=flare, z_top=pin_z_top,
+        )
+        # Keep pin base flush at Z=0 while clipping its upper anchor strictly inside Segment i's roof
+        z_clip_pin = m3d.Manifold.cube((pad_y, pad_y, pad_z), center=True).translate(
+            (u_pin, yc, pad_z * 0.5)
+        )
+        pin_below_roof = pin_raw ^ m3d.Manifold.cube((pad_y, pad_y, cav_z1 + vault_h + 0.35), center=True).translate(
+            (u_pin, yc, (cav_z1 + vault_h + 0.35) * 0.5)
+        )
+        pin_in_roof = (pin_raw ^ seg_i_pre) ^ z_clip_pin
+        pin = (pin_below_roof + pin_in_roof) ^ slab_prisms[j_idx]
+        segments[j_idx] = (seg_i_pre - cavity) + pin
+
+        # 2. Segment i+1 (downstream): bed-seated 360° chain-link tongue resting flat on Z=0 with matching 45° bore!
         next_limit = (
             joint_specs[j_idx + 1]["cavity_front_x"] - 0.6
             if j_idx + 1 < len(joint_specs)
             else x1 - 1.2
         )
-        anchor_x = min(u + gap / 2.0 + 3.2, next_limit)
+        anchor_x = min(u + gap / 2.0 + 3.4, next_limit)
         if anchor_x <= u + gap / 2.0 + 0.8:
             anchor_x = u + gap / 2.0 + 1.0
-        z_l0 = cav_z0 + c
-        z_l1 = cav_z1 - c
         tongue_outer = _rounded_xy_prism(
             x_center=u_pin, y_center=yc, radius=r_loop_xy,
-            x_back=anchor_x, z0=z_l0, z1=z_l1,
+            x_back=anchor_x, z0=0.0, z1=loop_h,
         )
-        pin_hole = m3d.Manifold.cylinder(
-            (z_l1 - z_l0) + 4.0, pin_r + c, pin_r + c, circular_segments=32
-        ).translate((u_pin, yc, z_l0 - 2.0))
-        tongue = (tongue_outer - pin_hole) ^ work
+        pin_bore = _flared_z_pin(
+            x_center=u_pin, y_center=yc,
+            r_base=pin_r_base + c, r_neck=pin_r_neck + c,
+            z_bot=-0.6, z_foot=z_foot + c + 0.6, flare_h=flare, z_top=loop_h + 2.5,
+        )
+        # Clip the rear tail of `tongue` (past the cut face into Segment i+1) strictly inside Segment i+1's
+        # belly silhouette so a rising tail stalk NEVER grows a dangling square foot underneath it!
+        front_clip = m3d.Manifold.cube(( (u + gap / 2.0 + 0.6) - (u_pin - r_loop_xy - 2.0), pad_y, pad_z ), center=False).translate(
+            (u_pin - r_loop_xy - 2.0, y0 - 20.0, -5.0)
+        )
+        tongue = (tongue_outer - pin_bore) ^ (front_clip + segments[j_idx + 1])
         segments[j_idx + 1] = segments[j_idx + 1] + tongue
+
+        # Keepout prism so secondary color zones (Belly) keep every mechanical pin + tongue 100% solid Body filament!
+        hinge_keepouts.append(
+            _rounded_xy_prism(
+                x_center=u_pin, y_center=yc, radius=r_loop_xy + c + 0.35,
+                x_back=anchor_x + 0.35, z0=-1.0, z1=cav_z1 + vault_h + 0.5,
+            )
+        )
 
     non_empty = [s for s in segments if not s.is_empty() and s.status() == m3d.Error.NoError]
     if len(non_empty) < 2:
-        return mf, notes
+        return (mf, notes, None) if return_keepout else (mf, notes)
     composed = m3d.Manifold.compose(non_empty)
+    keepout_mf = (
+        m3d.Manifold.batch_boolean(hinge_keepouts, m3d.OpType.Add)
+        if len(hinge_keepouts) > 1
+        else (hinge_keepouts[0] if hinge_keepouts else None)
+    )
     if flip_180:
         composed = composed.rotate((0.0, 0.0, 180.0))
+        if keepout_mf is not None:
+            keepout_mf = keepout_mf.rotate((0.0, 0.0, 180.0))
     if rotated_for_y:
         composed = composed.rotate((0.0, 0.0, 90.0))
-    composed = _place_on_bed(composed)
+        if keepout_mf is not None:
+            keepout_mf = keepout_mf.rotate((0.0, 0.0, 90.0))
+    cbb = composed.bounding_box()
+    shift_bed = (-(cbb[0] + cbb[3]) / 2.0, -(cbb[1] + cbb[4]) / 2.0, -cbb[2])
+    composed = composed.translate(shift_bed)
+    if keepout_mf is not None:
+        keepout_mf = keepout_mf.translate(shift_bed)
     cut_pct_strs = [f"{((u - x0) / length) * 100.0:.1f}%" for u in active_cuts]
     notes.append(
-        f"sliced {len(active_cuts)} fin-safe Z-pin swimming flexi joints at [{', '.join(cut_pct_strs)}] "
+        f"sliced {len(active_cuts)} fin-safe bed-seated captive flared-pin flexi joints at [{', '.join(cut_pct_strs)}] "
         f"({len(non_empty)} beveled segments, {c:.2f} mm clearance)"
     )
+    if return_keepout:
+        return composed, notes, keepout_mf
     return composed, notes
 
 
@@ -1782,16 +1977,15 @@ def prepare_print_mesh(
 
     mf = _place_on_bed(mf)
     mf_unmodified_for_color = mf
+    streamline_warp_fn = None
     flexi_baked = bool(meta.get("flexi_baked"))
     has_flexi = (int(prep.flexi_segments) > 0 or bool(prep.flexi_cuts_pct)) and not flexi_baked
 
     # For print-in-place flexi models, streamline chubby figurine proportions behind the head and gently un-arch
     # any floating rear belly onto Z=0 BEFORE subtle belly bed-ribbon trimming.
     if has_flexi:
-        mf, stream_notes = _streamline_flexi_proportions(mf, prep)
+        mf, stream_notes, streamline_warp_fn = _streamline_flexi_proportions(mf, prep, return_warp=True)
         notes.extend(stream_notes)
-        if stream_notes:
-            mf_unmodified_for_color = mf
         mf, seat_notes = _seat_flexi_on_bed(mf, prep)
         notes.extend(seat_notes)
 
@@ -1866,9 +2060,10 @@ def prepare_print_mesh(
         mf, h_notes = _apply_hollow_cavity(mf, prep)
         notes.extend(h_notes)
 
-    # Optional print-in-place flexi articulation (SDF Flexi-Factory pillowed rims + exact CAD Z-pin hinges)
+    # Optional print-in-place flexi articulation (bed-seated captive 45° flared Z-pins + 360° chain-link tongues)
+    hinge_keepout: m3d.Manifold | None = None
     if has_flexi:
-        mf, f_notes = _apply_flexi_articulation(mf, prep)
+        mf, f_notes, hinge_keepout = _apply_flexi_articulation(mf, prep, return_keepout=True)
         notes.extend(f_notes)
 
     bb = mf.bounding_box()
@@ -1891,12 +2086,26 @@ def prepare_print_mesh(
 
             eff_slots = max(2, min(5, int(printer_slots) if int(printer_slots) > 1 else 5))
             req_colors = max(int(prep.max_colors), eff_slots) if prep.color_mode in ("auto", "multicolor") else int(prep.max_colors)
-            align_mf = mf_unmodified_for_color.translate((0.0, 0.0, -applied_bottom_cut)) if applied_bottom_cut > 0 else mf_unmodified_for_color
+            align_mf = mf_unmodified_for_color
+            warp_fn = streamline_warp_fn
+            if applied_bottom_cut > 0:
+                cut_dz = float(applied_bottom_cut)
+                if warp_fn is not None:
+                    base_warp = warp_fn
+                    def _warp_with_cut(pts_in, _bw=base_warp, _dz=cut_dz):
+                        p = _bw(pts_in)
+                        p[:, 2] -= _dz
+                        return p
+                    warp_fn = _warp_with_cut
+                else:
+                    align_mf = mf_unmodified_for_color.translate((0.0, 0.0, -cut_dz))
             try:
                 proj = project_concept_colors_to_manifolds(
                     align_mf,
                     concept_image_path,
                     final_mf=mf,
+                    hinge_keepout=hinge_keepout,
+                    warp_points_fn=warp_fn,
                     max_colors=max(2, min(5, req_colors)),
                     inlay_depth_mm=1.6,
                 )

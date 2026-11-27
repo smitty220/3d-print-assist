@@ -1553,7 +1553,11 @@ def create_character_sculpt(body: CharacterSculptIn, x_actor: str = Header(defau
         magnet_depth_mm=body.magnet_depth_mm,
         hollow_cavity=body.hollow_cavity,
         hollow_wall_mm=body.hollow_wall_mm,
-        max_colors=4 if (body.multicolor or body.color_mode == "multicolor") else 1,
+        max_colors=(
+            max(2, min(5, w.project.printer.slots if w.project.printer.slots > 1 else 5))
+            if (body.multicolor or body.color_mode == "multicolor")
+            else 1
+        ),
         color_mode="multicolor" if body.multicolor else body.color_mode,
     )
 

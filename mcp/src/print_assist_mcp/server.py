@@ -406,9 +406,10 @@ def build_blender_character(
     color_mode: str = "auto",
 ) -> str:
     """Headless Blender 4.5 LTS SubSurf & Flexi-Factory Character Engine (~2-4 seconds, 100% local & free!).
-    PREFERRED engine for stylized Pixar/cartoon characters, animals, collectibles, multi-color MMU3/AMS models,
-    and print-in-place Flexi-Factory articulated toys with glass-smooth Catmull-Clark Subdivision Surfaces!
-    (Use `sculpt_character` / Hunyuan3D-2mv instead only for uploaded real-world photos / portraits / pets.)
+    Use for procedural/geometric SubSurf toys, custom props/accessories, or when the user explicitly requests
+    modeling directly in Blender.
+    (For approved Pixar/cartoon Character Concepts `K#` or expressive faces/characters, prefer `sculpt_character`
+    which automatically combines authentic Pixar 3D sculpting + up-to-5-color Concept-to-3D MMU3 inlays + Flexi!)
 
     Write a clean Python `script` (1 Blender unit = 1 mm, Z-up, print bed at Z=0, face character toward -X for flexis).
     `bpy` and all `pa_blender_lib` helpers are pre-imported automatically:
