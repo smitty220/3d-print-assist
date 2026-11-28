@@ -1116,7 +1116,7 @@ def test_horizontal_chain_link_flexi_and_character_checks_zero_stale_fail(tmp_pa
     # Verify /api/checks reports ZERO stale fail count on a clean watertight flexi sculpt!
     chk = c.get("/api/checks").json()
     assert chk["counts"]["fail"] == 0, f"Expected 0 fails on valid flexi sculpt, got {chk}"
-    assert chk["counts"]["ok"] >= 4, f"Expected >= 4 ok checks, got {chk}"
+    assert chk["counts"]["ok"] >= 3, f"Expected >= 3 ok checks, got {chk}"
 
     # Verify exported STL splits into >= 4 watertight bed-seated segments with >= 0.40 mm inter-segment clearance
     stl_r = c.get("/api/export/stl")

@@ -673,7 +673,7 @@ def analyze_sculpt_anatomy(
         if in_run:
             safe_intervals.append((run_start, min(eff_s1, float(t_centers[np.where(safe_mask)[0][-1]] + 0.2 * dt))))
 
-        min_pitch = (8.8 / length) if length >= 20.0 else 0.056
+        min_pitch = (13.2 / length) if length >= 20.0 else 0.085
         iv_caps = []
         for iv_a, iv_b in safe_intervals:
             span_t = max(0.0, iv_b - iv_a)
@@ -1119,8 +1119,8 @@ def _seat_flexi_on_bed(
     t_norm = (x_centers - x0) / length
     kernel = np.array([0.08, 0.24, 0.36, 0.24, 0.08], dtype=np.float64)
 
-    # 1. Seat lateral pectoral fins FLUSH with the belly floor (both lifting deeply drooping fins AND
-    #    gently settling hovering fins down so BOTH pectoral fins print flat on Z=0 with zero mid-air spaghetti!).
+    # 1. Gently level ONLY deeply drooping lateral pectoral fins that hang below the central belly floor
+    #    (keep tips cleanly ABOVE the bottom-flatten cut so pectoral fins NEVER get amputated flat!).
     z_belly_smooth = z_min_central.copy()
     for _ in range(2):
         z_belly_smooth = np.convolve(np.pad(z_belly_smooth, 2, mode="edge"), kernel, mode="valid")
@@ -1133,14 +1133,13 @@ def _seat_flexi_on_bed(
         if np.sum(ml) < 6:
             continue
         z_lat_min = float(verts[ml, 2].min())
-        target_z = float(z_belly_smooth[i])
+        # Target just above the subtle bottom-flatten trim (`z_belly + 1.3 mm`) so fins sweep gracefully
+        # parallel to the bed without dipping into the bottom saw blade!
+        target_z = float(z_belly_smooth[i]) + 1.35
         diff = target_z - z_lat_min
-        # Lift drooping fins (`diff > 0.25`) OR gently lower hovering fins (`-5.5 < diff < -0.20`) flush to belly!
-        if diff > 0.25:
+        if diff > 0.35:
             lat_shift_x[i] = min(h_all * 0.18, diff)
-        elif -5.5 < diff < -0.20:
-            lat_shift_x[i] = max(-5.0, diff)
-    has_fin_shift = float(np.abs(lat_shift_x).max()) >= 0.30
+    has_fin_shift = float(lat_shift_x.max()) >= 0.40
     if has_fin_shift:
         for _ in range(2):
             lat_shift_x = np.convolve(np.pad(lat_shift_x, 2, mode="edge"), kernel, mode="valid")
@@ -1150,7 +1149,7 @@ def _seat_flexi_on_bed(
         if not has_fin_shift:
             return
         dy = np.abs(p_arr[:, 1] - yc)
-        wy = np.clip((dy - 0.22 * width) / max(1e-6, 0.13 * width), 0.0, 1.0)
+        wy = np.clip((dy - 0.22 * width) / max(1e-6, 0.14 * width), 0.0, 1.0)
         wy = wy * wy * (3.0 - 2.0 * wy)
         p_arr[:, 2] += wy * np.interp(p_arr[:, 0], x_centers, lat_shift_x)
 
@@ -1166,25 +1165,30 @@ def _seat_flexi_on_bed(
                 z_min_central[i] = float(verts[mx, 2].min())
         z_min_central = np.interp(idx_1d, idx_1d[valid], z_min_central[valid])
 
-    # 2. Un-arch floating rear belly (`45%..80%`) AND settle any floating lower caudal tail lobe (`80%..100%`)
-    #    cleanly onto Z=0 so ZERO rear segments or tail tips start in mid-air!
-    rear_zone = (t_norm >= 0.48) & (t_norm <= 0.98)
-    has_rear_drop = float(z_min_central[rear_zone].max()) >= 1.5
+    # 2. Gently un-arch floating rear torso (`45%..78%`) onto Z=0 while easing cleanly back to 0 before the
+    #    caudal tail fin (`76%..90%`) so the sleek shark tail fin keeps its natural shape (never chopped flat!).
+    rear_zone = (t_norm >= 0.48) & (t_norm <= 0.77)
+    has_rear_drop = float(z_min_central[rear_zone].max()) >= 1.8
     drop_safe = np.zeros(nx, dtype=np.float64)
     if has_rear_drop:
-        # Seat smoothly across the entire rear torso + lower tail fin tip (`t >= 0.42`)
-        rf = np.clip((t_norm - 0.40) / 0.12, 0.0, 1.0)
+        tail_region = np.where((t_norm >= 0.74) & (t_norm <= 0.96))[0]
+        tail_low_idx = int(tail_region[np.argmin(z_min_central[tail_region])]) if len(tail_region) else (nx - 1)
+        z_for_drop = z_min_central.copy()
+        for i in range(tail_low_idx, nx):
+            z_for_drop[i] = min(z_for_drop[i], z_min_central[tail_low_idx])
+
+        rf = np.clip((t_norm - 0.41) / 0.12, 0.0, 1.0)
         rf = rf * rf * (3.0 - 2.0 * rf)
-        # Allow seating all the way to the tail tip if tail bottom hovers <= 8 mm (eliminates floating tail tips!)
-        z_for_drop = np.minimum(z_min_central, np.where(t_norm > 0.80, 7.5, h_all * 0.28))
-        raw_drop = z_for_drop * rf
+        rb = np.clip((0.90 - t_norm) / 0.15, 0.0, 1.0)
+        rb = rb * rb * (3.0 - 2.0 * rb)
+        raw_drop = np.minimum(z_for_drop, h_all * 0.28) * rf * rb
 
         drop_smooth = raw_drop.copy()
         for _ in range(3):
             drop_smooth = np.convolve(np.pad(drop_smooth, 2, mode="edge"), kernel, mode="valid")
-        drop_safe = np.minimum(drop_smooth, z_min_central) * (t_norm >= 0.39)
+        drop_safe = np.minimum(drop_smooth, z_for_drop) * (t_norm >= 0.40) * (t_norm <= 0.91)
         drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.25, 0.5, 0.25]), mode="valid")
-        has_rear_drop = float(drop_safe.max()) >= 0.8
+        has_rear_drop = float(drop_safe.max()) >= 1.0
 
     if not has_fin_shift and not has_rear_drop:
         return (mf, [], None) if return_warp else (mf, [])
@@ -1720,7 +1724,7 @@ def _apply_flexi_articulation(
         slab_prism = m3d.Manifold.extrude(m3d.CrossSection([poly]), pad_z).translate((0.0, 0.0, -5.0))
         slab_prisms.append(slab_prism)
         seg_raw = _clean_segment_slivers(work ^ slab_prism)
-        seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=1.05)
+        # Keep razor-clean organic cut rims without vertex-crumpling skin wrinkles!
 
         # Ensure every segment rests flush on Z=0 organically BEFORE open-bottom hinge pockets are cut
         ceil_z = joint_specs[min(seg_i, len(joint_specs) - 1)]["cav_z1"] + 0.5
@@ -2281,15 +2285,12 @@ def prepare_print_mesh(
         if tex_pts is not None and seat_warp_fn is not None:
             tex_pts = seat_warp_fn(tex_pts)
 
-    # Flatten bottom cleanly on Z=0 for rock-solid support-free first-layer adhesion.
-    # For print-in-place flexi models, give a proper ~5.0% flat print base (capped at 3.2 mm on a 65 mm character)
-    # whenever `flatten_bottom_mm` is left at the small default (0.01..1.2 mm) — eliminates curling lower-belly
-    # banana overhangs and seats pectoral fins + every flexi link rock-solid on Layer 1 without a brim!
+    # Flatten bottom gently on Z=0 for reliable first-layer bed adhesion WITHOUT amputating pectoral fins or tail!
     eff_flat = float(prep.flatten_bottom_mm)
-    if has_flexi and 0.0 < eff_flat <= 1.2:
+    if has_flexi and 0.0 < eff_flat <= 1.0:
         bb_cur = mf.bounding_box()
         h_cur = float(bb_cur[5] - bb_cur[2])
-        eff_flat = max(eff_flat, min(3.2, h_cur * 0.050))
+        eff_flat = max(eff_flat, min(1.25, h_cur * 0.020))
     applied_bottom_cut = 0.0
     if eff_flat > 0:
         bb = mf.bounding_box()
