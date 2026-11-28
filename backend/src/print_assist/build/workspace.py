@@ -910,6 +910,13 @@ class Workspace:
                         rep["part"] = sculpt_findings
                     else:
                         rep["part"] = [*rep.get("part", []), *sculpt_findings]
+                    # Recompute summary counts across all active findings so Character Mode never shows a stale fail badge!
+                    all_f = [*rep.get("preflight", []), *rep.get("part", [])]
+                    rep["counts"] = {
+                        "ok": sum(1 for item in all_f if item.get("status") == "ok"),
+                        "warn": sum(1 for item in all_f if item.get("status") == "warn"),
+                        "fail": sum(1 for item in all_f if item.get("status") == "fail"),
+                    }
                 self._checks = (key, rep)
             return self._checks[1] | {"stale": stale}
 

@@ -1084,6 +1084,58 @@ def test_drooping_pectoral_fin_bed_seating_and_warp_accuracy():
     assert abs(float(warped_v[:, 2].min()) - float(sv[:, 2].min())) < 0.05
 
 
+def test_horizontal_chain_link_flexi_and_character_checks_zero_stale_fail(tmp_path: Path):
+    """Verify horizontal chain-link hinges produce beefy interlocking watertight segments with >= 0.40 mm clearance
+    and zero floating parts, AND that `/api/checks` recomputes `counts` accurately with zero stale CAD fail badge."""
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    app_module.reset(tmp_path)
+    c = TestClient(app_module.app)
+    c.post("/api/projects", json={"name": "Printable Flexi", "creation_mode": "character"})
+
+    # Elongated smooth organic capsule body (140 x 26 x 24 mm)
+    body = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    body.apply_scale([70.0, 14.0, 13.0])
+    body.apply_translation([0.0, 0.0, 13.0])
+    glb = body.export(file_type="glb")
+
+    up = c.post(
+        "/api/sculpts/upload",
+        files={"file": ("capsule.glb", glb, "model/gltf-binary")},
+        params={"target_height_mm": 26.0, "flexi_segments": 4, "flexi_clearance_mm": 0.45},
+    )
+    assert up.status_code == 200, up.text
+    sid = up.json()["sculpt"]["id"]
+    prep_r = c.post(
+        f"/api/sculpts/{sid}/prep",
+        json={"flexi_segments": 4, "flexi_clearance_mm": 0.45, "color_mode": "single", "max_colors": 1},
+    )
+    assert prep_r.status_code == 200, prep_r.text
+
+    # Verify /api/checks reports ZERO stale fail count on a clean watertight flexi sculpt!
+    chk = c.get("/api/checks").json()
+    assert chk["counts"]["fail"] == 0, f"Expected 0 fails on valid flexi sculpt, got {chk}"
+    assert chk["counts"]["ok"] >= 4, f"Expected >= 4 ok checks, got {chk}"
+
+    # Verify exported STL splits into >= 4 watertight bed-seated segments with >= 0.40 mm inter-segment clearance
+    stl_r = c.get("/api/export/stl")
+    assert stl_r.status_code == 200
+    stl_p = tmp_path / "flexi_capsule.stl"
+    stl_p.write_bytes(stl_r.content)
+    mesh = trimesh.load(str(stl_p), force="mesh")
+    comps = sorted(mesh.split(only_watertight=False), key=lambda x: x.bounds[0, 0])
+    assert len(comps) >= 4, f"Expected >= 4 flexi segments, got {len(comps)}"
+    assert all(comp.is_watertight for comp in comps)
+    assert all(float(comp.bounds[0, 2]) <= 0.05 for comp in comps)
+    for i in range(len(comps) - 1):
+        p1, _ = trimesh.sample.sample_surface(comps[i], 4000)
+        p2, _ = trimesh.sample.sample_surface(comps[i + 1], 4000)
+        d, _ = cKDTree(p1).query(p2, k=1)
+        assert float(d.min()) >= 0.38, f"Links {i}<->{i+1} too close ({d.min():.3f} mm)"
+
+
+
 
 
 
