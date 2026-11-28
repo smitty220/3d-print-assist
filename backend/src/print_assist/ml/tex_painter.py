@@ -523,7 +523,8 @@ renderer.load_mesh(mesh)
 
 azims = [0, 90, 180, 270, 0, 180]
 elevs = [0, 0, 0, 0, 90, -90]
-view_weights = [1.0, 0.35, 0.5, 0.35, 0.2, 0.2]
+# Give BOTH sides (0°, 180°) AND the dead-on front face (270°: eyes, teeth, open mouth/tongue) full 1.0 bake priority!
+view_weights = [1.0, 0.65, 1.0, 1.0, 0.25, 0.25]
 
 emit("Rendering 3D geometry maps", 24, "Projecting 6-view normals & positions…")
 normal_maps = [renderer.render_normal(el, az, use_abs_coor=True, return_type="pl") for el, az in zip(elevs, azims)]
@@ -541,15 +542,9 @@ if cfg.get("maps_only"):
     emit("Done", 100, "maps_only")
     sys.exit(0)
 
-# Prepare reference image (remove background if needed, recenter on clean white background)
+# Prepare 1..N concept reference views (remove background once if needed, recenter on clean white background)
 emit("Preparing concept reference", 32, "Isolating character reference…")
-ref_im = Image.open(cfg["image_path"])
-if ref_im.mode != "RGBA" or np.asarray(ref_im)[:, :, 3].min() >= 250:
-    from hy3dgen.rembg import BackgroundRemover
-    rembg = BackgroundRemover()
-    ref_im = rembg(ref_im.convert("RGBA"))
-    del rembg
-    gc.collect()
+ref_paths = [Path(p) for p in (cfg.get("image_paths") or [cfg["image_path"]])]
 
 def _recenter(im, border_ratio=0.16):
     arr = np.asarray(im.convert("RGBA"))
@@ -566,9 +561,24 @@ def _recenter(im, border_ratio=0.16):
     canvas.paste(crop, ((sq - cw) // 2, (sq - ch) // 2))
     return canvas
 
-ref_im = _recenter(ref_im).resize((512, 512))
+raw_refs = [Image.open(rp) for rp in ref_paths]
+need_rembg = [
+    (im.mode != "RGBA" or np.asarray(im)[:, :, 3].min() >= 250)
+    for im in raw_refs
+]
+if any(need_rembg):
+    from hy3dgen.rembg import BackgroundRemover
+    rembg = BackgroundRemover()
+    for idx_r, flag in enumerate(need_rembg):
+        if flag:
+            raw_refs[idx_r] = rembg(raw_refs[idx_r].convert("RGBA"))
+    del rembg
+    gc.collect()
+
+ref_ims = [_recenter(im).resize((512, 512)) for im in raw_refs]
 if debug_dir:
-    ref_im.save(Path(debug_dir) / "ref_centered.png")
+    for idx_r, r_im in enumerate(ref_ims):
+        r_im.save(Path(debug_dir) / f"ref_centered_{idx_r}.png")
 
 # Copy `hunyuanpaint` package into temp workdir and patch hardcoded `'cuda'` / `float64` sites cleanly
 patched_pipe_dir = Path(cfg["work_dir"]) / "hunyuanpaint_patched"
@@ -649,17 +659,17 @@ camera_info = [
     for az, el in zip(azims, elevs)
 ]
 
-emit("Painting 3D surface colors", 62, "Generating 6 geometry-locked painted views…")
+emit("Painting 3D surface colors", 62, f"Generating 6 geometry-locked painted views ({len(ref_ims)} ref{'s' if len(ref_ims) != 1 else ''})…")
 gen = torch.Generator(device="cpu").manual_seed(int(cfg.get("seed", 0)))
 with torch.inference_mode():
     mvd_images = pipe(
-        [ref_im],
+        ref_ims,
         num_inference_steps=30,
         width=512,
         height=512,
         num_in_batch=len(azims),
         camera_info_gen=[camera_info],
-        camera_info_ref=[[0]],
+        camera_info_ref=[list(range(len(ref_ims)))],
         normal_imgs=[[im.resize((512, 512)) for im in normal_maps]],
         position_imgs=[[im.resize((512, 512)) for im in position_maps]],
         generator=gen,
@@ -735,16 +745,24 @@ def _kill_proc(proc: subprocess.Popen) -> None:
             pass
 
 
-def _extract_hero_panel(image_path: Path, out_path: Path) -> Path:
-    """Extract the single cleanest hero character view matching `az=0` from a 3-panel strip or 2x2 sheet."""
+def _extract_ref_panels(image_path: Path, out_dir: Path) -> list[Path]:
+    """Extract 1 or 2 clean character reference views from a 3-panel turnaround, 2x2 sheet, or single image.
+
+    Returns `[side_hero, front_face]` for turnarounds so `HunyuanPaintPipeline` sees BOTH the sweeping side
+    silhouette/belly AND the dead-on front face (eyes, teeth, open red mouth/tongue) simultaneously!
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(image_path) as im:
         w, h = im.size
-        # 3-panel horizontal turnaround strip (front | side/3-4 | back): middle panel matches sculptor's `left` view!
+        # 3-panel horizontal turnaround strip (front | side/3-4 | back): feed BOTH middle (side) + left (front)!
         if w >= int(h * 1.65):
             third = w // 3
-            im.crop((third, 0, third * 2, h)).save(out_path, format="PNG")
-            return out_path
-        # 2x2 quad sheet with dark divider lines: grab TL 3/4 hero (or BL side panel)
+            p_side = out_dir / "ref_0_side.png"
+            p_front = out_dir / "ref_1_front.png"
+            im.crop((third, 0, third * 2, h)).save(p_side, format="PNG")
+            im.crop((0, 0, third, h)).save(p_front, format="PNG")
+            return [p_side, p_front]
+        # 2x2 quad sheet with dark divider lines: grab TL 3/4 hero + TR front view
         if w >= 1000 and h >= 700 and (1.05 <= (w / max(1, h)) <= 1.65):
             arr = np.asarray(im.convert("RGB"))
             mid_row = arr[h // 2 - 2:h // 2 + 2].mean()
@@ -752,10 +770,22 @@ def _extract_hero_panel(image_path: Path, out_path: Path) -> Path:
             if mid_row < 70 and mid_col < 70:
                 hw, hh = w // 2, h // 2
                 pad_top = min(36, hh // 10)
-                im.crop((4, pad_top, hw - 4, hh - 4)).save(out_path, format="PNG")
-                return out_path
-        im.save(out_path, format="PNG")
-        return out_path
+                p_hero = out_dir / "ref_0_hero.png"
+                p_front = out_dir / "ref_1_front.png"
+                im.crop((4, pad_top, hw - 4, hh - 4)).save(p_hero, format="PNG")
+                im.crop((hw + 4, pad_top, w - 4, hh - 4)).save(p_front, format="PNG")
+                return [p_hero, p_front]
+        p_single = out_dir / "ref_0_single.png"
+        im.save(p_single, format="PNG")
+        return [p_single]
+
+
+def _extract_hero_panel(image_path: Path, out_path: Path) -> Path:
+    """Backward-compatible helper returning the primary hero panel."""
+    panels = _extract_ref_panels(image_path, out_path.parent)
+    if panels[0] != out_path:
+        Image.open(panels[0]).save(out_path, format="PNG")
+    return out_path
 
 
 def paint_mesh_from_image(
@@ -791,7 +821,7 @@ def paint_mesh_from_image(
     with gpu_job("sculpting", "Painting 3D surface colors", "Unwrapping UV atlas…"):
         with tempfile.TemporaryDirectory(prefix="pa_texpaint_") as td:
             td_path = Path(td)
-            hero_img = _extract_hero_panel(image_path, td_path / "hero.png")
+            ref_imgs = _extract_ref_panels(image_path, td_path / "refs")
             out_glb = td_path / "painted.glb"
             worker = td_path / "worker.py"
             worker.write_text(_WORKER_SCRIPT, encoding="utf-8")
@@ -802,7 +832,8 @@ def paint_mesh_from_image(
                 "work_dir": str(td_path),
                 "accelerator": hw.accelerator,
                 "mesh_path": str(mesh_path),
-                "image_path": str(hero_img),
+                "image_path": str(ref_imgs[0]),
+                "image_paths": [str(p) for p in ref_imgs],
                 "out_path": str(out_glb),
                 "input_is_z_up": bool(input_is_z_up),
                 "rot_y_deg": float(rot_y_deg),

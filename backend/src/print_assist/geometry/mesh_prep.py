@@ -841,27 +841,25 @@ def _streamline_flexi_proportions(
     if lh < 1.12 or lh >= 2.08:
         return (mf, [], None) if return_warp else (mf, [])
 
-    target_lh = min(2.36, max(lh * 1.62, 2.24))
+    target_lh = min(2.58, max(lh * 1.78, 2.48))
     needed_gain = (target_lh / lh) - 1.0  # total fractional length increase needed
-    # Integral of ramp w(t) over [0, 1] is ~0.62, so rear stretch factor is 1 + needed_gain / 0.62
-    s_rear = min(2.25, 1.0 + needed_gain / 0.62)
 
     tm = _manifold_to_trimesh(work)
     verts = np.asarray(tm.vertices, dtype=np.float64).copy()
     x0 = float(verts[:, 0].min())
     yc = 0.5 * float(verts[:, 1].min() + verts[:, 1].max())
 
-    # Allocate more stretch behind mid-body (`t >= 0.42`) than across the dorsal/chest fin zone so rear tail
-    # gets ample room for 3-4 flexi joints while the head & fins keep authentic Pixar proportions!
+    # Concentrate rear elongation behind the dorsal fin (`t >= 0.50`) so head & chest/dorsal fins keep
+    # authentic Pixar proportions while the fin-free rear torso expands enough for 3-4 crisp tail joints!
     n_grid = 256
     ts = np.linspace(0.0, 1.0, n_grid)
-    r_chest = np.clip((ts - 0.26) / 0.14, 0.0, 1.0)
+    r_chest = np.clip((ts - 0.28) / 0.14, 0.0, 1.0)
     r_chest = r_chest * r_chest * (3.0 - 2.0 * r_chest)
-    r_rear = np.clip((ts - 0.48) / 0.16, 0.0, 1.0)
+    r_rear = np.clip((ts - 0.50) / 0.12, 0.0, 1.0)
     r_rear = r_rear * r_rear * (3.0 - 2.0 * r_rear)
-    r_tail = 1.0 - 0.35 * (np.clip((ts - 0.87) / 0.12, 0.0, 1.0) ** 2)
-    profile_w = (0.35 * r_chest + 0.95 * r_rear) * r_tail
-    mean_w = max(0.25, float(np.mean(profile_w)))
+    r_tail = 1.0 - 0.55 * (np.clip((ts - 0.85) / 0.12, 0.0, 1.0) ** 2)
+    profile_w = (0.18 * r_chest + 1.25 * r_rear) * r_tail
+    mean_w = max(0.22, float(np.mean(profile_w)))
     stretch_t = 1.0 + (needed_gain / mean_w) * profile_w
     dt = 1.0 / (n_grid - 1)
     mapped_t = np.concatenate(([0.0], np.cumsum(0.5 * (stretch_t[:-1] + stretch_t[1:]) * dt)))
@@ -998,35 +996,83 @@ def _seat_flexi_on_bed(
     z_min_central = np.interp(idx_1d, idx_1d[valid], z_min_central[valid])
 
     t_norm = (x_centers - x0) / length
-    rear_zone = (t_norm >= 0.48) & (t_norm <= 0.77)
-    if float(z_min_central[rear_zone].max()) < 1.8:
-        return (mf, [], None) if return_warp else (mf, [])
-
-    # Protect tail fin past its lowest point
-    tail_region = np.where((t_norm >= 0.74) & (t_norm <= 0.96))[0]
-    tail_low_idx = int(tail_region[np.argmin(z_min_central[tail_region])]) if len(tail_region) else (nx - 1)
-    z_for_drop = z_min_central.copy()
-    for i in range(tail_low_idx, nx):
-        z_for_drop[i] = min(z_for_drop[i], z_min_central[tail_low_idx])
-
-    # Strictly zero on head/throat/pectoral fins (t < 0.42), full smooth seating across rear flexi zone (0.52..0.75),
-    # and a wide gentle C2 ease-out (0.75..0.91) so there is never an abrupt step before the tail fin!
-    rf = np.clip((t_norm - 0.41) / 0.12, 0.0, 1.0)
-    rf = rf * rf * (3.0 - 2.0 * rf)
-    rb = np.clip((0.90 - t_norm) / 0.15, 0.0, 1.0)
-    rb = rb * rb * (3.0 - 2.0 * rb)
-    raw_drop = np.minimum(z_for_drop, h_all * 0.28) * rf * rb
-
     kernel = np.array([0.08, 0.24, 0.36, 0.24, 0.08], dtype=np.float64)
-    drop_smooth = raw_drop.copy()
-    for _ in range(3):
-        drop_smooth = np.convolve(np.pad(drop_smooth, 2, mode="edge"), kernel, mode="valid")
-    drop_safe = np.minimum(drop_smooth, z_for_drop) * (t_norm >= 0.40) * (t_norm <= 0.91)
-    drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.25, 0.5, 0.25]), mode="valid")
-    if float(drop_safe.max()) < 1.0:
+
+    # 1. Gently level drooping lateral pectoral fin tips that dip below the central belly floor onto Z=0!
+    #    Only lifts outer lateral vertices (`|y - yc| > 0.23 * width`, `t in [0.10, 0.72]`) — torso & belly untouched.
+    z_belly_smooth = z_min_central.copy()
+    for _ in range(2):
+        z_belly_smooth = np.convolve(np.pad(z_belly_smooth, 2, mode="edge"), kernel, mode="valid")
+    lat_lift_x = np.zeros(nx, dtype=np.float64)
+    lat_v = np.abs(verts[:, 1] - yc) > 0.28 * width
+    for i in range(nx):
+        if not (0.12 <= t_norm[i] <= 0.70):
+            continue
+        ml = (verts[:, 0] >= x_edges[i]) & (verts[:, 0] <= x_edges[i + 1]) & lat_v
+        if np.sum(ml) < 6:
+            continue
+        z_lat_min = float(verts[ml, 2].min())
+        target_z = float(z_belly_smooth[i]) + 0.45
+        if z_lat_min < target_z - 0.35:
+            lat_lift_x[i] = min(h_all * 0.18, target_z - z_lat_min)
+    has_fin_lift = float(lat_lift_x.max()) >= 0.45
+    if has_fin_lift:
+        for _ in range(2):
+            lat_lift_x = np.convolve(np.pad(lat_lift_x, 2, mode="edge"), kernel, mode="valid")
+        lat_lift_x *= (t_norm >= 0.08) & (t_norm <= 0.74)
+
+    def _apply_fin_lift(p_arr: np.ndarray) -> None:
+        if not has_fin_lift:
+            return
+        dy = np.abs(p_arr[:, 1] - yc)
+        wy = np.clip((dy - 0.23 * width) / max(1e-6, 0.14 * width), 0.0, 1.0)
+        wy = wy * wy * (3.0 - 2.0 * wy)
+        p_arr[:, 2] += wy * np.interp(p_arr[:, 0], x_centers, lat_lift_x)
+
+    if has_fin_lift:
+        _apply_fin_lift(verts)
+        # Re-normalize Z=0 after lifting drooping fins so belly settles cleanly onto the build plate
+        z_shift_fin = float(verts[:, 2].min())
+        verts[:, 2] -= z_shift_fin
+        # Re-sample central belly floor post-fin-lift
+        for i in range(nx):
+            mx = (verts[:, 0] >= x_edges[i]) & (verts[:, 0] <= x_edges[i + 1])
+            mc = mx & central_v
+            if np.any(mc):
+                z_min_central[i] = float(verts[mc, 2].min())
+            elif np.any(mx):
+                z_min_central[i] = float(verts[mx, 2].min())
+        z_min_central = np.interp(idx_1d, idx_1d[valid], z_min_central[valid])
+
+    # 2. Un-arch any floating rear belly (`45%..79%`) smoothly down to Z=0
+    rear_zone = (t_norm >= 0.48) & (t_norm <= 0.77)
+    has_rear_drop = float(z_min_central[rear_zone].max()) >= 1.8
+    drop_safe = np.zeros(nx, dtype=np.float64)
+    if has_rear_drop:
+        tail_region = np.where((t_norm >= 0.74) & (t_norm <= 0.96))[0]
+        tail_low_idx = int(tail_region[np.argmin(z_min_central[tail_region])]) if len(tail_region) else (nx - 1)
+        z_for_drop = z_min_central.copy()
+        for i in range(tail_low_idx, nx):
+            z_for_drop[i] = min(z_for_drop[i], z_min_central[tail_low_idx])
+
+        rf = np.clip((t_norm - 0.41) / 0.12, 0.0, 1.0)
+        rf = rf * rf * (3.0 - 2.0 * rf)
+        rb = np.clip((0.90 - t_norm) / 0.15, 0.0, 1.0)
+        rb = rb * rb * (3.0 - 2.0 * rb)
+        raw_drop = np.minimum(z_for_drop, h_all * 0.28) * rf * rb
+
+        drop_smooth = raw_drop.copy()
+        for _ in range(3):
+            drop_smooth = np.convolve(np.pad(drop_smooth, 2, mode="edge"), kernel, mode="valid")
+        drop_safe = np.minimum(drop_smooth, z_for_drop) * (t_norm >= 0.40) * (t_norm <= 0.91)
+        drop_safe = np.convolve(np.pad(drop_safe, 1, mode="edge"), np.array([0.25, 0.5, 0.25]), mode="valid")
+        has_rear_drop = float(drop_safe.max()) >= 1.0
+
+    if not has_fin_lift and not has_rear_drop:
         return (mf, [], None) if return_warp else (mf, [])
 
-    verts[:, 2] -= np.interp(verts[:, 0], x_centers, drop_safe)
+    if has_rear_drop:
+        verts[:, 2] -= np.interp(verts[:, 0], x_centers, drop_safe)
     verts[:, 2] -= float(verts[:, 2].min())
     seated = _trimesh_to_manifold(trimesh.Trimesh(vertices=verts, faces=tm.faces, process=False))
     if seated is None or seated.is_empty():
@@ -1048,7 +1094,11 @@ def _seat_flexi_on_bed(
         p[:, 0] -= 0.5 * (float(p[:, 0].min()) + float(p[:, 0].max()))
         p[:, 1] -= 0.5 * (float(p[:, 1].min()) + float(p[:, 1].max()))
         p[:, 2] -= float(p[:, 2].min())
-        p[:, 2] -= np.interp(p[:, 0], x_centers, drop_safe)
+        if has_fin_lift:
+            _apply_fin_lift(p)
+            p[:, 2] -= float(p[:, 2].min())
+        if has_rear_drop:
+            p[:, 2] -= np.interp(p[:, 0], x_centers, drop_safe)
         p[:, 2] -= float(p[:, 2].min())
         if flip_180:
             p[:, 0] = -p[:, 0]
@@ -1060,8 +1110,12 @@ def _seat_flexi_on_bed(
         p[:, 2] += float(pbb[2]) - float(p[:, 2].min())
         return p
 
-    note = ["gently un-arched rear torso onto Z=0 bed (head, fins, and tail preserved)"]
-    return (placed, note, _seat_warp) if return_warp else (placed, note)
+    notes_seat: list[str] = []
+    if has_fin_lift:
+        notes_seat.append("leveled drooping lateral pectoral fins flush with Z=0 belly plane")
+    if has_rear_drop:
+        notes_seat.append("gently un-arched rear torso onto Z=0 bed (head, fins, and tail preserved)")
+    return (placed, notes_seat, _seat_warp) if return_warp else (placed, notes_seat)
 
 
 def _extract_concept_palette(concept_png: Path) -> dict | None:
@@ -1227,18 +1281,19 @@ def _split_multicolor_parts(
     return parts, [f"split into 2-color MMU3/AMS bodies ({pal['body_hex']} body + {pal['belly_hex']} belly)"]
 
 
-def _bevel_segment_rims(seg: m3d.Manifold, bevel_mm: float = 0.45) -> m3d.Manifold:
-    """Soften sharp 90° saw-cut rims into smooth pillowed designer links by tucking ONLY outer-rim vertices
-    (shared between cut-cap faces `|nx| > 0.78` and outer-skin faces `|nx| <= 0.78`, above `Z = 0.40 mm`)
-    inward along the local YZ skin normal. Never creates stair-step rabbets and keeps `Z = 0` bed pads flat."""
+def _bevel_segment_rims(seg: m3d.Manifold, bevel_mm: float = 1.05) -> m3d.Manifold:
+    """Soften sharp 90° saw-cut rims into chunky, sculpted pillowed Flexi Factory links via a 2-ring bevel:
+    tucks rim vertices (ring 0, shared between cut-cap faces `|nx| > 0.78` and outer-skin faces) smoothly
+    inward along `-vn_yz` and slightly back into the link along `-cap_x`, then gently rolls 1-ring adjacent
+    skin vertices inward so every segment edge looks intentionally sculpted while keeping `Z = 0` pads flat."""
     if seg.is_empty():
         return seg
     tm = _manifold_to_trimesh(seg)
-    verts = np.asarray(tm.vertices, dtype=np.float64).copy()
+    verts_orig = np.asarray(tm.vertices, dtype=np.float64)
     faces = np.asarray(tm.faces, dtype=np.int64)
-    if len(verts) < 12 or len(faces) < 12:
+    if len(verts_orig) < 12 or len(faces) < 12:
         return seg
-    v0, v1, v2 = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
+    v0, v1, v2 = verts_orig[faces[:, 0]], verts_orig[faces[:, 1]], verts_orig[faces[:, 2]]
     fn = np.cross(v1 - v0, v2 - v0)
     flen = np.linalg.norm(fn, axis=1, keepdims=True)
     fn = np.divide(fn, np.maximum(flen, 1e-12))
@@ -1248,39 +1303,69 @@ def _bevel_segment_rims(seg: m3d.Manifold, bevel_mm: float = 0.45) -> m3d.Manifo
     if not np.any(is_cap) or not np.any(is_skin):
         return seg
 
-    cap_v = np.zeros(len(verts), dtype=bool)
+    cap_v = np.zeros(len(verts_orig), dtype=bool)
     cap_v[faces[is_cap].reshape(-1)] = True
     skin_faces = faces[is_skin]
     skin_fn = fn[is_skin]
-    skin_v = np.zeros(len(verts), dtype=bool)
+    skin_v = np.zeros(len(verts_orig), dtype=bool)
     skin_v[skin_faces.reshape(-1)] = True
-    rim_mask = cap_v & skin_v & (verts[:, 2] > 0.40)
+    rim_mask = cap_v & skin_v & (verts_orig[:, 2] > 0.45)
     if not np.any(rim_mask):
         return seg
 
-    # Accumulate outward YZ skin normal and shortest skin edge length at each rim vertex
-    vn_yz = np.zeros((len(verts), 2), dtype=np.float64)
+    # Accumulate outward YZ skin normal, outward cap X direction, and local edge lengths
+    vn_yz = np.zeros((len(verts_orig), 2), dtype=np.float64)
     for slot in (0, 1, 2):
         np.add.at(vn_yz, skin_faces[:, slot], skin_fn[:, 1:3])
     nlen = np.linalg.norm(vn_yz, axis=1, keepdims=True)
     vn_yz = np.divide(vn_yz, np.maximum(nlen, 1e-12))
 
-    min_edge = np.full(len(verts), np.inf, dtype=np.float64)
+    cap_nx = np.zeros(len(verts_orig), dtype=np.float64)
+    cap_faces = faces[is_cap]
+    cap_fn_x = fn[is_cap, 0]
+    for slot in (0, 1, 2):
+        np.add.at(cap_nx, cap_faces[:, slot], cap_fn_x)
+    cap_dir = np.sign(cap_nx)
+
+    min_edge = np.full(len(verts_orig), np.inf, dtype=np.float64)
+    max_edge = np.zeros(len(verts_orig), dtype=np.float64)
     for a_s, b_s in ((0, 1), (1, 2), (2, 0)):
         va = skin_faces[:, a_s]
         vb = skin_faces[:, b_s]
-        elen = np.linalg.norm(verts[va] - verts[vb], axis=1)
+        elen = np.linalg.norm(verts_orig[va] - verts_orig[vb], axis=1)
         np.minimum.at(min_edge, va, elen)
         np.minimum.at(min_edge, vb, elen)
+        np.maximum.at(max_edge, va, elen)
+        np.maximum.at(max_edge, vb, elen)
+
+    # Identify 1-ring outer-skin neighbor vertices adjacent to the rim (not on cut cap, above Z=0.45)
+    touch_rim = rim_mask[skin_faces[:, 0]] | rim_mask[skin_faces[:, 1]] | rim_mask[skin_faces[:, 2]]
+    ring1_mask = np.zeros(len(verts_orig), dtype=bool)
+    if np.any(touch_rim):
+        ring1_mask[skin_faces[touch_rim].reshape(-1)] = True
+    ring1_mask &= (~cap_v) & (~rim_mask) & (verts_orig[:, 2] > 0.45)
 
     rim_idx = np.nonzero(rim_mask)[0]
-    disp = np.minimum(bevel_mm, 0.36 * min_edge[rim_idx])
-    disp = np.where(np.isfinite(disp) & (disp > 0.04), disp, 0.0)
-    verts[rim_idx, 1] -= vn_yz[rim_idx, 0] * disp
-    verts[rim_idx, 2] = np.maximum(0.40, verts[rim_idx, 1 * 0 + 2] - vn_yz[rim_idx, 1] * disp)
-    cand = _trimesh_to_manifold(trimesh.Trimesh(vertices=verts, faces=faces, process=False))
-    if cand is not None and not cand.is_empty() and cand.status() == m3d.Error.NoError:
-        return cand
+    # Use a balanced local scale (min_edge clamped smoothly, up to bevel_mm) so dense sculpts still get a visible pillow rim!
+    eff_edge = np.where(np.isfinite(min_edge), 0.5 * (min_edge + np.minimum(max_edge, min_edge * 2.2)), 0.0)
+    disp0 = np.minimum(bevel_mm, 0.44 * eff_edge[rim_idx])
+    disp0 = np.where(np.isfinite(disp0) & (disp0 > 0.05), disp0, 0.0)
+
+    # Try full 2-ring sculpted pillow bevel first, then ring-0-only fallback, then original `seg`
+    for use_ring1 in (True, False):
+        verts = verts_orig.copy()
+        verts[rim_idx, 1] -= vn_yz[rim_idx, 0] * disp0
+        verts[rim_idx, 2] = np.maximum(0.45, verts[rim_idx, 2] - vn_yz[rim_idx, 1] * disp0)
+        verts[rim_idx, 0] -= cap_dir[rim_idx] * (0.28 * disp0)
+        if use_ring1 and np.any(ring1_mask):
+            r1_idx = np.nonzero(ring1_mask)[0]
+            disp1 = np.minimum(bevel_mm * 0.36, 0.24 * eff_edge[r1_idx])
+            disp1 = np.where(np.isfinite(disp1) & (disp1 > 0.03), disp1, 0.0)
+            verts[r1_idx, 1] -= vn_yz[r1_idx, 0] * disp1
+            verts[r1_idx, 2] = np.maximum(0.45, verts[r1_idx, 2] - vn_yz[r1_idx, 1] * disp1)
+        cand = _trimesh_to_manifold(trimesh.Trimesh(vertices=verts, faces=faces, process=False))
+        if cand is not None and not cand.is_empty() and cand.status() == m3d.Error.NoError:
+            return cand
     return seg
 
 
@@ -1370,12 +1455,12 @@ def _apply_flexi_articulation(
         return (mf, notes, None) if return_keepout else (mf, notes)
 
     c = _clamp(float(prep.flexi_clearance_mm), 0.25, 0.75)
-    gap = max(1.05, 2.3 * c)
+    gap = max(1.25, 2.65 * c)
     if explicit_pcts:
         sorted_pcts = sorted(explicit_pcts)
         solved_cuts = [(p / 100.0, False) for p in sorted_pcts]
     else:
-        # Target 5 cuts (6 segments: head + chest + 3 rear links + tail) when n_cuts >= 4 on a streamlined >= 1.95:1 body
+        # Target 5 cuts (6 segments) when n_cuts >= 4 on a streamlined >= 1.95:1 body
         req_cuts = max(5, n_cuts) if (n_cuts >= 4 and length / max(1.0, height_all) >= 1.95) else max(1, n_cuts)
         anat = analyze_sculpt_anatomy(work, n_cuts=req_cuts, s0_pct=float(prep.flexi_start_pct), s1_pct=float(prep.flexi_end_pct))
         solved_cuts = anat["solved_cuts"]
@@ -1387,7 +1472,7 @@ def _apply_flexi_articulation(
     pad_z = height_all + 40.0
     # Flexi Factory expressive ±24° V-shaped flank clearance (non-destructive — zero full-mesh voxelization!)
     eff_deg = _clamp(float(prep.flexi_angle_deg), 10.0, 30.0)
-    tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.65
+    tan_half = math.tan(math.radians(eff_deg / 2.0)) * 0.72
 
     joint_specs: list[dict[str, float]] = []
     active_cuts: list[float] = []
@@ -1404,67 +1489,68 @@ def _apply_flexi_articulation(
         yc = float((sbb[1] + sbb[4]) / 2.0)
         prev_cut = active_cuts[-1] if active_cuts else bounds[i]
         seg_pitch = min(u - prev_cut, bounds[i + 2] - u)
-        # Skip elevated thin tail stems so tail waist + crescent tail fin remain one graceful solid tail piece!
-        if z_bot > 5.5 or w_loc < 8.6 or h_loc < 7.0 or seg_pitch < (gap + 4.0 * c + 2.6):
+        # Skip elevated thin tail stems while allowing compact captive tail links down to w_loc >= 6.8 mm!
+        if z_bot > 5.5 or w_loc < 6.8 or h_loc < 6.2 or seg_pitch < (gap + 3.4 * c + 2.2):
             continue
 
         # Open-bottom captive 45° flared Z-pin + bed-seated 360° chain-link tongue:
         # Both pin base and mating chain-link ring print FLAT on Z=0 (zero mid-air overhangs!).
-        roof_t = _clamp(h_loc * 0.18, 1.65, 3.20)
+        roof_t = _clamp(h_loc * 0.17, 1.45, 3.20)
         z_foot = 0.45
         flare = _clamp(c + 0.48, 0.85, 1.05)
         avail_h = h_loc - roof_t - c
         if avail_h < z_foot + c + flare + 1.00:
             z_foot = 0.35
-            flare = max(c + 0.40, 0.80)
-            if avail_h < z_foot + c + flare + 0.85:
+            flare = max(c + 0.34, 0.72)
+            if avail_h < z_foot + c + flare + 0.75:
                 continue
-        loop_h = _clamp(avail_h, z_foot + c + flare + 0.85, 5.60)
+        loop_h = _clamp(avail_h, z_foot + c + flare + 0.75, 5.60)
         cav_z1 = loop_h + c
 
-        pin_r_neck = _clamp(min(w_loc * 0.058, (seg_pitch - gap) * 0.105), 0.95, 1.38)
+        pin_r_neck = _clamp(min(w_loc * 0.058, (seg_pitch - gap) * 0.105), 0.90, 1.38)
         pin_r_base = pin_r_neck + flare
-        wall_xy = _clamp(pin_r_neck * 0.88, 1.05, 1.35)
+        wall_xy = _clamp(pin_r_neck * 0.88, 1.00, 1.35)
         r_loop_xy = pin_r_base + c + wall_xy
-        slot_w = 2.0 * (r_loop_xy + c + 0.20)
-        if slot_w > w_loc - 2.6:
-            max_r_loop = (w_loc - 2.6) / 2.0 - c - 0.20
-            flare_min = max(c + 0.40, 0.80)
-            if max_r_loop < 0.85 + flare_min + c + 0.95:
+        slot_w = 2.0 * (r_loop_xy + c + 0.18)
+        side_margin = 1.9 if w_loc < 13.0 else 2.5
+        if slot_w > w_loc - side_margin:
+            max_r_loop = (w_loc - side_margin) / 2.0 - c - 0.18
+            flare_min = max(c + 0.34, 0.72)
+            if max_r_loop < 0.76 + flare_min + c + 0.84:
                 continue
             flare = min(flare, max(flare_min, (max_r_loop - c) * 0.27))
             rem = max_r_loop - flare - c
-            pin_r_neck = max(0.85, rem * 0.47)
-            wall_xy = max(0.95, rem - pin_r_neck)
+            pin_r_neck = max(0.76, rem * 0.47)
+            wall_xy = max(0.84, rem - pin_r_neck)
             pin_r_base = pin_r_neck + flare
             r_loop_xy = pin_r_base + c + wall_xy
-            slot_w = 2.0 * (r_loop_xy + c + 0.20)
+            slot_w = 2.0 * (r_loop_xy + c + 0.18)
 
-        u_pin = u - (gap / 2.0 + pin_r_base + 0.20)
+        u_pin = u - (gap / 2.0 + pin_r_base + 0.18)
         cavity_front_x = u_pin - (r_loop_xy + c)
-        min_front = (active_cuts[-1] + gap / 2.0 + 0.65) if active_cuts else (x0 + 1.2)
+        min_front = (active_cuts[-1] + gap / 2.0 + 0.55) if active_cuts else (x0 + 1.2)
         if cavity_front_x <= min_front:
             # Compact the pin/wall gently to fit tighter tail pitches before skipping
             max_span = u - (gap / 2.0) - min_front - 0.15
-            flare_min = max(c + 0.40, 0.80)
-            min_needed = 0.20 + 2.0 * (0.85 + flare_min) + 2.0 * c + 0.95
+            flare_min = max(c + 0.34, 0.72)
+            min_needed = 0.18 + 2.0 * (0.76 + flare_min) + 2.0 * c + 0.84
             if max_span >= min_needed:
-                cur_span = 0.20 + pin_r_base + r_loop_xy + c
+                cur_span = 0.18 + pin_r_base + r_loop_xy + c
                 sf = max_span / max(1e-6, cur_span)
-                pin_r_neck = max(0.85, pin_r_neck * sf)
+                pin_r_neck = max(0.76, pin_r_neck * sf)
                 flare = max(flare_min, flare * sf)
-                wall_xy = max(0.95, wall_xy * sf)
+                wall_xy = max(0.84, wall_xy * sf)
                 pin_r_base = pin_r_neck + flare
                 r_loop_xy = pin_r_base + c + wall_xy
-                slot_w = 2.0 * (r_loop_xy + c + 0.20)
-                u_pin = u - (gap / 2.0 + pin_r_base + 0.20)
+                slot_w = 2.0 * (r_loop_xy + c + 0.18)
+                u_pin = u - (gap / 2.0 + pin_r_base + 0.18)
                 cavity_front_x = u_pin - (r_loop_xy + c)
             if cavity_front_x <= min_front:
                 continue
 
         vault_h = _clamp(min((r_loop_xy + c) - (pin_r_neck + 0.35), h_loc - cav_z1 - roof_t), 0.0, 3.6)
         curve = 0.0 if force_flat[i] else min(w_loc * 0.12, seg_pitch * 0.20, 3.6)
-        max_half_gap = min(2.25, max(gap / 2.0 + 0.50, seg_pitch * 0.19))
+        max_half_gap = min(2.45, max(gap / 2.0 + 0.55, seg_pitch * 0.21))
         active_cuts.append(u)
         joint_specs.append({
             "u": u, "yc": yc, "w_loc": w_loc, "z_bot": z_bot, "z_top": z_top, "h_loc": h_loc,
@@ -1509,7 +1595,7 @@ def _apply_flexi_articulation(
         slab_prism = m3d.Manifold.extrude(m3d.CrossSection([poly]), pad_z).translate((0.0, 0.0, -5.0))
         slab_prisms.append(slab_prism)
         seg_raw = _clean_segment_slivers(work ^ slab_prism)
-        seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=0.55)
+        seg_raw = _bevel_segment_rims(seg_raw, bevel_mm=1.05)
 
         # Ensure every segment rests flush on Z=0 organically BEFORE open-bottom hinge pockets are cut
         ceil_z = joint_specs[min(seg_i, len(joint_specs) - 1)]["cav_z1"] + 0.5
@@ -1998,6 +2084,7 @@ def prepare_print_mesh(
         compute_clean_sweeping_belly_paint,
         normalize_hex,
         quantize_face_colors_to_filaments,
+        refine_color_boundaries_watertight,
         sample_mesh_face_rgb,
         transfer_face_rgb_to_target,
     )
@@ -2150,16 +2237,19 @@ def prepare_print_mesh(
         tex_pts[:, 0] += 0.5 * (float(bb[0] + bb[3]) - float(tex_pts[:, 0].min() + tex_pts[:, 0].max()))
         tex_pts[:, 1] += 0.5 * (float(bb[1] + bb[4]) - float(tex_pts[:, 1].min() + tex_pts[:, 1].max()))
 
-    # Build fast per-triangle hinge-keepout mask so internal flexi pins, tongues & cut caps stay pure Slot 1 Body!
-    hinge_mask = np.zeros(len(final_tris), dtype=bool)
+    # Build per-triangle internal hinge-keepout mask (strictly inside each mechanical pin/tongue/pocket volume
+    # — never overwriting the outer lateral cream belly flanks on narrow rear tail links!)
+    hinge_box_mask = np.zeros(len(final_tris), dtype=bool)
     if hinge_keepout is not None and not hinge_keepout.is_empty() and len(final_tris) > 0:
         tri_c = final_pts[final_tris].mean(axis=1)
         for hcomp in hinge_keepout.decompose():
             hbb = hcomp.bounding_box()
-            hinge_mask |= (
-                (tri_c[:, 0] >= hbb[0] - 0.15) & (tri_c[:, 0] <= hbb[3] + 0.15)
-                & (tri_c[:, 1] >= hbb[1] - 0.15) & (tri_c[:, 1] <= hbb[4] + 0.15)
-                & (tri_c[:, 2] >= hbb[2] - 0.15) & (tri_c[:, 2] <= hbb[5] + 0.15)
+            # Shrink lateral Y bounds slightly (-0.25 mm) so narrow-tail outer flank skin stays unbroken!
+            hy_pad = min(0.0, 0.25)
+            hinge_box_mask |= (
+                (tri_c[:, 0] >= hbb[0] - 0.12) & (tri_c[:, 0] <= hbb[3] + 0.12)
+                & (tri_c[:, 1] >= hbb[1] + 0.25) & (tri_c[:, 1] <= hbb[4] - 0.25)
+                & (tri_c[:, 2] >= hbb[2] - 0.10) & (tri_c[:, 2] <= hbb[5] + 0.10)
             )
 
     # Strictly honor explicit `prep.max_colors` (never override explicit max_colors=2 back to 5!)
@@ -2175,22 +2265,33 @@ def prepare_print_mesh(
 
     face_filaments: np.ndarray | None = None
     palette: dict[int, str] | None = None
+    pre_refine_tris_count = len(final_tris)
 
-    # 1. Interactive User Paint Override (Smart-Fill / Brush edits persisted in `{sid}_paint.json`)
+    # Parse any persisted user viewport paint override (Smart-Fill / Brush edits in `{sid}_paint.json`).
+    # We support BOTH current post-refinement triangle counts AND legacy pre-refinement counts cleanly!
+    ov_fils_arr: np.ndarray | None = None
+    ov_pal_clean: dict[int, str] | None = None
     if paint_override and isinstance(paint_override, dict) and len(final_tris) > 0:
-        ov_fils = paint_override.get("face_filaments")
+        ov_raw = paint_override.get("face_filaments")
         ov_pal_raw = paint_override.get("palette") or {}
-        ov_pal = {int(k): normalize_hex(v) for k, v in ov_pal_raw.items() if str(k).isdigit()}
-        if ov_fils is not None and len(ov_fils) == len(final_tris) and ov_pal:
-            face_filaments = np.asarray(ov_fils, dtype=np.int32)
-            palette = ov_pal
-            notes.append(f"applied custom {len(set(face_filaments.tolist()))}-color MMU3 paint")
+        ov_pal_tmp = {int(k): normalize_hex(v) for k, v in ov_pal_raw.items() if str(k).isdigit()}
+        if ov_raw is not None and ov_pal_tmp:
+            ov_fils_arr = np.asarray(ov_raw, dtype=np.int32)
+            ov_pal_clean = ov_pal_tmp
 
-    # 2. Real 3D Baked UV Texture -> Crisp Per-Triangle MMU3 Painting (ZERO boolean tooth damage!)
+    # Legacy pre-refinement override match (apply directly without altering topology)
+    if ov_fils_arr is not None and ov_pal_clean and len(ov_fils_arr) == pre_refine_tris_count and eff_max_colors == 1:
+        face_filaments = ov_fils_arr
+        palette = ov_pal_clean
+        notes.append(f"applied custom {len(set(face_filaments.tolist()))}-color MMU3 paint")
+
+    # 1. Real 3D Baked UV Texture -> Crisp Per-Triangle MMU3 Painting + Watertight Smooth Isoline Borders!
     if face_filaments is None and eff_max_colors >= 2 and raw_face_rgb is not None and tex_pts is not None and tex_tris is not None:
         dst_rgb, dist_mm = transfer_face_rgb_to_target(tex_pts, tex_tris, raw_face_rgb, final_pts, final_tris)
-        # Protect internal flexi cut walls (far from original skin) & hinge mechanisms on Slot 1 Body
-        prot_mask = hinge_mask | (dist_mm > 0.90)
+        # Lock ONLY internal mechanical hinge pins, chain-link tongues & vaulted pockets to Slot 1 Body!
+        # Outer cream belly skin AND lower belly bevel rims inherit their adjacent cream skin so the belly
+        # sweeps cleanly unbroken across every flexi link!
+        prot_mask = hinge_box_mask & (dist_mm > 0.65)
         face_filaments, palette, q_notes = quantize_face_colors_to_filaments(
             final_pts,
             final_tris,
@@ -2199,23 +2300,74 @@ def prepare_print_mesh(
             protected_mask=prot_mask,
             crease_deg=24.0,
         )
-        notes.append(f"quantized 3D baked texture into {len(palette)}-color MMU3 paint ({', '.join(q_notes)})")
+        r_pts, r_tris, r_fils = refine_color_boundaries_watertight(
+            final_pts,
+            final_tris,
+            face_filaments,
+            src_points=tex_pts,
+            src_tris=tex_tris,
+            src_face_rgb=raw_face_rgb,
+            palette=palette,
+            protected_mask=prot_mask,
+            subdivide_passes=1,
+            fair_iters=8,
+            crease_deg=34.0,
+        )
+        r_tm = trimesh.Trimesh(vertices=r_pts, faces=r_tris, process=False)
+        if r_tm.is_watertight:
+            final_pts, final_tris, face_filaments, final_tm = r_pts, r_tris, r_fils, r_tm
+        notes.append(f"quantized 3D baked texture into {len(palette)}-color MMU3 paint with smooth isoline borders ({', '.join(q_notes)})")
 
-    # 3. Clean 2-Color Smooth Sweeping Belly (for untextured monochrome sculpts or explicit max_colors=2 —
-    #    ZERO blind 2D facial splattering, ZERO vertical rear cliff, hinges pure Slot 1!)
+    # 2. Clean 2-Color Smooth Sweeping Belly (for untextured monochrome sculpts or explicit max_colors=2 —
+    #    ZERO blind 2D facial splattering, unbroken belly across flexi links, razor-smooth isoline seam!)
     if face_filaments is None and eff_max_colors >= 2 and is_organic_sculpt:
         pal_c = _extract_concept_palette(concept_image_path) if (concept_image_path is not None and concept_image_path.is_file()) else None
         body_hx = (pal_c["body_hex"] if pal_c else None) or color or "#527292"
         belly_hx = (pal_c["belly_hex"] if pal_c else None) or "#ece6d6"
+        # Protect internal hinge cavities (above Z=0.15 inside hinge box) while leaving outer belly skin unbroken
+        tri_c2 = final_pts[final_tris].mean(axis=1)
+        z0_f = float(final_pts[:, 2].min()) if len(final_pts) else 0.0
+        v0f, v1f, v2f = final_pts[final_tris[:, 0]], final_pts[final_tris[:, 1]], final_pts[final_tris[:, 2]]
+        fn2 = np.cross(v1f - v0f, v2f - v0f)
+        fn2 = np.divide(fn2, np.maximum(np.linalg.norm(fn2, axis=1, keepdims=True), 1e-12))
+        prot_belly = hinge_box_mask & ((tri_c2[:, 2] > z0_f + 0.15) | (np.abs(fn2[:, 2]) < 0.7))
         face_filaments, palette = compute_clean_sweeping_belly_paint(
             final_pts,
             final_tris,
             body_hex=body_hx,
             belly_hex=belly_hx,
             flexi_axis=prep.flexi_axis,
-            protected_mask=hinge_mask,
+            protected_mask=prot_belly,
         )
-        notes.append(f"painted clean 2-color sweeping belly ({palette[1]} body + {palette[2]} belly)")
+        r_pts, r_tris, r_fils = refine_color_boundaries_watertight(
+            final_pts,
+            final_tris,
+            face_filaments,
+            protected_mask=prot_belly,
+            subdivide_passes=1,
+            fair_iters=9,
+            crease_deg=34.0,
+        )
+        r_tm = trimesh.Trimesh(vertices=r_pts, faces=r_tris, process=False)
+        if r_tm.is_watertight:
+            final_pts, final_tris, face_filaments, final_tm = r_pts, r_tris, r_fils, r_tm
+        notes.append(f"painted clean 2-color sweeping belly with smooth isoline border ({palette[1]} body + {palette[2]} belly)")
+
+    # 3. Apply persisted interactive viewport Paint Override (matches refined mesh triangle count!)
+    if ov_fils_arr is not None and ov_pal_clean:
+        if len(ov_fils_arr) == len(final_tris):
+            face_filaments = ov_fils_arr
+            palette = ov_pal_clean
+            notes.append(f"applied custom {len(set(face_filaments.tolist()))}-color MMU3 paint")
+        elif len(ov_fils_arr) == pre_refine_tris_count and len(final_tris) != pre_refine_tris_count:
+            # Legacy pre-refinement override: re-use exact unrefined topology so every painted face matches 1:1
+            unr_tm = _manifold_to_trimesh(mf)
+            final_pts = np.asarray(unr_tm.vertices, dtype=np.float64)
+            final_tris = np.asarray(unr_tm.faces, dtype=np.int32)
+            final_tm = unr_tm
+            face_filaments = ov_fils_arr
+            palette = ov_pal_clean
+            notes.append(f"applied custom {len(set(face_filaments.tolist()))}-color MMU3 paint")
 
     primary_color = (palette.get(1) if palette else None) or color or "#b8c2cc"
     parts = [

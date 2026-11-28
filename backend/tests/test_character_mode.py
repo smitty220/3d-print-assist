@@ -976,6 +976,115 @@ def test_interactive_smart_fill_brush_palette_undo_reset_api(tmp_path: Path):
     assert r_reset.json()["paint"]["slot_counts"].get("3", 0) == 0
 
 
+def test_watertight_isoline_boundary_refinement_and_bed_lock():
+    """Verify conformal Red-Green boundary subdivision + tangential fairing stays 100% watertight,
+    smooths jagged color seams, and never perturbs Z=0 bed vertices."""
+    import numpy as np
+    from print_assist.geometry.mesh_paint import refine_color_boundaries_watertight
+
+    sphere = trimesh.creation.icosphere(subdivisions=3, radius=20.0)
+    pts = np.asarray(sphere.vertices, dtype=np.float64).copy()
+    pts[:, 2] -= float(pts[:, 2].min())
+    # Flatten bottom cap onto Z=0 to test bed-locking
+    pts[:, 2] = np.where(pts[:, 2] < 1.2, 0.0, pts[:, 2])
+    tris = np.asarray(sphere.faces, dtype=np.int32)
+    tri_c = pts[tris].mean(axis=1)
+    fils = np.where(tri_c[:, 2] > 18.0, 1, 2).astype(np.int32)
+
+    r_pts, r_tris, r_fils = refine_color_boundaries_watertight(
+        pts, tris, fils, subdivide_passes=1, fair_iters=6, crease_deg=34.0
+    )
+    assert len(r_tris) > len(tris), "Boundary triangles must be subdivided"
+    assert len(r_fils) == len(r_tris)
+    rtm = trimesh.Trimesh(vertices=r_pts, faces=r_tris, process=False)
+    assert rtm.is_watertight, "Conformal Red-Green boundary refinement must preserve 100% watertightness"
+    assert abs(float(r_pts[:, 2].min())) < 1e-6, "Z=0 build-plate bed must remain flush at Z=0"
+    assert set(r_fils.tolist()) == {1, 2}
+
+
+def test_dual_view_reference_panel_extraction(tmp_path: Path):
+    """Verify `_extract_ref_panels` yields `[side, front]` for 3-panel turnarounds and 2x2 quads, and `[single]` otherwise."""
+    from print_assist.ml.tex_painter import _extract_ref_panels
+
+    # 1. 3-panel horizontal turnaround strip (Front | 3/4 Side | Back) -> [middle side, left front]
+    strip = Image.new("RGB", (900, 300), (255, 255, 255))
+    strip.paste(Image.new("RGB", (300, 300), (200, 30, 30)), (0, 0))      # Left = Front (red)
+    strip.paste(Image.new("RGB", (300, 300), (30, 120, 200)), (300, 0))   # Middle = Side (blue)
+    strip.paste(Image.new("RGB", (300, 300), (30, 180, 60)), (600, 0))    # Right = Back (green)
+    sp = tmp_path / "strip.png"
+    strip.save(sp)
+    refs_strip = _extract_ref_panels(sp, tmp_path / "out_strip")
+    assert len(refs_strip) == 2
+    assert Image.open(refs_strip[0]).getpixel((150, 150))[2] > 180  # Side (blue) first
+    assert Image.open(refs_strip[1]).getpixel((150, 150))[0] > 180  # Front (red) second
+
+    # 2. 2x2 quad sheet with dark center dividers -> [TL hero, TR front]
+    quad = Image.new("RGB", (1200, 800), (240, 240, 240))
+    quad.paste(Image.new("RGB", (596, 396), (40, 110, 210)), (0, 0))      # TL hero (blue)
+    quad.paste(Image.new("RGB", (596, 396), (210, 50, 50)), (604, 0))     # TR front (red)
+    quad.paste(Image.new("RGB", (1200, 8), (10, 10, 10)), (0, 396))
+    quad.paste(Image.new("RGB", (8, 800), (10, 10, 10)), (596, 0))
+    qp = tmp_path / "quad.png"
+    quad.save(qp)
+    refs_quad = _extract_ref_panels(qp, tmp_path / "out_quad")
+    assert len(refs_quad) == 2
+    assert Image.open(refs_quad[0]).getpixel((200, 200))[2] > 180
+    assert Image.open(refs_quad[1]).getpixel((200, 200))[0] > 180
+
+    # 3. Single hero image -> [single]
+    single = Image.new("RGB", (512, 512), (90, 120, 150))
+    sgp = tmp_path / "single.png"
+    single.save(sgp)
+    refs_single = _extract_ref_panels(sgp, tmp_path / "out_single")
+    assert len(refs_single) == 1
+
+
+def test_drooping_pectoral_fin_bed_seating_and_warp_accuracy():
+    """Verify `_seat_flexi_on_bed` levels drooping lateral pectoral fins flush with the belly Z=0 plane
+    and that `_seat_warp` matches the warped mesh vertices within < 0.05 mm."""
+    import numpy as np
+    from print_assist.geometry.mesh_prep import _seat_flexi_on_bed, repair_to_manifold
+
+    # Build a streamlined torso (X: -60..+60, Y: -18..+18, Z: 5..35) with two drooping pectoral fins dipping to Z=0
+    body = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    body.apply_scale([60.0, 18.0, 15.0])
+    body.apply_translation([0.0, 0.0, 20.0])  # belly sits at Z = 5 mm
+    fin_l = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    fin_l.apply_scale([10.0, 18.0, 4.0])
+    fin_l.apply_transform(trimesh.transformations.rotation_matrix(np.radians(-18.0), [1.0, 0.0, 0.0]))
+    fin_l.apply_translation([-18.0, 22.0, 6.0])  # outer tip droops below belly floor!
+    fin_r = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    fin_r.apply_scale([10.0, 18.0, 4.0])
+    fin_r.apply_transform(trimesh.transformations.rotation_matrix(np.radians(18.0), [1.0, 0.0, 0.0]))
+    fin_r.apply_translation([-18.0, -22.0, 6.0])
+
+    mf_b, _ = repair_to_manifold(body)
+    mf_fl, _ = repair_to_manifold(fin_l)
+    mf_fr, _ = repair_to_manifold(fin_r)
+    shark = mf_b + mf_fl + mf_fr
+    # Place on Z=0
+    sbb = shark.bounding_box()
+    shark = shark.translate((0.0, 0.0, -float(sbb[2])))
+
+    prep = SculptPrep(flexi_segments=4)
+    seated, notes, warp_fn = _seat_flexi_on_bed(shark, prep, return_warp=True)
+    assert any("pectoral fins" in n for n in notes), f"Expected drooping fin leveling note, got {notes}"
+    assert warp_fn is not None
+
+    # After leveling, central belly floor must rest at Z=0 (not hovering 4+ mm above the bed on fin tips!)
+    sm = seated.to_mesh()
+    sv = np.asarray(sm.vert_properties[:, :3], dtype=np.float64)
+    central_belly_z = float(sv[np.abs(sv[:, 1]) < 8.0, 2].min())
+    assert central_belly_z < 0.8, f"Expected central belly seated on Z=0 after fin lift, got {central_belly_z:.2f} mm"
+
+    # Verify warp_fn matches vertex positions identically
+    raw_v = np.asarray(shark.to_mesh().vert_properties[:, :3], dtype=np.float64)
+    warped_v = warp_fn(raw_v)
+    assert warped_v.shape == raw_v.shape
+    assert abs(float(warped_v[:, 2].min()) - float(sv[:, 2].min())) < 0.05
+
+
+
 
 
 

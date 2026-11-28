@@ -202,13 +202,14 @@ def _shading_invariant_feat(lab: np.ndarray) -> np.ndarray:
     a = lab[..., 1]
     b = lab[..., 2]
     chroma = np.hypot(a, b)
-    # Gently compress mid-tone L (0.36x) so lit & shadowed plastic of the same hue merge cleanly,
-    # while expanding extreme dark (L < 26) and pure crisp white (L > 86 & chroma < 14) so pupils & teeth pop!
-    L_feat = 50.0 + (L - 50.0) * 0.38
-    dark_boost = np.clip((19.0 - L) / 11.0, 0.0, 1.8) * 28.0
-    white_boost = np.clip((L - 87.0) / 9.0, 0.0, 1.5) * np.clip((13.0 - chroma) / 9.0, 0.0, 1.0) * 22.0
+    # Gently compress mid-tone L (0.34x) so lit & shadowed plastic of the same hue stay ONE uniform filament,
+    # while lifting ONLY neutral Pure White (L > 85, chroma < 6.0 -> teeth & eye sclera) and dropping true
+    # Jet Black (L < 20 -> pupils) cleanly away from warm lit cream highlights (`b* >= 6`)!
+    L_feat = 50.0 + (L - 50.0) * 0.34
+    dark_boost = np.clip((20.0 - L) / 11.0, 0.0, 1.8) * 28.0
+    white_boost = np.clip((L - 85.0) / 9.0, 0.0, 1.4) * np.clip((6.2 - chroma) / 4.2, 0.0, 1.0) * 26.0
     L_feat = L_feat - dark_boost + white_boost
-    return np.stack([L_feat, a * 1.35, b * 1.35], axis=-1).astype(np.float32)
+    return np.stack([L_feat, a * 1.40, b * 1.40], axis=-1).astype(np.float32)
 
 
 def quantize_face_colors_to_filaments(
@@ -281,17 +282,19 @@ def quantize_face_colors_to_filaments(
             cb = np.average(sub_feat[is_black], axis=0, weights=sub_w[is_black]).astype(np.float32)
             if float(np.linalg.norm(cb - c0)) >= 20.0:
                 centers.append(cb)
-        # Pure Bright White (teeth / eye sclera): L > 88, low chroma (< 10 — distinct from warm cream belly!)
-        is_white = (sub_lab[:, 0] > 88.0) & (np.hypot(sub_lab[:, 1], sub_lab[:, 2]) < 10.5)
-        if len(centers) < k_max and float(sub_w[is_white].sum()) >= sub_tot_w * 0.0020:
+        # Pure Neutral White (teeth / eye sclera): L > 87, neutral low chroma (< 5.2 — excludes warm lit cream lips!)
+        is_white = (sub_lab[:, 0] > 87.0) & (np.hypot(sub_lab[:, 1], sub_lab[:, 2]) < 5.2)
+        if len(centers) < k_max and float(sub_w[is_white].sum()) >= sub_tot_w * 0.0008:
             cw = np.average(sub_feat[is_white], axis=0, weights=sub_w[is_white]).astype(np.float32)
-            if all(float(np.linalg.norm(cw - c)) >= 18.0 for c in centers):
+            if all(float(np.linalg.norm(cw - c)) >= 16.0 for c in centers):
                 centers.append(cw)
-        # Vivid Chromatic Accent (e.g. red/pink mouth/tongue, gold badge, bright green trim): chroma > 26
-        is_vivid = np.hypot(sub_lab[:, 1], sub_lab[:, 2]) > 26.0
-        if len(centers) < k_max and float(sub_w[is_vivid].sum()) >= sub_tot_w * 0.0015:
+        # Vivid Chromatic Accent (e.g. red/pink mouth/tongue, gold badge, bright green trim):
+        # Include slightly shaded interior mouth reds/corals (`a* > 11.5` & `chroma > 14.0`) as well as bright accents!
+        chroma_sub = np.hypot(sub_lab[:, 1], sub_lab[:, 2])
+        is_vivid = (chroma_sub > 24.0) | ((sub_lab[:, 1] > 11.5) & (chroma_sub > 14.0))
+        if len(centers) < k_max and float(sub_w[is_vivid].sum()) >= sub_tot_w * 0.0006:
             cv = np.average(sub_feat[is_vivid], axis=0, weights=sub_w[is_vivid]).astype(np.float32)
-            if all(float(np.linalg.norm(cv - c)) >= 24.0 for c in centers):
+            if all(float(np.linalg.norm(cv - c)) >= 20.0 for c in centers):
                 centers.append(cv)
 
     # 3. Fill remaining slots (e.g. Warm Cream Belly, secondary color zones) with farthest distinct hue modes
@@ -320,7 +323,7 @@ def quantize_face_colors_to_filaments(
             )
             if same_hue_shadow:
                 continue
-            score = mean_d * (float(bin_w[bi]) ** 0.35)
+            score = mean_d * (float(bin_w[bi]) ** 0.50)
             if score > best_score:
                 best_score = score
                 best_center = cand
@@ -328,17 +331,19 @@ def quantize_face_colors_to_filaments(
             break
         centers.append(best_center)
 
-    # Gentle K-means refinement (only 4 steps so locked black/white eye/teeth centers don't drift into grey!)
+    # Gentle K-means refinement (only 3 steps; keep locked extreme anchors like Pure White & Jet Black pinned
+    # tightly so warm cream lips can't pull Pure White yellow!)
     c_arr = np.stack(centers, axis=0)
-    for _ in range(4):
+    for _ in range(3):
         d2 = np.sum((sub_feat[:, None, :] - c_arr[None, :, :]) ** 2, axis=-1)
         lbl = np.argmin(d2, axis=1)
         for ci in range(len(c_arr)):
             m = lbl == ci
             if np.any(m):
                 nc = np.average(sub_feat[m], axis=0, weights=sub_w[m]).astype(np.float32)
-                # Dampen drift on tiny extreme anchors
-                alpha = 0.55 if float(sub_w[m].sum()) < sub_tot_w * 0.04 else 0.85
+                # Keep small extreme anchors (black pupils, pure white teeth/sclera, red tongue) tightly pinned
+                frac_m = float(sub_w[m].sum()) / max(1e-6, sub_tot_w)
+                alpha = 0.25 if frac_m < 0.06 else 0.80
                 c_arr[ci] = (1.0 - alpha) * c_arr[ci] + alpha * nc
 
     # Drop vanished or nearly-duplicate clusters
@@ -442,13 +447,23 @@ def quantize_face_colors_to_filaments(
         luma = px.mean(axis=1)
         med_luma = float(np.median(luma))
         if len(px) >= 16:
-            if med_luma < 60.0:
-                # True black/dark filament -> use crisp dark core (15..45th percentile)
+            px_lab = rgb_to_lab(px)
+            px_chroma = np.hypot(px_lab[:, 1], px_lab[:, 2])
+            if med_luma < 52.0 and float(np.median(px_chroma)) < 12.0:
+                # True black/dark neutral filament -> crisp dark core (10..45th percentile)
                 lo, hi = np.percentile(luma, [10, 45])
+                clean_px = px[(luma >= lo) & (luma <= hi)]
+            elif float(np.percentile(px_chroma, 75)) > 16.0:
+                # Vivid chromatic filament (e.g. recessed red mouth/tongue) -> pick most lit & saturated core!
+                c_hi = float(np.percentile(px_chroma, 65))
+                l_hi = float(np.percentile(luma, 55))
+                clean_px = px[(px_chroma >= c_hi) & (luma >= l_hi)]
+                if len(clean_px) < 4:
+                    clean_px = px[px_chroma >= c_hi]
             else:
-                # Lit matte filament -> use well-lit albedo core (55..88th percentile, excluding AO shadows!)
-                lo, hi = np.percentile(luma, [55, 88])
-            clean_px = px[(luma >= lo) & (luma <= hi)]
+                # Lit matte body/belly/white filament -> well-lit albedo core (62..92th percentile, excluding AO!)
+                lo, hi = np.percentile(luma, [62, 92])
+                clean_px = px[(luma >= lo) & (luma <= hi)]
             if len(clean_px) >= 4:
                 px = clean_px
         med_rgb = np.median(px, axis=0)
@@ -456,6 +471,323 @@ def quantize_face_colors_to_filaments(
 
     summary = [f"Slot {s} {palette[s]}" for s in sorted(palette)]
     return face_filaments, palette, summary
+
+
+def _conformal_subdivide_edges(
+    points: np.ndarray,
+    tris: np.ndarray,
+    face_filaments: np.ndarray,
+    split_edge_mask_fn,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """100% watertight conformal Red-Green (1/2/3-edge) subdivision along marked mesh edges.
+
+    Every shared edge marked for splitting receives ONE midpoint vertex shared identically by both
+    incident triangles -> mathematically zero T-junctions and guaranteed manifold watertightness.
+    Returns `(new_points, new_tris, new_face_filaments, parent_face_idx)`.
+    """
+    n_verts = len(points)
+    n_faces = len(tris)
+    if n_faces == 0:
+        return points, tris, face_filaments, np.zeros(0, dtype=np.int32)
+
+    # Undirected edge keys per face corner-pair: e0=(0,1), e1=(1,2), e2=(2,0)
+    e_pairs = np.stack([
+        np.stack([np.minimum(tris[:, 0], tris[:, 1]), np.maximum(tris[:, 0], tris[:, 1])], axis=1),
+        np.stack([np.minimum(tris[:, 1], tris[:, 2]), np.maximum(tris[:, 1], tris[:, 2])], axis=1),
+        np.stack([np.minimum(tris[:, 2], tris[:, 0]), np.maximum(tris[:, 2], tris[:, 0])], axis=1),
+    ], axis=1)  # (F, 3, 2)
+    e_keys = e_pairs[..., 0].astype(np.int64) * max(1, n_verts) + e_pairs[..., 1].astype(np.int64)  # (F, 3)
+
+    mark_keys: set[int] = split_edge_mask_fn(e_keys)
+    if not mark_keys:
+        return points, tris, face_filaments, np.arange(n_faces, dtype=np.int32)
+
+    # Create one midpoint vertex per unique marked edge
+    sorted_keys = sorted(mark_keys)
+    key_to_mid: dict[int, int] = {}
+    mid_pts = np.empty((len(sorted_keys), 3), dtype=np.float64)
+    nv = max(1, n_verts)
+    for idx, k in enumerate(sorted_keys):
+        va = k // nv
+        vb = k % nv
+        mid_pts[idx] = 0.5 * (points[va] + points[vb])
+        key_to_mid[k] = n_verts + idx
+
+    new_points = np.vstack([points, mid_pts])
+    out_tris: list[tuple[int, int, int]] = []
+    out_fils: list[int] = []
+    out_parents: list[int] = []
+
+    t_list = tris.tolist()
+    k_list = e_keys.tolist()
+    f_list = face_filaments.tolist()
+    for fi in range(n_faces):
+        a, b, c = t_list[fi]
+        k0, k1, k2 = k_list[fi]
+        m0 = key_to_mid.get(k0, -1)
+        m1 = key_to_mid.get(k1, -1)
+        m2 = key_to_mid.get(k2, -1)
+        fil = f_list[fi]
+        n_split = (m0 >= 0) + (m1 >= 0) + (m2 >= 0)
+        if n_split == 0:
+            out_tris.append((a, b, c))
+            out_fils.append(fil)
+            out_parents.append(fi)
+        elif n_split == 3:
+            out_tris.extend([(a, m0, m2), (m0, b, m1), (m2, m1, c), (m0, m1, m2)])
+            out_fils.extend((fil, fil, fil, fil))
+            out_parents.extend((fi, fi, fi, fi))
+        elif n_split == 1:
+            if m0 >= 0:
+                out_tris.extend([(a, m0, c), (m0, b, c)])
+            elif m1 >= 0:
+                out_tris.extend([(a, b, m1), (a, m1, c)])
+            else:
+                out_tris.extend([(a, b, m2), (m2, b, c)])
+            out_fils.extend((fil, fil))
+            out_parents.extend((fi, fi))
+        else:  # n_split == 2: rotate so unsplit edge is (c, a), split edges are (a,b)->mA and (b,c)->mB
+            if m2 < 0:
+                va, vb, vc, ma, mb = a, b, c, m0, m1
+            elif m0 < 0:
+                va, vb, vc, ma, mb = b, c, a, m1, m2
+            else:
+                va, vb, vc, ma, mb = c, a, b, m2, m0
+            # Pick shorter diagonal between (va, mb) and (vc, ma) for well-shaped triangles
+            d1 = float(np.sum((new_points[va] - new_points[mb]) ** 2))
+            d2 = float(np.sum((new_points[vc] - new_points[ma]) ** 2))
+            if d1 <= d2:
+                out_tris.extend([(ma, vb, mb), (va, ma, mb), (va, mb, vc)])
+            else:
+                out_tris.extend([(ma, vb, mb), (va, ma, vc), (ma, mb, vc)])
+            out_fils.extend((fil, fil, fil))
+            out_parents.extend((fi, fi, fi))
+
+    return (
+        new_points,
+        np.asarray(out_tris, dtype=np.int32),
+        np.asarray(out_fils, dtype=np.int32),
+        np.asarray(out_parents, dtype=np.int32),
+    )
+
+
+def refine_color_boundaries_watertight(
+    points: np.ndarray,
+    tris: np.ndarray,
+    face_filaments: np.ndarray,
+    *,
+    src_points: np.ndarray | None = None,
+    src_tris: np.ndarray | None = None,
+    src_face_rgb: np.ndarray | None = None,
+    palette: dict[int, str] | None = None,
+    protected_mask: np.ndarray | None = None,
+    subdivide_passes: int = 1,
+    fair_iters: int = 6,
+    crease_deg: float = 34.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Eliminate sawtooth zig-zag color borders along filament seams while keeping the mesh 100% watertight!
+
+    1. Conformal Red-Green subdivision ONLY on triangles touching a color boundary (`subdivide_passes` passes)
+       — optionally re-evaluating sub-triangle labels from the high-res 3D UV texture when provided!
+    2. Tangential boundary-polyline Laplacian fairing (`fair_iters` passes): slides vertices on smooth-skin
+       color seams strictly along the local tangent plane toward their 2 seam neighbors (clamped to never
+       flip triangles, never disturbing sharp geometric creases > `crease_deg` or the `Z=0` flat bed!).
+    """
+    pts = np.asarray(points, dtype=np.float64).copy()
+    tr = np.asarray(tris, dtype=np.int32).copy()
+    fils = np.asarray(face_filaments, dtype=np.int32).copy()
+    prot = np.zeros(len(tr), dtype=bool) if protected_mask is None else np.asarray(protected_mask, dtype=bool).copy()
+    if len(tr) < 12 or len(set(fils.tolist())) <= 1:
+        return pts, tr, fils
+
+    src_tree = None
+    pal_slots: list[int] = []
+    pal_feat = None
+    if src_points is not None and src_tris is not None and src_face_rgb is not None and palette:
+        src_c = src_points[src_tris].mean(axis=1)
+        src_tree = cKDTree(src_c)
+        pal_slots = sorted(int(k) for k in palette)
+        pal_rgb = np.stack([hex_to_rgb(palette[s]) for s in pal_slots], axis=0)
+        pal_feat = _shading_invariant_feat(rgb_to_lab(pal_rgb))
+
+    # 1. Conformal boundary subdivision (doubles resolution right on paint seams without bloating body mesh!)
+    for _ in range(max(0, int(subdivide_passes))):
+        f1, f2, dots, _ = build_face_adjacency(pts, tr)
+        if len(f1) == 0:
+            break
+        diff_e = (fils[f1] != fils[f2]) & (~prot[f1]) & (~prot[f2])
+        if not np.any(diff_e):
+            break
+        border_faces = np.zeros(len(tr), dtype=bool)
+        border_faces[f1[diff_e]] = True
+        border_faces[f2[diff_e]] = True
+
+        def _pick_edges(e_keys: np.ndarray) -> set[int]:
+            # Mark all 3 edges of every triangle straddling a color boundary for clean isotropic refinement
+            return set(e_keys[border_faces].reshape(-1).tolist())
+
+        new_pts, new_tr, new_fils, parents = _conformal_subdivide_edges(pts, tr, fils, _pick_edges)
+        new_prot = prot[parents]
+        # Re-evaluate newly subdivided seam sub-triangles against the continuous 3D UV texture when available
+        # (using inverse-distance weighted k=3 interpolation for smooth sub-triangle isoline transitions!)
+        if src_tree is not None and pal_feat is not None and src_face_rgb is not None:
+            refined_mask = border_faces[parents] & (~new_prot)
+            if np.any(refined_mask):
+                rc = new_pts[new_tr[refined_mask]].mean(axis=1)
+                k_q = min(3, len(src_tris))
+                dists, idxs = src_tree.query(rc, k=k_q)
+                if k_q == 1:
+                    sub_rgb = src_face_rgb[idxs].astype(np.float32)
+                    min_d = dists
+                else:
+                    w_idw = 1.0 / np.maximum(dists, 1e-4)
+                    w_idw /= w_idw.sum(axis=1, keepdims=True)
+                    sub_rgb = np.sum(src_face_rgb[idxs].astype(np.float32) * w_idw[..., None], axis=1)
+                    min_d = dists[:, 0]
+                sub_feat = _shading_invariant_feat(rgb_to_lab(sub_rgb))
+                d2 = np.sum((sub_feat[:, None, :] - pal_feat[None, :, :]) ** 2, axis=-1)
+                best_idx = np.argmin(d2, axis=1)
+                cand_slots = np.array([pal_slots[int(i)] for i in best_idx], dtype=np.int32)
+                # Keep only refined triangles close to outer skin (avoid coloring internal walls)
+                near_skin = min_d <= 0.90
+                rf_indices = np.nonzero(refined_mask)[0]
+                new_fils[rf_indices[near_skin]] = cand_slots[near_skin]
+        pts, tr, fils, prot = new_pts, new_tr, new_fils, new_prot
+
+    # Quick majority smoothing on newly refined seam triangles to kill any 1-tri jagged teeth before curve fairing
+    f1, f2, dots, _ = build_face_adjacency(pts, tr)
+    if len(f1) > 0:
+        cos_c = math.cos(math.radians(24.0))
+        valid_e = (~prot[f1]) & (~prot[f2]) & (dots >= cos_c)
+        ef1, ef2 = f1[valid_e], f2[valid_e]
+        max_slot = int(fils.max(initial=1))
+        for _ in range(2):
+            votes = np.zeros((len(tr), max_slot + 1), dtype=np.int32)
+            np.add.at(votes, (ef1, fils[ef2]), 1)
+            np.add.at(votes, (ef2, fils[ef1]), 1)
+            best_s = np.argmax(votes, axis=1).astype(np.int32)
+            best_cnt = votes[np.arange(len(tr)), best_s]
+            # Flip a triangle only if >= 2 of its 3 smooth neighbors agree on another color (eliminates saw teeth!)
+            flip = (~prot) & (best_s >= 1) & (best_s != fils) & (best_cnt >= 2)
+            if not np.any(flip):
+                break
+            fils[flip] = best_s[flip]
+
+    # 2. Tangential Boundary-Loop Laplacian Fairing: glides sawtooth color-seam edges into smooth splines
+    #    strictly inside the 3D surface tangent plane, leaving Z=0 bed & sharp geometric creases 100% locked!
+    if fair_iters <= 0:
+        return pts, tr, fils
+
+    n_verts = len(pts)
+    n_faces = len(tr)
+    z0_bed = float(pts[:, 2].min())
+
+    # Build shared-edge adjacency + edge vertex pairs from the EXACT same sort order (zero index drift!)
+    tv0, tv1, tv2 = pts[tr[:, 0]], pts[tr[:, 1]], pts[tr[:, 2]]
+    fn_area = np.cross(tv1 - tv0, tv2 - tv0)
+    fn = np.divide(fn_area, np.maximum(np.linalg.norm(fn_area, axis=1, keepdims=True), 1e-12))
+
+    all_e = np.vstack((tr[:, [0, 1]], tr[:, [1, 2]], tr[:, [2, 0]]))
+    ea = np.minimum(all_e[:, 0], all_e[:, 1]).astype(np.int64)
+    eb = np.maximum(all_e[:, 0], all_e[:, 1]).astype(np.int64)
+    f_idx_e = np.tile(np.arange(n_faces, dtype=np.int32), 3)
+    keys = ea * max(1, n_verts) + eb
+    order = np.argsort(keys)
+    ks = keys[order]
+    same = ks[:-1] == ks[1:]
+    if not np.any(same):
+        return pts, tr, fils
+    o1 = order[:-1][same]
+    o2 = order[1:][same]
+    f1 = f_idx_e[o1]
+    f2 = f_idx_e[o2]
+    dots = np.einsum("ij,ij->i", fn[f1], fn[f2])
+    e_va = ea[o1].astype(np.int32)
+    e_vb = eb[o1].astype(np.int32)
+
+    # Identify sharp geometric crease vertices (> crease_deg) so fairing never rounds off eyes, teeth, or flexi rims!
+    cos_sharp = math.cos(math.radians(crease_deg))
+    sharp_e = dots < cos_sharp
+
+    locked_v = pts[:, 2] <= (z0_bed + 0.35)
+    if np.any(sharp_e):
+        locked_v[e_va[sharp_e]] = True
+        locked_v[e_vb[sharp_e]] = True
+    if np.any(prot):
+        locked_v[tr[prot].reshape(-1)] = True
+
+    # Collect undirected seam polyline edges where adjacent faces have different filaments
+    seam_e = (fils[f1] != fils[f2]) & (~prot[f1]) & (~prot[f2])
+    if not np.any(seam_e):
+        return pts, tr, fils
+
+    seam_adj: dict[int, set[int]] = {}
+    for a, b in zip(e_va[seam_e].tolist(), e_vb[seam_e].tolist()):
+        seam_adj.setdefault(a, set()).add(b)
+        seam_adj.setdefault(b, set()).add(a)
+
+    # Only fair clean 2-valence seam chain vertices (keep 3-color triple-junctions pinned!)
+    fair_verts = [v for v, nbs in seam_adj.items() if len(nbs) == 2 and not locked_v[v]]
+    if not fair_verts:
+        return pts, tr, fils
+
+    # Build vertex smooth normals for tangent-plane projection
+    vn = np.zeros_like(pts)
+    np.add.at(vn, tr[:, 0], fn_area)
+    np.add.at(vn, tr[:, 1], fn_area)
+    np.add.at(vn, tr[:, 2], fn_area)
+    vn = np.divide(vn, np.maximum(np.linalg.norm(vn, axis=1, keepdims=True), 1e-12))
+
+    # Map each fairable vertex to its incident faces so we can verify zero triangle inversions
+    fair_set = set(fair_verts)
+    v_faces: dict[int, list[int]] = {v: [] for v in fair_verts}
+    for fi, (a, b, c) in enumerate(tr.tolist()):
+        if a in fair_set:
+            v_faces[a].append(fi)
+        if b in fair_set:
+            v_faces[b].append(fi)
+        if c in fair_set:
+            v_faces[c].append(fi)
+
+    fair_pairs = [(v, tuple(seam_adj[v])) for v in fair_verts]
+    lam = 0.45
+    for _ in range(int(fair_iters)):
+        new_pos_map: list[tuple[int, np.ndarray]] = []
+        for v, (n1, n2) in fair_pairs:
+            p = pts[v]
+            mid = 0.5 * (pts[n1] + pts[n2])
+            delta = (mid - p) * lam
+            # Project strictly into the surface tangent plane so 3D silhouette & skin curvature stay exact!
+            nv = vn[v]
+            delta = delta - float(np.dot(delta, nv)) * nv
+            # Clamp move to <= 0.35 of shortest seam edge to guarantee smooth well-shaped triangles
+            max_step = 0.35 * min(
+                float(np.linalg.norm(pts[n1] - p)),
+                float(np.linalg.norm(pts[n2] - p)),
+            )
+            dlen = float(np.linalg.norm(delta))
+            if dlen < 1e-5:
+                continue
+            if dlen > max_step:
+                delta *= max_step / dlen
+            cand = p + delta
+            # Verify ZERO triangle inversions among incident faces before accepting move
+            ok = True
+            for fi in v_faces[v]:
+                ia, ib, ic = int(tr[fi, 0]), int(tr[fi, 1]), int(tr[fi, 2])
+                pa = cand if ia == v else pts[ia]
+                pb = cand if ib == v else pts[ib]
+                pc = cand if ic == v else pts[ic]
+                n_new = np.cross(pb - pa, pc - pa)
+                if float(np.dot(n_new, fn[fi])) <= 1e-5:
+                    ok = False
+                    break
+            if ok:
+                new_pos_map.append((v, cand))
+        for v, cand in new_pos_map:
+            pts[v] = cand
+
+    return pts, tr, fils
 
 
 def compute_clean_sweeping_belly_paint(
